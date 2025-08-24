@@ -527,40 +527,14 @@ const ChatScreen = ({ navigation, route }) => {
       {renderHeader()}
 
       <KeyboardAvoidingView 
-        style={styles.chatContainer}
+        style={{ flex: 1 }}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
         {/* Upload Options Modal */}
-        <UploadOptionsModal
-          visible={showUploadModal}
-          onClose={() => {
-            console.log('🚫 Upload modal closed');
-            setShowUploadModal(false);
-          }}
-          onRecordVideo={() => {
-            console.log('📹 Record video selected');
-            openCamera();
-          }}
-          onChooseFromGallery={() => {
-            console.log('📱 Gallery selection selected');
-            openGallery();
-          }}
-        />
+        {/* UploadOptionsModal removed - ChatGPT style uses direct camera button */}
 
         {/* First Analysis Celebration */}
-        <FirstAnalysisCelebration
-          visible={showCelebration}
-          analysisData={celebrationData}
-          onClose={() => {
-            setShowCelebration(false);
-            setOnboardingType(null);
-          }}
-          onViewAnalysis={() => {
-            setShowCelebration(false);
-            // Scroll to the analysis message
-            flatListRef.current?.scrollToEnd({ animated: true });
-          }}
-        />
+        {/* FirstAnalysisCelebration removed - ChatGPT style is celebration-free */}
 
         {/* Progressive Onboarding */}
         {onboardingType && !showCelebration && (
@@ -590,9 +564,9 @@ const ChatScreen = ({ navigation, route }) => {
         )}
         
         {isLoading && (
-          <View style={styles.loadingContainer}>
-            <ActivityIndicator size="small" color={colors.primary} />
-            <Text style={styles.loadingText}>Coach is thinking...</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+            <ActivityIndicator size="small" color="#000" />
+            <Text style={{ fontSize: 14, color: '#666', fontStyle: 'italic', marginLeft: 8 }}>Coach is thinking...</Text>
           </View>
         )}
         
