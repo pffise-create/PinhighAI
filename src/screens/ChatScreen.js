@@ -50,9 +50,7 @@ const ChatScreen = ({ navigation, route }) => {
   // Initialize chat as primary interface
   const initializePrimaryChat = async () => {
     try {
-      setIsLoadingHistory(true);
-
-      // Load conversation history
+      // Load conversation history silently - no loading UI
       const conversation = await ChatHistoryManager.loadConversation(userId);
       const summary = await ChatHistoryManager.getConversationSummary(userId);
       
@@ -87,7 +85,7 @@ const ChatScreen = ({ navigation, route }) => {
       // Fallback to clean UI
       setMessages([]);
     } finally {
-      setIsLoadingHistory(false);
+      // ChatGPT-style: No loading state to clear
     }
   };
 
@@ -506,22 +504,15 @@ const ChatScreen = ({ navigation, route }) => {
 
         {/* ChatGPT-style: No progressive onboarding */}
 
-        {isLoadingHistory ? (
-          <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color={colors.primary} />
-            <Text style={styles.loadingText}>Loading your coaching history...</Text>
-          </View>
-        ) : (
-          <FlatList
-            ref={flatListRef}
-            data={messages}
-            renderItem={renderMessage}
-            keyExtractor={item => item.id}
-            style={styles.messagesList}
-            contentContainerStyle={styles.messagesContent}
-            onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
-            showsVerticalScrollIndicator={false}
-          />
+        <FlatList
+          ref={flatListRef}
+          data={messages}
+          renderItem={renderMessage}
+          keyExtractor={item => item.id}
+          style={styles.messagesList}
+          onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
+          showsVerticalScrollIndicator={false}
+        />
         )}
         
         {isLoading && (
