@@ -1,0 +1,66 @@
+# AI Golf Swing Coach - Project Brief
+
+## Project Overview
+Building a mobile app that provides AI-powered golf swing coaching through conversational analysis. The key differentiator is **root cause coaching** - identifying underlying swing fundamentals rather than just treating symptoms.
+
+## Target Market
+- **Primary users:** 8-25 handicap golfers
+- **Pain point:** Traditional golf apps show swing data but don't provide actionable coaching
+- **Value proposition:** "Fix one fundamental, improve three swing flaws"
+
+## Core Product Flow
+1. **Upload swing video** (30-60 seconds)
+2. **AI analyzes** swing mechanics and identifies issues
+3. **Conversational coaching** explains root causes and provides improvement guidance
+4. **Follow-up chat** for questions and drill recommendations
+
+## Key Differentiator: Root Cause Coaching
+**Traditional approach:** "You're coming over the top and have early extension"
+**Our approach:** "Your over-the-top move and early extension are both caused by poor weight shift. Fix that fundamental and both problems will improve."
+
+## Technical Architecture
+- **Frontend:** React Native (Expo) - cross-platform mobile app
+- **Backend:** AWS serverless (S3, Lambda, DynamoDB, API Gateway)
+- **AI:** GPT-4o for swing analysis and coaching conversations
+- **Video processing:** Frame extraction and swing phase detection
+- **Cost:** ~$0.03 per swing analysis
+
+## Current Status
+
+### âœ… Completed (Working)
+- **Sprint 1:** React Native app UI/UX (professional design, navigation, mock functionality)
+- **Sprint 2:** AWS backend infrastructure (video processing, 14 swing phases extraction)
+- **AI Integration:** GPT-4o analysis pipeline (symptom detection â†’ root cause â†’ coaching)
+
+### âŒ Missing (Current Blocker)
+- **Mobile-Backend Connection:** React Native app can't actually upload videos or connect to AWS
+- **Real functionality:** App is currently just UI shell with mock data
+
+## Immediate Objective
+Connect the working React Native UI to the working AWS backend so users can:
+1. Record golf swing videos in the app
+2. Upload to AWS for AI analysis
+3. Receive personalized coaching in the chat interface
+
+## Technical Implementation Needed
+1. **Real video upload** from React Native to S3
+2. **API Gateway endpoints** for mobile-AWS communication
+3. **Results polling** to get AI analysis back to the app
+4. **Chat integration** to display coaching responses
+
+## Business Strategy
+- **MVP validation:** Prove root cause coaching resonates with golfers
+- **Premium positioning:** AI coaching justifies higher pricing vs basic swing apps
+- **Viral potential:** Quality coaching drives word-of-mouth growth
+- **Competitive moat:** Root cause methodology is difficult to replicate
+
+## Success Metrics
+- **Technical:** 30-60 second analysis time, 99% uptime
+- **User experience:** Clear, actionable coaching that helps golfers improve
+- **Business:** User retention and organic growth through coaching quality
+
+## Development Context
+- **Builder:** Technical product manager (can code, needs step-by-step guidance)
+- **Environment:** Windows + PowerShell + Expo + React Native
+- **Approach:** Focused sprint sessions with detailed implementation plans
+- **Quality standard:** Production-ready, not prototype code
