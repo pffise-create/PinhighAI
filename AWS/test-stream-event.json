@@ -1,0 +1,23 @@
+{
+  "Records": [
+    {
+      "eventName": "MODIFY",
+      "dynamodb": {
+        "NewImage": {
+          "analysis_id": {
+            "S": "1755839350950-63h9ym58s"
+          },
+          "status": {
+            "S": "COMPLETED"
+          },
+          "ai_analysis_completed": {
+            "BOOL": false
+          },
+          "user_id": {
+            "S": "guest-user"
+          }
+        }
+      }
+    }
+  ]
+}

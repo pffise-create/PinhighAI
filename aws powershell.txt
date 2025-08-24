@@ -1,0 +1,3 @@
+        $env:AWS_ACCESS_KEY_ID="AKIAWVMP32JA6572FLLI"
+        $env:AWS_SECRET_ACCESS_KEY="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"
+        $env:AWS_DEFAULT_REGION="us-east-1"

@@ -1,0 +1,91 @@
+CONTEXT: I'm enhancing my existing React Native (Expo) golf coaching app's sign-in screen to have a premium cinematic video background while maintaining all current authentication functionality. The goal is to create a high-end app experience like Netflix or Master Class.
+
+PROJECT DETAILS:
+- React Native app with Expo
+- Project location: C:\Users\pffis\Documents\ReactNativeProjects\GolfCoachExpoFixed
+- Videos location: C:\Users\pffis\Documents\ReactNativeProjects\GolfCoachExpoFixed\stock videos\
+- App uses existing theme in src/utils/theme.js (Golf club aesthetic)
+- Current sign-in screen needs to be enhanced, not replaced
+
+OBJECTIVE: Transform the existing sign-in screen into a cinematic experience with video backgrounds while preserving all authentication functionality.
+
+TECHNICAL REQUIREMENTS:
+
+1. ENHANCE EXISTING SIGN-IN SCREEN:
+   - Keep all current sign-in/login functionality intact
+   - Add full-screen video background with cinematic effects
+   - Apply proper overlays/gradients for text readability
+   - Maintain all existing form fields and buttons
+
+2. VIDEO BACKGROUND SYSTEM:
+   - Use react-native-video for auto-playing background videos
+   - Landscape videos with resizeMode="cover" for mobile
+   - Ken Burns effect: slow zoom from scale(1) to scale(1.15) over 12 seconds
+   - Cycle through 3 videos every 6-8 seconds with smooth transitions
+   - Videos: muted, looping, optimized for mobile performance
+
+3. OVERLAY/FILTER STRATEGY FOR READABILITY:
+   - Dark gradient overlay (40-60% opacity) over videos
+   - Additional blur or darkening behind text areas
+   - Semi-transparent background cards for form elements
+   - Ensure high contrast for all text and buttons
+   - Test readability across all 3 video backgrounds
+
+4. PREMIUM VISUAL DESIGN:
+   - Glassmorphism effects on form containers
+   - Subtle backdrop blur behind authentication cards
+   - Enhanced shadows and depth
+   - Premium button styling with proper contrast
+   - Professional typography hierarchy
+
+5. INSPIRATIONAL MESSAGING:
+   - Rotate inspiring messages with video changes:
+     * "Every great round starts with a single swing"
+     * "Master the fundamentals, master the game"
+     * "Transform your swing, transform your scores"
+   - Position messaging to not interfere with sign-in forms
+
+6. ANIMATION REQUIREMENTS:
+   - Smooth entrance animations for all elements
+   - Ken Burns slow zoom on video backgrounds
+   - Fade transitions between videos
+   - Button press feedback animations
+   - Form field focus animations
+
+7. AUTHENTICATION FUNCTIONALITY TO PRESERVE:
+   - All existing sign-in/login forms and validation
+   - Navigation to main app after successful auth
+   - Error handling and user feedback
+   - Any existing social login integrations
+   - "Remember me" or similar features
+
+8. MOBILE OPTIMIZATION:
+   - Ensure videos don't impact app performance
+   - Handle video loading states gracefully
+   - Optimize overlay transparency for both light/dark videos
+   - Test on both iOS and Android
+   - Ensure keyboard doesn't break layout
+
+FILES TO EXAMINE AND MODIFY:
+- Find and enhance the existing sign-in/login screen
+- Install react-native-video if not already present
+- Reference videos from ./stock videos/ folder
+- Maintain integration with existing navigation
+
+OVERLAY BEST PRACTICES:
+- Use gradient overlays that are darker at bottom (where forms are)
+- Apply backdrop-filter blur effects behind form containers
+- Use semi-transparent cards with subtle borders
+- Ensure minimum 4.5:1 contrast ratio for text readability
+- Test overlay effectiveness across all 3 video backgrounds
+
+DELIVERABLES:
+1. Enhanced existing sign-in screen with cinematic backgrounds
+2. Proper overlay/filter implementation for text readability
+3. Package.json updates for any new dependencies
+4. Video integration and optimization
+5. Testing checklist for readability and performance
+
+GOAL: Transform the current functional sign-in screen into a premium, cinematic experience that makes users feel like they're using a high-end golf coaching platform, while maintaining all existing authentication functionality and ensuring perfect text readability.
+
+Please examine the existing sign-in screen and enhance it with these cinematic video backgrounds and premium overlays.

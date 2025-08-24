@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(powershell:*)",
+      "Bash(aws lambda update-function-code:*)",
+      "Bash(aws logs describe-log-groups:*)",
+      "Bash(aws logs describe-log-streams:*)",
+      "Bash(aws lambda invoke:*)",
+      "Bash(cat:*)",
+      "Bash(aws dynamodb scan:*)",
+      "Bash(aws dynamodb get-item:*)",
+      "Bash(aws lambda get-function:*)",
+      "Bash(aws:*)",
+      "Bash(npm install:*)",
+      "Bash(zip:*)",
+      "Bash(npx expo install:*)",
+      "Bash(node:*)",
+      "Bash(npx expo start:*)",
+      "Read(/C:\\Users\\pffis\\Downloads/**)",
+      "Bash(curl:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
