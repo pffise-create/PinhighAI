@@ -24,6 +24,7 @@ import VideoProgressMessage from '../components/VideoProgressMessage';
 import AnalysisResultMessage from '../components/AnalysisResultMessage';
 import FirstAnalysisCelebration from '../components/FirstAnalysisCelebration';
 import videoService from '../services/videoService';
+import chatApiService from '../services/chatApiService';
 import * as ImagePicker from 'expo-image-picker';
 
 const ChatScreen = ({ navigation, route }) => {
@@ -354,53 +355,6 @@ const ChatScreen = ({ navigation, route }) => {
     }
   };
 
-  // Generate mock analysis data
-  const generateMockAnalysisData = () => {
-    const overallScores = [7.2, 7.8, 6.9, 8.1, 7.5];
-    const strengthOptions = [
-      'Consistent setup position',
-      'Good tempo and rhythm',
-      'Solid balance throughout swing',
-      'Nice shoulder turn in backswing',
-      'Good impact position',
-      'Smooth follow-through',
-      'Proper weight distribution at address'
-    ];
-    const improvementOptions = [
-      'Weight shift timing in transition',
-      'Hip rotation in downswing',
-      'Wrist hinge at top of backswing',
-      'Shoulder plane consistency',
-      'Early extension control',
-      'Club path through impact'
-    ];
-    const drillOptions = [
-      'Slow motion swings focusing on weight transfer',
-      'Hip rotation drill with alignment stick',
-      'Impact bag training for better contact',
-      'Towel drill for connection and timing',
-      'Step-through drill for weight shift',
-      'Wall drill for proper swing plane'
-    ];
-
-    return {
-      overallScore: overallScores[Math.floor(Math.random() * overallScores.length)],
-      strengths: shuffleArray(strengthOptions).slice(0, 3),
-      improvements: shuffleArray(improvementOptions).slice(0, 2),
-      practiceRecommendations: shuffleArray(drillOptions).slice(0, 3),
-      coachingResponse: 'Great swing! I can see you have a solid foundation. The key area to focus on is your weight shift timing - master this and you\'ll see improvement in multiple areas of your swing.'
-    };
-  };
-
-  // Helper function to shuffle array
-  const shuffleArray = (array) => {
-    const shuffled = [...array];
-    for (let i = shuffled.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-    }
-    return shuffled;
-  };
 
   // Add system messages
   const addSystemMessage = async (text, type = 'system') => {
@@ -416,7 +370,7 @@ const ChatScreen = ({ navigation, route }) => {
     await ChatHistoryManager.saveMessage(userId, systemMessage);
   };
 
-  // Send message
+  // Send message with real AI integration
   const sendMessage = async () => {
     if (!inputText.trim()) return;
 
@@ -439,71 +393,50 @@ const ChatScreen = ({ navigation, route }) => {
       console.error('Failed to save user message:', error);
     }
 
-    // Simulate AI response (replace with actual API call later)
-    setTimeout(async () => {
+    // Real AI coaching response via production service
+    try {
+      const conversationHistory = chatApiService.formatConversationHistory(messages);
+      const coachingContext = chatApiService.formatCoachingContext(conversationSummary, messages);
+      
+      const result = await chatApiService.sendMessage(
+        userMessage.text,
+        userId,
+        conversationHistory,
+        coachingContext
+      );
+      
       const coachResponse = {
         id: `coach_${Date.now()}`,
-        text: generateCoachResponse(userMessage.text),
+        text: result.response,
         sender: 'coach',
         timestamp: new Date(),
-        messageType: 'response',
+        messageType: result.fallback ? 'fallback' : 'response',
+        tokensUsed: result.tokensUsed,
+        apiSuccess: result.success
       };
 
       setMessages(prev => [...prev, coachResponse]);
-      setIsLoading(false);
-
-      // Save coach response
-      try {
-        await ChatHistoryManager.saveMessage(userId, coachResponse);
-      } catch (error) {
-        console.error('Failed to save coach response:', error);
-      }
-    }, 1000 + Math.random() * 1000); // Realistic response time
-  };
-
-  // Generate contextual coach responses
-  const generateCoachResponse = (userMessage) => {
-    const message = userMessage.toLowerCase();
-    
-    // First-time user encouragement
-    if (conversationSummary?.isFirstTime || conversationSummary?.totalMessages < 5) {
-      if (message.includes('help') || message.includes('start')) {
-        return "I'd love to help you improve your golf game! The best way to start is by uploading a swing video so I can see what you're working with. Tap the 📹 button above to record your swing, and I'll give you personalized coaching insights.";
-      }
+      await ChatHistoryManager.saveMessage(userId, coachResponse);
       
-      if (message.includes('hi') || message.includes('hello')) {
-        return "Hello! Great to meet you. I'm excited to be your golf coach. To give you the most helpful advice, I'd love to see your swing in action. Ready to record your first video?";
-      }
+    } catch (error) {
+      console.error('❌ Unexpected error in chat service:', error);
+      
+      // Honest fallback - don't promise what we can't deliver
+      const fallbackResponse = {
+        id: `coach_${Date.now()}`,
+        text: 'I\'m having trouble connecting right now. Please try again in a few minutes.',
+        sender: 'coach',
+        timestamp: new Date(),
+        messageType: 'connection_error',
+      };
+
+      setMessages(prev => [...prev, fallbackResponse]);
+      await ChatHistoryManager.saveMessage(userId, fallbackResponse);
+    } finally {
+      setIsLoading(false);
     }
-
-    // Practice and improvement questions
-    if (message.includes('practice') || message.includes('drill')) {
-      return "Great question about practice! Here are some fundamental drills that work for most golfers:\n\n1. **Alignment Stick Drill** - Place a stick along your target line\n2. **Slow Motion Swings** - Focus on proper positions\n3. **Impact Bag Work** - Improve your strike\n\nTo give you more specific drills, I'd need to see your swing. Have you uploaded a video yet?";
-    }
-
-    if (message.includes('swing') || message.includes('technique')) {
-      return "I love talking technique! Golf swings have so many moving parts, but we can break it down into manageable pieces. What specific part of your swing are you curious about? Setup? Backswing? Follow-through?\n\nOr better yet, show me your swing with a video and I can give you personalized feedback!";
-    }
-
-    if (message.includes('improve') || message.includes('better')) {
-      return "Every golfer can improve, and you're taking the right first step by asking! The key is focusing on one thing at a time rather than trying to fix everything at once.\n\nUpload a swing video and I'll help you identify the one change that will have the biggest impact on your game.";
-    }
-
-    // Encouragement for continued engagement
-    if (message.includes('thank')) {
-      return "You're very welcome! I'm here to help you on this golf journey. Remember, every great golfer started where you are now. Keep that positive attitude and let's work on your swing together!";
-    }
-
-    // Generic helpful responses
-    const responses = [
-      "That's a great question! To give you the most helpful answer, I'd love to see your swing in action. Upload a video and I can provide personalized coaching insights.",
-      "I understand what you're asking about. Golf can be complex, but we can work through it together. Show me your swing and I'll help you focus on what matters most.",
-      "Every golfer faces these challenges! The best way I can help is by analyzing your actual swing. Ready to upload a video so we can work on your specific needs?",
-      "I'm here to help you improve! While I can give general advice, the real magic happens when I can see your unique swing and give you personalized coaching.",
-    ];
-
-    return responses[Math.floor(Math.random() * responses.length)];
   };
+
 
   // Handle onboarding actions
   const handleOnboardingAction = () => {
@@ -522,13 +455,22 @@ const ChatScreen = ({ navigation, route }) => {
   };
 
   // Render message component
-  // Enhanced header with coaching presence
+  // Clean header with video upload
   const renderHeader = () => (
     <View style={styles.header}>
-      <Text style={styles.headerTitle}>Coaching Chat</Text>
-      <Text style={styles.headerSubtitle}>
-        Your AI golf coach is here to help
-      </Text>
+      <View>
+        <Text style={styles.headerTitle}>Coaching Chat</Text>
+        <Text style={styles.headerSubtitle}>
+          Your AI golf coach is here to help
+        </Text>
+      </View>
+      <TouchableOpacity 
+        style={styles.headerCameraButton} 
+        onPress={handleVideoUpload}
+        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+      >
+        <Ionicons name="videocam" size={24} color={colors.coachAccent} />
+      </TouchableOpacity>
     </View>
   );
 
@@ -567,14 +509,10 @@ const ChatScreen = ({ navigation, route }) => {
       );
     }
     
-    // Enhanced coaching message rendering
+    // Clean coaching message rendering
     if (isCoach) {
       return (
         <View style={styles.coachingMessageContainer}>
-          <View style={styles.coachingIndicator}>
-            <View style={styles.coachingDot} />
-            <Text style={styles.coachingLabel}>Coaching</Text>
-          </View>
           <View style={[
             styles.coachingMessage,
             isOnboarding && styles.onboardingMessage,
@@ -620,18 +558,9 @@ const ChatScreen = ({ navigation, route }) => {
     }
   };
 
-  // Enhanced input section
+  // Clean input section
   const renderInputSection = () => (
     <View style={styles.inputContainer}>
-      <TouchableOpacity 
-        style={[styles.cameraButton, { backgroundColor: 'rgba(128, 90, 213, 0.1)' }]} 
-        onPress={handleVideoUpload}
-        activeOpacity={0.7}
-        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-      >
-        <Ionicons name="videocam" size={24} color={colors.coachAccent} />
-      </TouchableOpacity>
-      
       <TextInput
         style={styles.textInput}
         value={inputText}
@@ -743,8 +672,11 @@ const styles = StyleSheet.create({
     backgroundColor: colors.background,
   },
   
-  // Enhanced header styling
+  // Clean header styling
   header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.base,
     backgroundColor: colors.surface,
@@ -753,10 +685,19 @@ const styles = StyleSheet.create({
   },
   
   headerTitle: {
-    fontSize: typography.fontSizes['2xl'],
+    fontSize: typography.fontSizes.xl,
     fontWeight: typography.fontWeights.bold,
     color: colors.primary,
     fontFamily: typography.fontFamily,
+  },
+  
+  headerCameraButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: colors.coachAccent + '15',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   
   headerSubtitle: {
@@ -794,40 +735,21 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.xl,
   },
   
-  // Coaching message containers
+  // Clean coaching message containers
   coachingMessageContainer: {
     alignSelf: 'flex-start',
-    maxWidth: '90%',
+    maxWidth: '88%',
     marginBottom: spacing.lg,
-  },
-  
-  coachingIndicator: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: spacing.sm,
-  },
-  
-  coachingDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: colors.coachAccent,
-    marginRight: spacing.sm,
-  },
-  
-  coachingLabel: {
-    fontSize: typography.fontSizes.sm,
-    fontWeight: typography.fontWeights.medium,
-    color: colors.coachAccent,
-    fontFamily: typography.fontFamily,
+    marginLeft: spacing.lg,
+    marginRight: spacing['2xl'],
   },
   
   coachingMessage: {
-    backgroundColor: colors.coachBackground,
-    borderLeftWidth: 4,
+    backgroundColor: colors.surface,
+    borderLeftWidth: 3,
     borderLeftColor: colors.coachAccent,
     borderRadius: borderRadius.lg,
-    padding: spacing.lg,
+    padding: spacing.base,
     ...shadows.sm,
   },
   
@@ -848,11 +770,13 @@ const styles = StyleSheet.create({
     fontFamily: typography.fontFamily,
   },
   
-  // User message containers
+  // Clean user message containers
   userMessageContainer: {
     alignSelf: 'flex-end',
-    maxWidth: '85%',
+    maxWidth: '88%',
     marginBottom: spacing.lg,
+    marginRight: spacing.lg,
+    marginLeft: spacing['2xl'],
   },
   
   userMessage: {
@@ -877,7 +801,7 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-end',
   },
   
-  // Enhanced input section
+  // Clean input section
   inputContainer: {
     flexDirection: 'row',
     alignItems: 'flex-end',
@@ -886,31 +810,21 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     borderTopWidth: 1,
     borderTopColor: colors.border,
-    ...shadows.sm,
   },
   
-  cameraButton: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: colors.coachAccent + '20',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: spacing.sm,
-  },
   
   textInput: {
     flex: 1,
-    borderWidth: 2,
+    borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: borderRadius.xl,
+    borderRadius: borderRadius.full,
     paddingHorizontal: spacing.base,
     paddingVertical: spacing.sm,
     fontSize: typography.fontSizes.base,
     fontFamily: typography.fontFamily,
     color: colors.text,
-    backgroundColor: colors.surface,
-    maxHeight: 120,
+    backgroundColor: colors.background,
+    maxHeight: 100,
     marginRight: spacing.sm,
   },
   
