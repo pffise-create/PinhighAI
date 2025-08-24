@@ -12,33 +12,22 @@ import {
   Platform,
   ActivityIndicator,
   Alert,
+  Image,
 } from 'react-native';
-import { colors, typography, spacing, borderRadius, shadows, coaching } from '../utils/theme';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../context/AuthContext';
 import ChatHistoryManager from '../services/chatHistoryManager';
-import ChatHeader from '../components/ChatHeader';
-import ProgressiveOnboardingMessage from '../components/ProgressiveOnboardingMessage';
-import UploadOptionsModal from '../components/UploadOptionsModal';
-import VideoProgressMessage from '../components/VideoProgressMessage';
-import AnalysisResultMessage from '../components/AnalysisResultMessage';
-import FirstAnalysisCelebration from '../components/FirstAnalysisCelebration';
 import videoService from '../services/videoService';
 import chatApiService from '../services/chatApiService';
 import * as ImagePicker from 'expo-image-picker';
 
 const ChatScreen = ({ navigation, route }) => {
   const { user, isAuthenticated } = useAuth();
+  // ChatGPT-style simple state
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [isLoadingHistory, setIsLoadingHistory] = useState(true);
-  const [onboardingType, setOnboardingType] = useState(null);
   const [conversationSummary, setConversationSummary] = useState(null);
-  const [showUploadModal, setShowUploadModal] = useState(false);
-  const [currentVideoProcessing, setCurrentVideoProcessing] = useState(null);
-  const [showCelebration, setShowCelebration] = useState(false);
-  const [celebrationData, setCelebrationData] = useState(null);
   const flatListRef = useRef(null);
   
   const userId = user?.email || 'guest';
@@ -346,14 +335,51 @@ const ChatScreen = ({ navigation, route }) => {
     await ChatHistoryManager.saveMessage(userId, systemMessage);
   };
 
-  // Clear stuck video processing state
-  const clearVideoProcessingState = () => {
-    console.log('🧹 Clearing stuck video processing state');
-    setCurrentVideoProcessing(null);
-    setIsLoading(false);
+  // Convert technical analysis to natural coaching conversation
+  const generateNaturalCoachingResponse = (analysis) => {
+    if (!analysis) {
+      return "I can see some good things in your swing! Let's work on making some improvements together. Try another swing and I'll give you more specific feedback.";
+    }
     
-    // Remove any processing messages from UI
-    setMessages(prev => prev.filter(msg => msg.messageType !== 'video_processing'));
+    const strengths = analysis.strengths || [];
+    const improvements = analysis.improvements || [];
+    const overallScore = analysis.overallScore || 7.0;
+    
+    let response = "";
+    
+    // Start with positives
+    if (strengths.length > 0) {
+      response += `I can see some really good things in your swing! Your ${strengths[0].toLowerCase()} looks solid`;
+      if (strengths.length > 1) {
+        response += ` and you're maintaining ${strengths[1].toLowerCase()}`;
+      }
+      response += ".\n\n";
+    } else {
+      response += "Thanks for sharing your swing with me! I can see you're working hard on your technique.\n\n";
+    }
+    
+    // Main coaching point
+    if (improvements.length > 0) {
+      const primaryImprovement = improvements[0];
+      response += `The main area I'd focus on is your ${primaryImprovement.toLowerCase()}. `;
+      
+      // Add feel-based coaching
+      if (primaryImprovement.toLowerCase().includes('weight')) {
+        response += "Try feeling like you're stepping into the shot with your lead foot. This will help with both power and consistency.";
+      } else if (primaryImprovement.toLowerCase().includes('hip')) {
+        response += "Focus on feeling your hips turn through the ball - like you're throwing a frisbee sideways.";
+      } else if (primaryImprovement.toLowerCase().includes('plane')) {
+        response += "Work on keeping the club on a consistent path - imagine you're swinging along a tilted dinner table.";
+      } else {
+        response += "This one change will help improve multiple aspects of your swing.";
+      }
+    } else {
+      response += "Keep working on the fundamentals and you'll see great improvement.";
+    }
+    
+    response += "\n\nWant to try another swing focusing on that feeling?";
+    
+    return response;
   };
 
   // Send message with real AI integration
@@ -441,87 +467,45 @@ const ChatScreen = ({ navigation, route }) => {
   };
 
   // Render message component
-  // Clean header with video upload
+  // ChatGPT-style minimal header
   const renderHeader = () => (
     <View style={styles.header}>
-      <View>
-        <Text style={styles.headerTitle}>Coaching Chat</Text>
-        <Text style={styles.headerSubtitle}>
-          Your AI golf coach is here to help
-        </Text>
-      </View>
-      <TouchableOpacity 
-        style={styles.headerCameraButton} 
-        onPress={handleVideoUpload}
-        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-      >
-        <Ionicons name="videocam" size={24} color={colors.coachAccent} />
-      </TouchableOpacity>
+      <Text style={styles.title}>Golf Coach</Text>
     </View>
   );
 
   // Message rendering with coaching presence
+  // ChatGPT-style simple message rendering - only user and assistant
   const renderMessage = ({ item }) => {
-    const isCoach = item.sender === 'coach';
-    const isOnboarding = item.messageType === 'onboarding';
-    const isProgress = item.messageType === 'progress';
-    const isVideoProcessing = item.messageType === 'video_processing';
-    const isAnalysisResult = item.messageType === 'analysis_result';
-    
-    // Render video processing message
-    if (isVideoProcessing) {
-      const processingData = currentVideoProcessing && currentVideoProcessing.videoId === item.videoId 
-        ? currentVideoProcessing 
-        : { stage: item.stage || 'processing', progress: 0 };
-      
+    if (item.sender === 'user') {
       return (
-        <VideoProgressMessage
-          stage={processingData.stage}
-          progress={processingData.progress}
-          message={getProcessingMessage(processingData.stage)}
-          videoId={item.videoId}
-        />
-      );
-    }
-
-    // Render analysis result message
-    if (isAnalysisResult) {
-      return (
-        <AnalysisResultMessage
-          analysisData={item.analysisData}
-          isFirstAnalysis={item.isFirstAnalysis}
-          videoId={item.videoId}
-        />
-      );
-    }
-    
-    // Clean coaching message rendering
-    if (isCoach) {
-      return (
-        <View style={styles.coachingMessageContainer}>
-          <View style={[
-            styles.coachingMessage,
-            isOnboarding && styles.onboardingMessage,
-            isProgress && styles.progressMessage,
-          ]}>
-            <Text style={styles.coachingMessageText}>{item.text}</Text>
-          </View>
-          <Text style={styles.messageTimestamp}>
-            {item.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-          </Text>
+        <View style={styles.userMessageContainer}>
+          {item.hasVideo && (
+            <TouchableOpacity style={styles.videoThumbnail}>
+              <Image source={{ uri: item.videoThumbnail }} style={styles.thumbnailImage} />
+              <View style={styles.playOverlay}>
+                <Ionicons name="play" size={20} color="white" />
+              </View>
+            </TouchableOpacity>
+          )}
+          {item.text && <Text style={styles.userText}>{item.text}</Text>}
         </View>
       );
     }
     
-    // User message rendering
+    // Assistant message (coach) - simple loading state
+    if (item.isLoading) {
+      return (
+        <View style={styles.assistantMessageContainer}>
+          <Text style={styles.assistantText}>Analyzing your swing...</Text>
+        </View>
+      );
+    }
+    
+    // Normal assistant message
     return (
-      <View style={styles.userMessageContainer}>
-        <View style={styles.userMessage}>
-          <Text style={styles.userMessageText}>{item.text}</Text>
-        </View>
-        <Text style={styles.messageTimestamp}>
-          {item.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-        </Text>
+      <View style={styles.assistantMessageContainer}>
+        <Text style={styles.assistantText}>{item.text}</Text>
       </View>
     );
   };
@@ -544,30 +528,26 @@ const ChatScreen = ({ navigation, route }) => {
     }
   };
 
-  // Clean input section
+  // ChatGPT-style input with camera button
   const renderInputSection = () => (
     <View style={styles.inputContainer}>
+      <TouchableOpacity style={styles.cameraButton} onPress={handleVideoUpload}>
+        <Ionicons name="camera" size={20} color="#666" />
+      </TouchableOpacity>
       <TextInput
-        style={styles.textInput}
+        style={styles.input}
+        placeholder="Message Golf Coach..."
         value={inputText}
         onChangeText={setInputText}
-        placeholder={currentVideoProcessing ? "Video processing..." : "Ask your coach anything..."}
-        placeholderTextColor={colors.textLight}
         multiline
-        maxLength={500}
-        onSubmitEditing={sendMessage}
-        returnKeyType="send"
-        editable={!currentVideoProcessing}
+        maxHeight={100}
       />
-      
       <TouchableOpacity 
-        style={[styles.sendButton, (!inputText.trim() || isLoading || currentVideoProcessing) && styles.disabledButton]}
+        style={styles.sendButton} 
         onPress={sendMessage}
-        accessible={true}
-        accessibilityLabel="Send message"
-        disabled={!inputText.trim() || isLoading || currentVideoProcessing}
+        disabled={!inputText.trim() || isLoading}
       >
-        <Ionicons name="send" size={20} color={colors.surface} />
+        <Ionicons name="send" size={18} color={inputText.trim() && !isLoading ? "#000" : "#ccc"} />
       </TouchableOpacity>
     </View>
   );
@@ -652,181 +632,125 @@ const ChatScreen = ({ navigation, route }) => {
   );
 };
 
+// ChatGPT-inspired minimal styling
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.background,
+    backgroundColor: '#FFFFFF', // Pure white like ChatGPT
   },
   
-  // Clean header styling
   header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.base,
-    backgroundColor: colors.surface,
+    padding: 16,
     borderBottomWidth: 1,
-    borderBottomColor: colors.border,
+    borderBottomColor: '#E5E5E5',
+    backgroundColor: '#FFFFFF',
   },
   
-  headerTitle: {
-    fontSize: typography.fontSizes.xl,
-    fontWeight: typography.fontWeights.bold,
-    color: colors.primary,
-    fontFamily: typography.fontFamily,
-  },
-  
-  headerCameraButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: colors.coachAccent + '15',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  
-  headerSubtitle: {
-    fontSize: typography.fontSizes.base,
-    color: colors.textSecondary,
-    fontFamily: typography.fontFamily,
-    marginTop: spacing.xs,
-  },
-  
-  chatContainer: {
-    flex: 1,
-  },
-  
-  loadingContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: spacing.lg,
-  },
-  
-  loadingText: {
-    fontSize: typography.fontSizes.sm,
-    color: colors.textSecondary,
-    fontStyle: 'italic',
-    fontFamily: typography.fontFamily,
-    marginLeft: spacing.sm,
+  title: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#000000',
   },
   
   messagesList: {
     flex: 1,
+    paddingHorizontal: 16,
   },
   
-  messagesContent: {
-    padding: spacing.lg,
-    paddingBottom: spacing.xl,
-  },
-  
-  // Clean coaching message containers
-  coachingMessageContainer: {
-    alignSelf: 'flex-start',
-    maxWidth: '88%',
-    marginBottom: spacing.lg,
-    marginLeft: spacing.lg,
-    marginRight: spacing['2xl'],
-  },
-  
-  coachingMessage: {
-    backgroundColor: colors.surface,
-    borderLeftWidth: 3,
-    borderLeftColor: colors.coachAccent,
-    borderRadius: borderRadius.lg,
-    padding: spacing.base,
-    ...shadows.sm,
-  },
-  
-  onboardingMessage: {
-    backgroundColor: colors.success + '15', // Light green with transparency
-    borderLeftColor: colors.success,
-  },
-  
-  progressMessage: {
-    backgroundColor: colors.warning + '15', // Light orange with transparency
-    borderLeftColor: colors.warning,
-  },
-  
-  coachingMessageText: {
-    fontSize: typography.fontSizes.base,
-    lineHeight: typography.lineHeights.relaxed,
-    color: colors.text,
-    fontFamily: typography.fontFamily,
-  },
-  
-  // Clean user message containers
+  // User messages (right-aligned, simple)
   userMessageContainer: {
     alignSelf: 'flex-end',
-    maxWidth: '88%',
-    marginBottom: spacing.lg,
-    marginRight: spacing.lg,
-    marginLeft: spacing['2xl'],
+    maxWidth: '80%',
+    marginBottom: 16,
+    marginTop: 8,
   },
   
-  userMessage: {
-    backgroundColor: colors.primary,
-    borderRadius: borderRadius.lg,
-    padding: spacing.lg,
-    ...shadows.sm,
+  userText: {
+    fontSize: 16,
+    color: '#000000',
+    lineHeight: 22,
   },
   
-  userMessageText: {
-    fontSize: typography.fontSizes.base,
-    lineHeight: typography.lineHeights.relaxed,
-    color: colors.surface,
-    fontFamily: typography.fontFamily,
+  // Assistant messages (left-aligned, simple)  
+  assistantMessageContainer: {
+    alignSelf: 'flex-start',
+    maxWidth: '80%',
+    marginBottom: 16,
+    marginTop: 8,
   },
   
-  messageTimestamp: {
-    fontSize: typography.fontSizes.xs,
-    color: colors.textLight,
-    fontFamily: typography.fontFamily,
-    marginTop: spacing.xs,
-    alignSelf: 'flex-end',
+  assistantText: {
+    fontSize: 16,
+    color: '#000000',
+    lineHeight: 22,
   },
   
-  // Clean input section
+  // Video thumbnail in user messages
+  videoThumbnail: {
+    width: 200,
+    height: 112,
+    borderRadius: 8,
+    overflow: 'hidden',
+    marginBottom: 8,
+    position: 'relative',
+  },
+  
+  thumbnailImage: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#F0F0F0',
+  },
+  
+  playOverlay: {
+    position: 'absolute',
+    top: '50%',
+    left: '50%',
+    transform: [{ translateX: -15 }, { translateY: -15 }],
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  
+  // Simple input area
   inputContainer: {
     flexDirection: 'row',
-    alignItems: 'flex-end',
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.base,
-    backgroundColor: colors.surface,
+    alignItems: 'center',
+    padding: 16,
     borderTopWidth: 1,
-    borderTopColor: colors.border,
+    borderTopColor: '#E5E5E5',
+    backgroundColor: '#FFFFFF',
   },
   
+  cameraButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
   
-  textInput: {
+  input: {
     flex: 1,
+    fontSize: 16,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
     borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: borderRadius.full,
-    paddingHorizontal: spacing.base,
-    paddingVertical: spacing.sm,
-    fontSize: typography.fontSizes.base,
-    fontFamily: typography.fontFamily,
-    color: colors.text,
-    backgroundColor: colors.background,
+    borderColor: '#E5E5E5',
+    borderRadius: 20,
     maxHeight: 100,
-    marginRight: spacing.sm,
   },
   
   sendButton: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: colors.coachAccent,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     justifyContent: 'center',
     alignItems: 'center',
-    ...shadows.sm,
-  },
-  
-  disabledButton: {
-    backgroundColor: colors.textLight,
-    opacity: 0.6,
+    marginLeft: 12,
   },
 });
 
