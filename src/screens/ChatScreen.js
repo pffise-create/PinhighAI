@@ -335,51 +335,21 @@ const ChatScreen = ({ navigation, route }) => {
     await ChatHistoryManager.saveMessage(userId, systemMessage);
   };
 
-  // Convert technical analysis to natural coaching conversation
-  const generateNaturalCoachingResponse = (analysis) => {
-    if (!analysis) {
-      return "I can see some good things in your swing! Let's work on making some improvements together. Try another swing and I'll give you more specific feedback.";
+  // Use pure AI response - no canned phrases
+  const extractAIResponse = (analysisResult) => {
+    // The AI analysis already contains the natural coaching response
+    // Just extract it directly without any modifications
+    if (analysisResult?.coaching_response) {
+      return analysisResult.coaching_response;
     }
     
-    const strengths = analysis.strengths || [];
-    const improvements = analysis.improvements || [];
-    const overallScore = analysis.overallScore || 7.0;
-    
-    let response = "";
-    
-    // Start with positives
-    if (strengths.length > 0) {
-      response += `I can see some really good things in your swing! Your ${strengths[0].toLowerCase()} looks solid`;
-      if (strengths.length > 1) {
-        response += ` and you're maintaining ${strengths[1].toLowerCase()}`;
-      }
-      response += ".\n\n";
-    } else {
-      response += "Thanks for sharing your swing with me! I can see you're working hard on your technique.\n\n";
+    // If no coaching response, use the ai_analysis field
+    if (analysisResult?.ai_analysis?.coaching_response) {
+      return analysisResult.ai_analysis.coaching_response;
     }
     
-    // Main coaching point
-    if (improvements.length > 0) {
-      const primaryImprovement = improvements[0];
-      response += `The main area I'd focus on is your ${primaryImprovement.toLowerCase()}. `;
-      
-      // Add feel-based coaching
-      if (primaryImprovement.toLowerCase().includes('weight')) {
-        response += "Try feeling like you're stepping into the shot with your lead foot. This will help with both power and consistency.";
-      } else if (primaryImprovement.toLowerCase().includes('hip')) {
-        response += "Focus on feeling your hips turn through the ball - like you're throwing a frisbee sideways.";
-      } else if (primaryImprovement.toLowerCase().includes('plane')) {
-        response += "Work on keeping the club on a consistent path - imagine you're swinging along a tilted dinner table.";
-      } else {
-        response += "This one change will help improve multiple aspects of your swing.";
-      }
-    } else {
-      response += "Keep working on the fundamentals and you'll see great improvement.";
-    }
-    
-    response += "\n\nWant to try another swing focusing on that feeling?";
-    
-    return response;
+    // Last fallback - only for connection issues
+    return "I had trouble analyzing that swing. Please try uploading another video.";
   };
 
   // Send message with real AI integration
@@ -419,7 +389,7 @@ const ChatScreen = ({ navigation, route }) => {
       
       const coachResponse = {
         id: `coach_${Date.now()}`,
-        text: result.response,
+        text: result.response || 'I had trouble processing your message. Please try again.',
         sender: 'coach',
         timestamp: new Date(),
         messageType: result.fallback ? 'fallback' : 'response',

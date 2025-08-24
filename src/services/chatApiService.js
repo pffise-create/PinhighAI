@@ -51,7 +51,7 @@ class ChatApiService {
         
         return {
           success: true,
-          response: data.response || 'I\'m here to help with your golf game!',
+          response: data.response, // Pure AI response - no fallback text
           tokensUsed: data.tokensUsed || 0,
           timestamp: data.timestamp || new Date().toISOString()
         };
