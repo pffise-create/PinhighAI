@@ -45,6 +45,8 @@ const ChatScreen = ({ navigation, route }) => {
 
   useEffect(() => {
     initializePrimaryChat();
+    // Clear any stuck video processing state on mount
+    setCurrentVideoProcessing(null);
   }, [isAuthenticated, userId]);
 
   // Handle video recorded from camera
@@ -77,13 +79,17 @@ const ChatScreen = ({ navigation, route }) => {
         videoReference: msg.videoReference,
       }));
 
-      // Filter out any existing welcome/onboarding messages for clean UI
+      // Filter out any existing welcome/onboarding messages and stuck processing messages for clean UI
       const cleanMessages = displayMessages.filter(
         msg => msg.messageType !== 'onboarding' && 
                msg.messageType !== 'contextual_welcome' &&
+               msg.messageType !== 'video_processing' &&
                !msg.text.includes("Hi! I'm your AI golf coach")
       );
       setMessages(cleanMessages);
+      
+      // Clear any stuck processing state
+      setCurrentVideoProcessing(null);
 
       // Determine onboarding experience
       if (summary.isFirstTime && summary.totalMessages === 0) {
@@ -187,12 +193,23 @@ const ChatScreen = ({ navigation, route }) => {
     try {
       const videoId = `chat_${Date.now()}`;
       
-      // Set current processing video
+      // Set current processing video with timeout protection
       setCurrentVideoProcessing({
         videoId,
         stage: 'uploading',
         progress: 0,
       });
+      
+      // Auto-clear processing state after 5 minutes if stuck
+      setTimeout(() => {
+        setCurrentVideoProcessing(prev => {
+          if (prev && prev.videoId === videoId) {
+            console.log('⚠️ Auto-clearing stuck video processing after timeout');
+            return null;
+          }
+          return prev;
+        });
+      }, 300000); // 5 minutes
 
       // Add video processing message
       const processingMessage = {
@@ -327,6 +344,16 @@ const ChatScreen = ({ navigation, route }) => {
     
     setMessages(prev => [...prev, systemMessage]);
     await ChatHistoryManager.saveMessage(userId, systemMessage);
+  };
+
+  // Clear stuck video processing state
+  const clearVideoProcessingState = () => {
+    console.log('🧹 Clearing stuck video processing state');
+    setCurrentVideoProcessing(null);
+    setIsLoading(false);
+    
+    // Remove any processing messages from UI
+    setMessages(prev => prev.filter(msg => msg.messageType !== 'video_processing'));
   };
 
   // Send message with real AI integration
