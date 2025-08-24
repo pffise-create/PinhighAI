@@ -80,21 +80,11 @@ const ChatScreen = ({ navigation, route }) => {
       // Clear any stuck processing state
       setCurrentVideoProcessing(null);
 
-      // Determine onboarding experience
-      if (summary.isFirstTime && summary.totalMessages === 0) {
-        setOnboardingType('firstTime');
-        // Clean UI - no welcome messages
-      } else if (summary.analysisCount === 1 && !hasRecentCelebration(displayMessages)) {
-        setOnboardingType('firstAnalysisComplete');
-      } else if (summary.totalMessages > 0) {
-        setOnboardingType('returningUser');
-        // Clean UI - no welcome back messages
-      }
+      // ChatGPT-style: No onboarding - just clean chat
 
     } catch (error) {
       console.error('Failed to initialize chat:', error);
-      // Fallback to first-time experience - clean UI
-      setOnboardingType('firstTime');
+      // Fallback to clean UI
       setMessages([]);
     } finally {
       setIsLoadingHistory(false);
@@ -102,14 +92,7 @@ const ChatScreen = ({ navigation, route }) => {
   };
 
 
-  // Check if user has recent celebration message
-  const hasRecentCelebration = (messages) => {
-    return messages.some(msg => 
-      msg.messageType === 'celebration' || 
-      msg.text.includes('analysis is complete!') ||
-      msg.text.includes('🎉')
-    );
-  };
+  // ChatGPT-style: No celebration logic needed
 
   // Handle video upload
   const handleVideoUpload = () => {
@@ -119,8 +102,7 @@ const ChatScreen = ({ navigation, route }) => {
   };
 
   const openCamera = () => {
-    setShowUploadModal(false);
-    setOnboardingType('postUpload');
+    // ChatGPT-style: Direct camera access
     navigation.navigate('Camera');
     
     // Add progress message
@@ -420,21 +402,7 @@ const ChatScreen = ({ navigation, route }) => {
   };
 
 
-  // Handle onboarding actions
-  const handleOnboardingAction = () => {
-    switch (onboardingType) {
-      case 'firstTime':
-      case 'returningUser':
-        handleVideoUpload();
-        break;
-      case 'firstAnalysisComplete':
-        // Scroll to analysis or show details
-        setOnboardingType(null);
-        break;
-      default:
-        setOnboardingType(null);
-    }
-  };
+  // ChatGPT-style: No onboarding actions needed
 
   // Render message component
   // ChatGPT-style minimal header
@@ -536,14 +504,7 @@ const ChatScreen = ({ navigation, route }) => {
         {/* First Analysis Celebration */}
         {/* FirstAnalysisCelebration removed - ChatGPT style is celebration-free */}
 
-        {/* Progressive Onboarding */}
-        {onboardingType && !showCelebration && (
-          <ProgressiveOnboardingMessage
-            type={onboardingType}
-            onActionPress={handleOnboardingAction}
-            onDismiss={() => setOnboardingType(null)}
-          />
-        )}
+        {/* ChatGPT-style: No progressive onboarding */}
 
         {isLoadingHistory ? (
           <View style={styles.loadingContainer}>
