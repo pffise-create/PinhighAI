@@ -77,23 +77,18 @@ const ChatScreen = ({ navigation, route }) => {
         videoReference: msg.videoReference,
       }));
 
-      setMessages(displayMessages);
+      // Filter out any existing welcome/onboarding messages for clean UI
+      const cleanMessages = displayMessages.filter(
+        msg => msg.messageType !== 'onboarding' && 
+               msg.messageType !== 'contextual_welcome' &&
+               !msg.text.includes("Hi! I'm your AI golf coach")
+      );
+      setMessages(cleanMessages);
 
       // Determine onboarding experience
       if (summary.isFirstTime && summary.totalMessages === 0) {
         setOnboardingType('firstTime');
-        // Add welcome message for first-time users
-        const welcomeMessage = {
-          id: `welcome_${Date.now()}`,
-          text: "Hi! I'm your AI golf coach. Ready to analyze your swing? Tap 📹 above to start!",
-          sender: 'coach',
-          timestamp: new Date(),
-          messageType: 'onboarding',
-        };
-        setMessages([welcomeMessage]);
-        
-        // Save welcome message
-        await ChatHistoryManager.saveMessage(userId, welcomeMessage);
+        // Clean UI - no welcome messages
       } else if (summary.analysisCount === 1 && !hasRecentCelebration(displayMessages)) {
         setOnboardingType('firstAnalysisComplete');
       } else if (summary.totalMessages > 0) {
@@ -103,16 +98,9 @@ const ChatScreen = ({ navigation, route }) => {
 
     } catch (error) {
       console.error('Failed to initialize chat:', error);
-      // Fallback to first-time experience
+      // Fallback to first-time experience - clean UI
       setOnboardingType('firstTime');
-      const fallbackMessage = {
-        id: 'fallback_welcome',
-        text: "Hi! I'm your AI golf coach. Let's get started by analyzing your swing!",
-        sender: 'coach',
-        timestamp: new Date(),
-        messageType: 'onboarding',
-      };
-      setMessages([fallbackMessage]);
+      setMessages([]);
     } finally {
       setIsLoadingHistory(false);
     }
