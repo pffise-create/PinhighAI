@@ -98,19 +98,7 @@ const ChatScreen = ({ navigation, route }) => {
         setOnboardingType('firstAnalysisComplete');
       } else if (summary.totalMessages > 0) {
         setOnboardingType('returningUser');
-        // Add contextual welcome for returning users
-        const contextualMessage = await generateContextualWelcome(summary);
-        if (contextualMessage) {
-          const welcomeMessage = {
-            id: `context_welcome_${Date.now()}`,
-            text: contextualMessage,
-            sender: 'coach',
-            timestamp: new Date(),
-            messageType: 'contextual_welcome',
-          };
-          setMessages(prev => [...prev, welcomeMessage]);
-          await ChatHistoryManager.saveMessage(userId, welcomeMessage);
-        }
+        // Clean UI - no welcome back messages
       }
 
     } catch (error) {
@@ -130,23 +118,6 @@ const ChatScreen = ({ navigation, route }) => {
     }
   };
 
-  // Generate contextual welcome messages for returning users
-  const generateContextualWelcome = async (summary) => {
-    const lastInteraction = new Date(summary.lastInteraction);
-    const daysSince = Math.floor((new Date() - lastInteraction) / (1000 * 60 * 60 * 24));
-    
-    if (daysSince === 0) {
-      return "Welcome back! Ready to continue working on your swing?";
-    } else if (daysSince === 1) {
-      return "Good to see you back! How did yesterday's practice session go?";
-    } else if (daysSince < 7) {
-      return `Welcome back! It's been ${daysSince} days since our last session. Ready for another swing analysis?`;
-    } else if (daysSince < 30) {
-      return "Welcome back to your coaching journey! Let's pick up where we left off with your swing improvement.";
-    } else {
-      return "Great to have you back! I'm excited to continue helping you improve your golf game.";
-    }
-  };
 
   // Check if user has recent celebration message
   const hasRecentCelebration = (messages) => {
