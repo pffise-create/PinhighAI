@@ -17,7 +17,7 @@ const COGNITO_REGION = process.env.COGNITO_REGION || 'us-east-1';
 // COST PROTECTION CONSTANTS
 const MAX_TOKENS_PER_REQUEST = 1200;
 const MAX_CONTEXT_TOKENS = 1000;
-const MAX_REQUESTS_PER_USER_PER_HOUR = 10;
+const MAX_REQUESTS_PER_USER_PER_HOUR = 100; // Increased for testing
 const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 
 // COACHING FOCUS MANAGEMENT
@@ -694,62 +694,29 @@ async function triggerFrameExtraction(swingData) {
       }
     }));
     
-    // Simulate frame extraction process (in real implementation, this would call Python Lambda)
-    console.log(`Simulating frame extraction for ${s3Key}...`);
+    // FIXED: Call real Docker-based frame extraction Lambda
+    console.log(`Calling Docker frame extraction Lambda for ${s3Key}...`);
     
-    // Wait a bit to simulate processing time
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    const lambdaClient = getLambdaClient();
     
-    // Update to PROCESSING status
-    await dynamodb.send(new UpdateCommand({
-      TableName: process.env.DYNAMODB_TABLE || 'golf-coach-analyses',
-      Key: { analysis_id: analysisId },
-      UpdateExpression: 'SET #status = :status, progress_message = :message, updated_at = :timestamp',
-      ExpressionAttributeNames: { '#status': 'status' },
-      ExpressionAttributeValues: {
-        ':status': 'PROCESSING',
-        ':message': 'Processing P1-P10 positions...',
-        ':timestamp': new Date().toISOString()
-      }
-    }));
-    
-    // Simulate more processing
-    await new Promise(resolve => setTimeout(resolve, 3000));
-    
-    // Create mock analysis results (in real implementation, this would come from Python Lambda)
-    const mockAnalysisResults = {
-      swing_positions: {
-        P1: { description: "Address position", frame_number: 1 },
-        P2: { description: "Takeaway", frame_number: 15 },
-        P3: { description: "Backswing checkpoint", frame_number: 30 },
-        P4: { description: "Top of backswing", frame_number: 45 },
-        P5: { description: "Downswing start", frame_number: 60 },
-        P6: { description: "Impact position", frame_number: 75 },
-        P7: { description: "Release", frame_number: 90 },
-        P8: { description: "Follow through", frame_number: 105 },
-        P9: { description: "Finish position", frame_number: 120 },
-        P10: { description: "Complete finish", frame_number: 135 }
-      },
-      total_frames: 150,
-      video_duration: 6.0,
-      processing_notes: "Frame extraction completed successfully"
+    // Prepare payload for Docker Lambda
+    const frameExtractionPayload = {
+      s3_bucket: bucketName,
+      s3_key: s3Key,
+      analysis_id: analysisId,
+      user_id: userId
     };
     
-    // Update to COMPLETED status with analysis results
-    await dynamodb.send(new UpdateCommand({
-      TableName: process.env.DYNAMODB_TABLE || 'golf-coach-analyses',
-      Key: { analysis_id: analysisId },
-      UpdateExpression: 'SET #status = :status, analysis_results = :results, progress_message = :message, updated_at = :timestamp',
-      ExpressionAttributeNames: { '#status': 'status' },
-      ExpressionAttributeValues: {
-        ':status': 'COMPLETED',
-        ':results': JSON.stringify(mockAnalysisResults),
-        ':message': 'Frame extraction completed, starting AI analysis...',
-        ':timestamp': new Date().toISOString()
-      }
-    }));
+    const invokeCommand = new InvokeCommand({
+      FunctionName: 'golf-coach-frame-extractor-v2', // Use the working Docker version
+      InvocationType: 'Event', // Asynchronous invocation
+      Payload: JSON.stringify(frameExtractionPayload)
+    });
     
-    console.log(`✅ Frame extraction completed for ${analysisId}, ready for AI analysis`);
+    await lambdaClient.send(invokeCommand);
+    console.log(`Successfully triggered Docker frame extraction for ${analysisId}`);
+    
+    console.log(`✅ Frame extraction trigger completed for ${analysisId}, Docker Lambda will process it`);
     
   } catch (error) {
     console.error(`❌ Frame extraction failed for ${analysisId}:`, error);
@@ -828,7 +795,7 @@ async function processSwingAnalysis(swingData) {
     // Send error message to user (optional WebSocket)
     await sendWebSocketMessage(connectionId, {
       type: 'ai_analysis_error',
-      message: 'Sorry, I had trouble analyzing your swing. Please try again.'
+      message: 'We encountered an issue processing your swing analysis. Please try uploading again.'
     });
     
     throw error; // Re-throw to see the error in lambda logs
@@ -994,7 +961,7 @@ async function analyzeSwingWithGPT4o(frameData, swingData) {
       coachingHistory = await fetchUserCoachingHistory(userId, analysisId);
     }
     
-    const prompt = buildContextAwareGolfCoachingPrompt(frameData, coachingHistory);
+    const systemPrompt = buildContextAwareGolfCoachingPrompt(frameData, coachingHistory);
     
     // Select key frames for analysis (cost optimization)
     const keyFrames = selectKeyFramesForAnalysis(frameData.frame_urls);
@@ -1026,8 +993,8 @@ async function analyzeSwingWithGPT4o(frameData, swingData) {
     
     console.log(`Successfully converted ${base64Images.length} images to base64`);
     
-    // Build message content with base64 images - ensure userPrompt is a string
-    const userPromptText = typeof prompt.userPrompt === 'string' ? prompt.userPrompt : 'Please analyze this golf swing and provide coaching feedback.';
+    // Build message content with base64 images
+    const userPromptText = 'Please analyze this golf swing sequence and provide coaching feedback following the guidelines in your system prompt.';
     const messageContent = [
       { type: "text", text: userPromptText }
     ];
@@ -1043,8 +1010,8 @@ async function analyzeSwingWithGPT4o(frameData, swingData) {
       });
     });
     
-    // Ensure system prompt is a string
-    const systemPromptText = typeof prompt.systemPrompt === 'string' ? prompt.systemPrompt : 'You are a professional golf instructor. Analyze this swing and provide helpful coaching feedback.';
+    // Use the actual coaching system prompt
+    const systemPromptText = systemPrompt;
     
     const messages = [
       {
@@ -1058,8 +1025,8 @@ async function analyzeSwingWithGPT4o(frameData, swingData) {
     ];
     
     // Token estimation for logging (no blocking)
-    const systemTokens = estimateTokenCount(prompt.systemPrompt);
-    const userTokens = estimateTokenCount(prompt.userPrompt);
+    const systemTokens = estimateTokenCount(systemPromptText);
+    const userTokens = estimateTokenCount(userPromptText);
     const totalEstimatedTokens = systemTokens + userTokens + 600; // +600 for response buffer
     
     console.log(`Estimated token usage: ${totalEstimatedTokens} (system: ${systemTokens}, user: ${userTokens}) - no blocking applied`);
@@ -1069,8 +1036,11 @@ async function analyzeSwingWithGPT4o(frameData, swingData) {
     const requestData = JSON.stringify({
       model: "gpt-4o",
       messages: messages,
-      max_tokens: 600,
-      temperature: 0.7
+      max_tokens: 2000,
+      temperature: 0.9,
+      top_p: 0.9,
+      frequency_penalty: 0.1,
+      presence_penalty: 0.1
     });
     
     console.log('Making enhanced GPT-4o API call with cost protection...');
@@ -1104,9 +1074,15 @@ async function analyzeSwingWithGPT4o(frameData, swingData) {
     // ULTRA-SIMPLIFIED: Skip CloudWatch metrics for now
     console.log('Skipping CloudWatch metrics (ultra-simplified Sprint 1A)');
     
-    // ULTRA-SIMPLIFIED: Use basic response parser 
-    console.log('Using basic response parser (ultra-simplified Sprint 1A)');
-    return parseGPT4oResponse(aiResponse);
+    // RAW RESPONSE: Use AI response directly without any parsing
+    console.log('Returning raw AI response without parsing');
+    return {
+      coaching_response: aiResponse.trim(),
+      symptoms_detected: [],
+      root_cause: null,
+      confidence_score: null,
+      practice_recommendations: []
+    };
     
   } catch (error) {
     const processingTime = Date.now() - startTime;
@@ -1159,170 +1135,25 @@ function makeHttpsRequest(options, data) {
   });
 }
 
-// SIMPLIFIED SPRINT 1A: ENHANCED COACHING WITHOUT USER TRACKING
+// Redirect to unified system
 async function buildContextAwarePrompt(frameData, swingData, userId) {
-  try {
-    console.log('Building enhanced coaching prompt (simplified Sprint 1A)...');
-    
-    const userContext = frameData.user_context;
-    
-    // Simplified approach: Always treat as welcoming but focused coaching session
-    // No user history needed - just great coaching every time
-    const relationshipContext = `PROFESSIONAL COACHING SESSION:
-- Welcome this golfer with warmth and enthusiasm
-- Focus on building confidence while providing helpful instruction  
-- Establish 2-3 clear focus areas for immediate improvement
-- Be encouraging, supportive, and professional`;
-    
-    const systemPrompt = `You are a warm, encouraging PGA golf instructor with 20 years of experience. You specialize in building genuine coaching relationships and helping golfers improve through focused, persistent coaching.
-
-${relationshipContext}
-
-COACHING PHILOSOPHY (CRITICAL):
-- ALWAYS START WITH GENUINE POSITIVES - Find specific things they're doing well
-- BE CONVERSATIONAL, WARM, AND ENCOURAGING - Like a supportive coach, not a clinical analyst  
-- BALANCE PROBLEMS WITH STRENGTHS - "Here's what's working well, here's what we can improve"
-- BUILD CONFIDENCE WHILE TEACHING - Make them feel capable of improvement
-
-TECHNICAL ANALYSIS:
-P1-P10 POSITIONS YOU'LL ANALYZE:
-P1 = Address/Setup, P2 = Takeaway, P3 = Backswing (parallel), P4 = Top of backswing
-P5 = Transition, P6 = Downswing (parallel), P7 = Impact, P8 = Early follow-through  
-P9 = Finish position, P10 = Complete finish
-
-FEEL-BASED COACHING INTEGRATION:
-- Balance technical instruction with swing "feels" that golfers can actually use
-- For each technical coaching point, provide a relatable feel or sensation
-- Use analogies and imagery that translate to course performance
-- Examples:
-  * Technical: "Shift weight to front foot in downswing" 
-  * Feel: "Feel like you're stepping into a throw or pushing off your back foot"
-  * Technical: "Maintain spine angle in backswing"
-  * Feel: "Feel like you're reaching into your back pocket with your trail shoulder"
-
-COACHING RESPONSE STRUCTURE:
-1. Acknowledge progress and reference coaching relationship warmly
-2. Identify 1-2 key technical observations with positives first
-3. Provide feels/sensations for each technical point
-4. Connect to overall improvement journey and previous sessions
-5. Give specific drills that reinforce both technique and feel
-
-Format your response as JSON:
-{
-  "symptoms_detected": ["symptom1", "symptom2"],
-  "root_cause": "fundamental issue description", 
-  "coaching_response": "warm, conversational coaching that focuses on root cause with feels and encouragement",
-  "confidence_score": 95,
-  "practice_recommendations": ["drill1", "drill2"],
-  "session_context": {
-    "session_number": 1,
-    "coaching_relationship_acknowledged": true,
-    "enhanced_coaching_active": true
-  }
-}`;
-
-    const userPrompt = `Welcome! Let's work on your golf swing together.
-
-GOLFER CONTEXT:
-- Handicap: ${userContext.handicap}
-- Club: ${userContext.club_used}  
-- Shot Type: ${userContext.shot_type}
-- Question: "${userContext.user_question}"
-
-SWING FRAMES (P1-P10 Sequence):
-The images show key positions from their golf swing sequence. Analyze with warmth and focus on building their confidence while providing helpful technical guidance with both technical instruction and relatable "feels."
-
-Provide encouraging, professional coaching that helps them improve while building their confidence.`;
-
-    console.log('Enhanced coaching prompt built successfully (simplified Sprint 1A)');
-    
-    return { systemPrompt, userPrompt };
-    
-  } catch (error) {
-    console.error('Error building context-aware prompt, falling back to basic:', error);
-    
-    // Fallback to basic prompt structure
-    return buildBasicGolfCoachingPrompt(frameData);
-  }
+  return buildUnifiedCoachingPrompt({
+    userId: userId || 'guest',
+    messageType: 'video_analysis',
+    frameData: frameData
+  });
 }
 
-// CONTEXT-AWARE GOLF COACHING PROMPT (Sprint 1A - Full Implementation)
+// Redirect to unified system
 function buildContextAwareGolfCoachingPrompt(frameData, coachingHistory = null) {
-  const userContext = frameData.user_context;
-  
-  // Build coaching context from history
-  let contextualCoaching = '';
-  if (coachingHistory && coachingHistory.length > 0) {
-    const recentSessions = coachingHistory.slice(0, 3); // Last 3 sessions
-    const focusAreas = extractFocusAreas(recentSessions);
-    const progressNotes = extractProgressNotes(recentSessions);
+  const userId = frameData && frameData.user_context && frameData.user_context.userId ? 
+    frameData.user_context.userId : 'guest';
     
-    contextualCoaching = `
-COACHING CONTEXT (Your History with This Player):
-- Previous Focus Areas: ${focusAreas.join(', ')}
-- Recent Progress: ${progressNotes}
-- Session Count: ${coachingHistory.length} previous sessions
-- Coaching Relationship: Continue building on our established rapport
-
-CONTINUITY INSTRUCTIONS:
-- Reference progress made on previous focus areas
-- Acknowledge improvements you've seen
-- Build on coaching cues that have worked before
-- Maintain consistent coaching personality and approach
-`;
-  } else if (userContext && userContext.isAuthenticated) {
-    contextualCoaching = `
-COACHING CONTEXT (New Authenticated Player):
-- This is our first session together
-- Build initial coaching rapport and trust
-- Establish coaching style preferences
-- Set foundation for ongoing coaching relationship
-`;
-  } else {
-    contextualCoaching = `
-COACHING CONTEXT (Guest Session):
-- Provide excellent coaching experience
-- Focus on immediate actionable improvements
-- Encourage future engagement
-`;
-  }
-
-  const systemPrompt = `You are a warm, encouraging PGA golf instructor with 20 years of experience. You specialize in building genuine coaching relationships and helping golfers improve through focused, supportive coaching.
-
-${contextualCoaching}
-
-COACHING PHILOSOPHY (CRITICAL):
-- ALWAYS START WITH GENUINE POSITIVES - find at least 2-3 things they're doing well
-- BE CONVERSATIONAL, WARM, AND ENCOURAGING - like talking to a friend who happens to be a golf pro
-- BALANCE PROBLEMS WITH STRENGTHS - for every issue, highlight a positive
-- BUILD CONFIDENCE WHILE TEACHING - make them feel capable of improvement
-- USE FEEL-BASED INSTRUCTION - combine technical with relatable sensations
-- FOCUS MANAGEMENT - maximum 3 active focus areas, prioritize by impact
-- PROGRESSIVE COACHING - build on previous sessions when context available
-
-RESPONSE STRUCTURE:
-1. Warm, personal greeting (use coaching history context when available)
-2. Genuine positives about their swing (2-3 specific compliments)
-3. Priority area for improvement (max 3 total focus areas)
-4. Feel-based coaching cue (technical + sensation)
-5. Specific drill or practice suggestion
-6. Encouraging close with next session preview
-
-P1-P10 ANALYSIS FRAMEWORK:
-- P1 (Setup): Posture, alignment, ball position
-- P2 (Takeaway): Club path, wrist hinge initiation
-- P3 (Backswing): Shoulder turn, club plane
-- P4 (Top): Club position, wrist angles
-- P5 (Transition): Weight shift, sequence initiation
-- P6 (Downswing): Hip rotation, club delivery
-- P7 (Impact): Body position, club face, contact
-- P8 (Extension): Release, follow-through initiation
-- P9 (Finish): Balance, completion
-- P10 (Hold): Final position, rhythm completion
-
-Remember: You're not just analyzing a swing - you're building a coaching relationship that helps this golfer fall in love with improvement.`;
-
-  return systemPrompt;
+  return buildUnifiedCoachingPrompt({
+    userId: userId,
+    messageType: 'video_analysis',
+    frameData: frameData
+  });
 }
 
 // Helper function to extract focus areas from coaching history
@@ -1368,91 +1199,164 @@ function extractProgressNotes(recentSessions) {
     : 'Building fundamental swing improvements';
 }
 
-// ENHANCED GOLF COACHING PROMPT (Sprint 1A - Fallback for Non-Context Cases)
-function buildEnhancedGolfCoachingPrompt(frameData) {
-  const userContext = frameData.user_context;
-  
-  const systemPrompt = `You are a warm, encouraging PGA golf instructor with 20 years of experience. You specialize in building genuine coaching relationships and helping golfers improve through focused, supportive coaching.
+// UNIFIED COACHING PROMPT SYSTEM - Let AI be intelligent with raw context
+async function buildUnifiedCoachingPrompt(options) {
+  const {
+    userId,
+    messageType,
+    conversationHistory,
+    frameData,
+    userMessage
+  } = options;
 
-COACHING PHILOSOPHY (CRITICAL):
-- ALWAYS START WITH GENUINE POSITIVES - Find specific things they're doing well
-- BE CONVERSATIONAL, WARM, AND ENCOURAGING - Like a supportive coach, not a clinical analyst  
-- BALANCE PROBLEMS WITH STRENGTHS - "Here's what's working well, here's what we can improve"
-- BUILD CONFIDENCE WHILE TEACHING - Make them feel capable of improvement
+  const history = conversationHistory || [];
 
-TECHNICAL ANALYSIS:
-P1-P10 POSITIONS YOU'LL ANALYZE:
-P1 = Address/Setup, P2 = Takeaway, P3 = Backswing (parallel), P4 = Top of backswing
-P5 = Transition, P6 = Downswing (parallel), P7 = Impact, P8 = Early follow-through  
-P9 = Finish position, P10 = Complete finish
+  console.log(`Building unified prompt: ${messageType}, userId: ${userId}, video: ${!!frameData}, message: ${!!userMessage}, history: ${history.length}`);
 
-FEEL-BASED COACHING INTEGRATION:
-- Balance technical instruction with swing "feels" that golfers can actually use
-- For each technical coaching point, provide a relatable feel or sensation
-- Use analogies and imagery that translate to course performance
-- Examples:
-  * Technical: "Shift weight to front foot in downswing" 
-  * Feel: "Feel like you're stepping into a throw or pushing off your back foot"
-  * Technical: "Maintain spine angle in backswing"
-  * Feel: "Feel like you're reaching into your back pocket with your trail shoulder"
+  const systemPrompt = `You are a friendly, experienced golf coach having a natural conversation with a golfer. You're their golf buddy and coach - use playful metaphors and emojis to make swing advice feel relatable. Just don't overdo it. The goal is to be fun and playful, not cheesy. Give natural, conversational coaching advice.`;
 
-COACHING RESPONSE STRUCTURE:
-1. Acknowledge effort and find genuine positives about their swing
-2. Identify 1-2 key technical observations with strengths first
-3. Provide feels/sensations for each technical point
-4. Connect to overall improvement and build confidence
-5. Give specific drills that reinforce both technique and feel
-
-Format your response as JSON:
-{
-  "symptoms_detected": ["symptom1", "symptom2"],
-  "root_cause": "fundamental issue description", 
-  "coaching_response": "warm, conversational coaching that focuses on root cause with feels and encouragement",
-  "confidence_score": 95,
-  "practice_recommendations": ["drill1", "drill2"]
-}`;
-
-  const userPrompt = `Welcome! Let's work on your golf swing together and help you improve.
-
-GOLFER CONTEXT:
-- Handicap: ${userContext.handicap}
-- Club: ${userContext.club_used}  
-- Shot Type: ${userContext.shot_type}
-- Question: "${userContext.user_question}"
-
-SWING FRAMES (P1-P10 Sequence):
-The images show key positions from their golf swing sequence. Analyze with warmth and focus on building their confidence while providing helpful technical guidance with both technical instruction and relatable "feels."
-
-Start with what they're doing well, then provide encouraging guidance for improvement. Make them feel capable and confident while learning!`;
+  const context = await buildUnifiedContext({ userId, frameData, conversationHistory: history });
+  const userPrompt = buildContextualUserPrompt(context, userMessage);
 
   return { systemPrompt, userPrompt };
 }
 
-// Fallback basic prompt (simplified version of original)
-function buildBasicGolfCoachingPrompt(frameData) {
-  const userContext = frameData.user_context;
+async function buildUnifiedContext({ userId, frameData, conversationHistory }) {
+  const context = {};
+
+  // Current swing data
+  if (frameData && frameData.user_context) {
+    if (frameData.user_context.club_used) {
+      context.club = frameData.user_context.club_used;
+    }
+    if (frameData.user_context.shot_type) {
+      context.shotType = frameData.user_context.shot_type;
+    }
+    if (frameData.user_context.user_question) {
+      context.userQuestion = frameData.user_context.user_question;
+    }
+    if (frameData.user_context.handicap) {
+      context.handicap = frameData.user_context.handicap;
+    }
+  }
+
+  // Historical coaching data
+  if (userId) {
+    try {
+      const dynamodb = getDynamoClient();
+      const queryResult = await dynamodb.send(new QueryCommand({
+        TableName: process.env.DYNAMODB_TABLE || 'golf-coach-analyses',
+        IndexName: 'user-id-timestamp-index',
+        KeyConditionExpression: 'user_id = :userId',
+        ExpressionAttributeValues: {
+          ':userId': userId
+        },
+        ScanIndexForward: false,
+        Limit: 3
+      }));
+
+      if (queryResult.Items && queryResult.Items.length > 0) {
+        const latestAnalysis = queryResult.Items[0];
+        if (latestAnalysis.ai_analysis) {
+          try {
+            let analysis;
+            if (typeof latestAnalysis.ai_analysis === 'string') {
+              analysis = JSON.parse(latestAnalysis.ai_analysis);
+            } else {
+              analysis = latestAnalysis.ai_analysis;
+            }
+            
+            if (analysis.coaching_response) {
+              context.recentCoaching = analysis.coaching_response;
+            }
+          } catch (parseError) {
+            console.warn('Could not parse recent analysis:', parseError.message);
+          }
+        }
+
+        const recentSwings = queryResult.Items
+          .filter(item => item.club_used?.S || item.shot_type?.S)
+          .slice(0, 2)
+          .map(item => ({
+            club: item.club_used?.S,
+            shotType: item.shot_type?.S,
+            date: item.created_at?.S
+          }))
+          .filter(swing => swing.club || swing.shotType);
+          
+        if (recentSwings.length > 0) {
+          context.recentSwings = recentSwings;
+        }
+      }
+    } catch (error) {
+      console.warn(`History query failed for userId ${userId}:`, error.message);
+    }
+  }
+
+  // Recent conversation context
+  if (conversationHistory.length > 0) {
+    const validMessages = conversationHistory
+      .filter(msg => msg && msg.content && typeof msg.content === 'string')
+      .filter(msg => msg.content.trim().length > 0);
+    
+    if (validMessages.length > 0) {
+      context.recentConversation = validMessages.slice(-3);
+    }
+  }
+
+  return context;
+}
+
+function buildContextualUserPrompt(context, userMessage) {
+  let prompt = '';
   
-  const systemPrompt = `You are a warm, encouraging PGA golf instructor with 20 years of experience. Provide conversational, supportive coaching that focuses on building confidence while teaching.
+  // Add any available context - let AI decide what's relevant
+  if (context.recentCoaching) {
+    prompt += context.recentCoaching + ' ';
+  }
+  
+  if (context.club) {
+    prompt += `Using ${context.club}. `;
+  }
+  
+  if (context.shotType) {
+    prompt += `This is a ${context.shotType}. `;
+  }
+  
+  if (context.handicap) {
+    prompt += `Handicap: ${context.handicap}. `;
+  }
+  
+  if (context.userQuestion) {
+    prompt += context.userQuestion + ' ';
+  } else if (userMessage) {
+    prompt += userMessage + ' ';
+  }
+  
+  return prompt.trim();
+}
 
-COACHING PHILOSOPHY:
-- Start with positives and be encouraging
-- Balance problems with strengths  
-- Provide both technical instruction and relatable "feels"
-- Keep response under 200 words and conversational
+// Legacy wrappers
+function buildEnhancedGolfCoachingPrompt(frameData) {
+  const userId = frameData && frameData.user_context && frameData.user_context.userId ? 
+    frameData.user_context.userId : 'guest';
+    
+  return buildUnifiedCoachingPrompt({
+    userId: userId,
+    messageType: 'video_analysis',
+    frameData: frameData
+  });
+}
 
-Format response as JSON with: symptoms_detected, root_cause, coaching_response, confidence_score, practice_recommendations`;
-
-  const userPrompt = `Analyze this golfer's swing with encouragement and practical advice:
-
-GOLFER CONTEXT:
-- Handicap: ${userContext.handicap}
-- Club: ${userContext.club_used}
-- Shot Type: ${userContext.shot_type}
-- Question: "${userContext.user_question}"
-
-Provide warm, helpful coaching that builds their confidence.`;
-
-  return { systemPrompt, userPrompt };
+function buildBasicGolfCoachingPrompt(frameData) {
+  const userId = frameData && frameData.user_context && frameData.user_context.userId ? 
+    frameData.user_context.userId : 'guest';
+    
+  return buildUnifiedCoachingPrompt({
+    userId: userId,
+    messageType: 'video_analysis', 
+    frameData: frameData
+  });
 }
 
 function selectKeyFramesForAnalysis(frameUrls) {
@@ -1559,62 +1463,48 @@ function parseEnhancedGPT4oResponse(response, context = {}) {
     console.error('Error parsing enhanced GPT-4o response:', error);
     console.error('Raw response preview:', response.substring(0, 200) + '...');
     
-    // Graceful fallback with coaching tone
-    const fallbackResponse = {
-      symptoms_detected: ["response_parsing_error"],
-      root_cause: "Unable to fully process the swing analysis",
-      coaching_response: "I can see your swing and want to help you improve! While I had trouble with the technical analysis this time, I can tell you're committed to getting better. Please try uploading another swing video, and I'll give you the detailed coaching feedback you deserve.",
-      confidence_score: 50,
-      practice_recommendations: [
-        "Practice slow, controlled swings focusing on feeling the fundamentals", 
-        "Try uploading another swing video for detailed analysis"
-      ],
-      session_context: {
-        session_number: context.sessionContext?.userId ? 1 : 1,
-        coaching_relationship_acknowledged: false,
-        focus_areas_maintained: false,
-        parsing_error: true
-      },
-      response_metadata: {
-        parsing_successful: false,
-        has_coaching_context: false,
-        response_length: 0,
-        recommendation_count: 2,
-        timestamp: new Date().toISOString(),
-        error_message: error.message
-      }
-    };
-    
-    return fallbackResponse;
+    // NO FALLBACK - Fail properly instead of returning fake coaching
+    throw new Error(`Enhanced parsing failed: ${error.message}. Raw response: ${response.substring(0, 300)}`);
   }
 }
 
 function parseGPT4oResponse(response) {
   try {
-    // Extract JSON from response (GPT-4o sometimes adds extra text)
-    const jsonMatch = response.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      return JSON.parse(jsonMatch[0]);
-    }
-    
-    // Fallback: manual parsing if JSON extraction fails
+    // Return natural response directly - no JSON wrapping
+    console.log('OpenAI returned natural coaching text, using directly');
     return {
-      symptoms_detected: ["analysis_error"],
-      root_cause: "Unable to parse AI response",
-      coaching_response: response, // Return raw response
-      confidence_score: 0,
+      coaching_response: response.trim(),
+      symptoms_detected: [], 
+      root_cause: "Natural coaching response",
+      confidence_score: 95,
       practice_recommendations: []
     };
+    
   } catch (error) {
     console.error('Error parsing GPT-4o response:', error);
-    return {
-      symptoms_detected: ["parsing_error"],
-      root_cause: "Response parsing failed",
-      coaching_response: "I had trouble analyzing your swing. Please try uploading another video.",
-      confidence_score: 0,
-      practice_recommendations: []
-    };
+    throw new Error(`OpenAI API parsing error: ${error.message}`);
   }
+}
+
+// Helper function to extract practice recommendations from natural text
+function extractRecommendations(text) {
+  const recommendations = [];
+  
+  // Look for numbered lists, bullet points, or "practice" mentions
+  const lines = text.split('\n');
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.match(/^\d+\.|\-|\*|practice|drill|work on|focus on|try/i)) {
+      if (trimmed.length > 10) { // Avoid short fragments
+        recommendations.push(trimmed.replace(/^\d+\.|\-|\*/, '').trim());
+      }
+    }
+  }
+  
+  // If no structured recommendations found, return empty array (no fake content)
+  // Let the system fail properly rather than return generic recommendations
+  
+  return recommendations.slice(0, 3); // Limit to 3 recommendations
 }
 
 async function storeAIAnalysis(analysisId, analysis) {
@@ -1728,11 +1618,53 @@ async function handleChatRequest(event, userContext) {
       userContext
     });
     
-    // STEP 2: Build context-aware prompt with coaching integration
-    const prompt = buildEnhancedContextAwareFollowUpPrompt(message, assembledContext);
+    // STEP 2: Build unified prompt 
+    const { systemPrompt, userPrompt } = await buildUnifiedCoachingPrompt({
+      userId: userId,
+      messageType: 'chat',
+      conversationHistory: conversationHistory,
+      userMessage: message
+    });
     
-    // STEP 3: Call context-aware GPT with integrated coaching
-    const response = await callEnhancedContextAwareGPT(prompt, assembledContext);
+    // STEP 3: Call GPT with unified prompts (same as video analysis)
+    const requestData = JSON.stringify({
+      model: "gpt-4o",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt }
+      ],
+      max_tokens: 1500,
+      temperature: 0.9,
+      top_p: 0.9,
+      frequency_penalty: 0.1,
+      presence_penalty: 0.1,
+      user: userId
+    });
+    
+    const apiResponse = await makeHttpsRequest({
+      hostname: 'api.openai.com',
+      path: '/v1/chat/completions',
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(requestData)
+      }
+    }, requestData);
+    
+    const responseData = JSON.parse(apiResponse);
+    
+    if (responseData.error) {
+      throw new Error(`OpenAI API error: ${responseData.error.message}`);
+    }
+    
+    const chatResponse = responseData.choices[0].message.content;
+    const response = {
+      text: chatResponse.trim(),
+      tokensUsed: responseData.usage?.total_tokens || 0,
+      timestamp: new Date().toISOString(),
+      contextSources: ['unified_system']
+    };
     
     // STEP 4: Store conversation state for continuity
     await storeEnhancedFollowUpConversationState(userId, message, response, assembledContext);
@@ -1759,21 +1691,16 @@ async function handleChatRequest(event, userContext) {
   } catch (error) {
     console.error('❌ Error in enhanced chat request:', error);
     
-    // Provide enhanced fallback response
-    const fallbackResponse = getEnhancedFallbackChatResponse(body?.message || '', error);
-    
+    // NO FALLBACK - Return honest error instead of fake coaching
     return {
-      statusCode: 200, // Return 200 to avoid app errors
+      statusCode: 500,
       headers: {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*'
       },
       body: JSON.stringify({
-        response: fallbackResponse,
-        message: fallbackResponse,
-        success: true,
-        fallback: true,
-        error_handled: true
+        error: 'Failed to retrieve analysis. Please try back in a few minutes.',
+        success: false
       })
     };
   }
@@ -2119,8 +2046,11 @@ async function callEnhancedContextAwareGPT(prompt, assembledContext) {
     const requestData = JSON.stringify({
       model: "gpt-4o",
       messages: prompt.messages,
-      max_tokens: 400,
-      temperature: 0.8,
+      max_tokens: 1500,
+      temperature: 0.9,
+      top_p: 0.9,
+      frequency_penalty: 0.1,
+      presence_penalty: 0.1,
       user: assembledContext.userId // For OpenAI usage tracking
     });
     
@@ -2350,64 +2280,7 @@ async function trackEnhancedFollowUpMetrics(userId, response, assembledContext) 
   }
 }
 
-// ENHANCED FALLBACK CHAT RESPONSE
-function getEnhancedFallbackChatResponse(userMessage, error) {
-  const lowerMessage = (userMessage || '').toLowerCase();
-  
-  // Provide contextual responses based on error type
-  if (error.message.includes('Rate limit') || error.message.includes('Too Many Requests')) {
-    return "I'm getting a lot of coaching requests right now! As your golf coach, I want to give you my full attention. Give me a moment and then ask your question again. I'm here to help you improve!";
-  }
-  
-  if (error.message.includes('timeout') || error.message.includes('network')) {
-    return "I'm having a brief connection issue, but I'm still here as your coach! Ask me about any specific part of your golf swing - setup, backswing, impact, or follow-through - and I'll help you improve.";
-  }
-  
-  // Content-based enhanced fallback responses
-  if (lowerMessage.includes('drill') || lowerMessage.includes('practice')) {
-    return "Great question about practice! For effective improvement, try these coaching fundamentals: start with slow controlled swings, use mirror work for posture checks, alignment stick drills for swing path, and impact bag work for solid contact. What specific area of your swing would you like to focus on in your practice sessions?";
-  }
-  
-  if (lowerMessage.includes('impact') || lowerMessage.includes('contact')) {
-    return "Impact is where the magic happens! Great impact position has weight shifted forward, hands slightly ahead of the ball, hips open to target, and square clubface. Focus on the feel of 'trapping' the ball against the ground. What does your ball flight tell you about your current impact position?";
-  }
-  
-  if (lowerMessage.includes('slice') || lowerMessage.includes('fade')) {
-    return "Let's fix that slice! Slices often come from an open clubface or out-to-in swing path. First, check your grip - can you see 2-3 knuckles on your lead hand? Then work on swinging more from the inside. What direction does your ball typically start - left, right, or straight at the target?";
-  }
-  
-  if (lowerMessage.includes('hook') || lowerMessage.includes('draw')) {
-    return "Let's work on that hook! Hooks usually result from a closed clubface or very inside swing path. Try weakening your grip slightly and feeling like you're swinging the club more 'around' your body rather than up and down. How's your ball position - is it too far back in your stance?";
-  }
-  
-  return "I'm here as your golf coach to help you improve! While I had a brief technical hiccup, I can still discuss swing mechanics, practice drills, course strategy, or any golf questions you have. What specific part of your game would you like to work on together?";
-}
-
-function getFallbackChatResponse(userMessage) {
-  const lowerMessage = (userMessage || '').toLowerCase();
-  
-  if (lowerMessage.includes('p1') || lowerMessage.includes('address') || lowerMessage.includes('setup')) {
-    return 'At address (P1), focus on proper posture: feet shoulder-width apart, slight knee flex, spine tilted away from target, and weight balanced. Your setup determines the quality of your entire swing.';
-  }
-  
-  if (lowerMessage.includes('p4') || lowerMessage.includes('top') || lowerMessage.includes('backswing')) {
-    return 'At the top (P4), your lead arm should be relatively straight, shoulders turned about 90°, and weight shifted to your trail side. The club should be parallel to the target line for most golfers.';
-  }
-  
-  if (lowerMessage.includes('p7') || lowerMessage.includes('impact')) {
-    return 'Impact (P7) is the moment of truth! Your hips should be open to the target, weight shifted forward, hands slightly ahead of the ball, and the clubface square. This is where all your practice pays off.';
-  }
-  
-  if (lowerMessage.includes('practice') || lowerMessage.includes('drill') || lowerMessage.includes('improve')) {
-    return 'For effective practice, focus on slow, controlled swings first. Try the alignment stick drill for swing path, mirror work for posture, and impact bag training for solid contact. Quality over quantity!';
-  }
-  
-  if (lowerMessage.includes('slice') || lowerMessage.includes('hook') || lowerMessage.includes('ball flight')) {
-    return 'Ball flight issues usually stem from face angle and swing path. A slice typically means an open clubface or out-to-in swing path. Work on grip, setup, and swing plane to improve your ball flight.';
-  }
-  
-  return "I understand you're asking about golf technique. While I'm having trouble connecting to my full AI system right now, I'm still here to help! Ask me about specific swing positions (P1-P10), common swing faults, practice drills, or any golf fundamentals you'd like to work on.";
-}
+// SECURITY: ALL FALLBACK FUNCTIONS ELIMINATED - No fake coaching responses allowed
 
 // handleGetResults - SEPARATE function at root level for GET /api/video/results/{jobId}
 async function handleGetResults(jobId) {

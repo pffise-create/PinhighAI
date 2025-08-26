@@ -1,4 +1,4 @@
-// ChatScreen.js - Primary interface with progressive onboarding
+// ChatScreen.js - ChatGPT-style golf coaching interface
 import React, { useState, useRef, useEffect } from 'react';
 import {
   View,
@@ -20,6 +20,8 @@ import ChatHistoryManager from '../services/chatHistoryManager';
 import videoService from '../services/videoService';
 import chatApiService from '../services/chatApiService';
 import * as ImagePicker from 'expo-image-picker';
+import { Video } from 'expo-av';
+import * as VideoThumbnails from 'expo-video-thumbnails';
 
 const ChatScreen = ({ navigation, route }) => {
   const { user, isAuthenticated } = useAuth();
@@ -28,24 +30,106 @@ const ChatScreen = ({ navigation, route }) => {
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [conversationSummary, setConversationSummary] = useState(null);
+  const [isInitialized, setIsInitialized] = useState(false);
+  const [isProcessingVideo, setIsProcessingVideo] = useState(false);
+  const [processingMessage, setProcessingMessage] = useState('');
   const flatListRef = useRef(null);
   
   const userId = user?.email || 'guest';
 
+  // Simple markdown renderer for coach messages
+  const renderMarkdownText = (text) => {
+    if (!text) return null;
+    
+    // First replace dashes with bullets
+    let processedText = text.replace(/^- /gm, '• ');
+    
+    const parts = [];
+    let lastIndex = 0;
+    const boldRegex = /\*\*(.*?)\*\*/g;
+    let match;
+    
+    while ((match = boldRegex.exec(processedText)) !== null) {
+      // Add text before bold
+      if (match.index > lastIndex) {
+        parts.push(processedText.substring(lastIndex, match.index));
+      }
+      
+      // Add bold text
+      parts.push({
+        text: match[1],
+        bold: true
+      });
+      
+      lastIndex = match.index + match[0].length;
+    }
+    
+    // Add remaining text
+    if (lastIndex < processedText.length) {
+      parts.push(processedText.substring(lastIndex));
+    }
+    
+    return (
+      <Text style={styles.coachText}>
+        {parts.map((part, index) => {
+          if (typeof part === 'string') {
+            return part;
+          } else {
+            return (
+              <Text key={index} style={[styles.coachText, { fontWeight: 'bold' }]}>
+                {part.text}
+              </Text>
+            );
+          }
+        })}
+      </Text>
+    );
+  };
+
   useEffect(() => {
-    initializePrimaryChat();
-    // Clear any stuck video processing state on mount
-    setCurrentVideoProcessing(null);
-  }, [isAuthenticated, userId]);
+    if (!isInitialized) {
+      initializePrimaryChat();
+    }
+    // ChatGPT-style: No processing state to clear
+  }, [isAuthenticated, userId]); // Removed isInitialized from dependencies
 
   // Handle video recorded from camera
   useEffect(() => {
-    if (route.params?.recordedVideo) {
+    if (route.params?.recordedVideo && !isProcessingVideo) {
       const { uri, duration } = route.params.recordedVideo;
       navigation.setParams({ recordedVideo: null }); // Clear the param
-      processVideoUpload(uri, duration);
+      setIsProcessingVideo(true);
+      handleCameraVideo(uri, duration);
     }
-  }, [route.params?.recordedVideo]);
+  }, [route.params?.recordedVideo, isProcessingVideo]);
+
+  // Handle camera video with thumbnail
+  const handleCameraVideo = async (videoUri, videoDuration) => {
+    try {
+      // Generate thumbnail for the video
+      const thumbnailUri = await generateVideoThumbnail(videoUri);
+      
+      // Add user message with video thumbnail first
+      const userMessage = {
+        id: `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        text: null,
+        sender: 'user',
+        timestamp: new Date(),
+        messageType: 'video',
+        hasVideo: true,
+        videoUri: videoUri,
+        videoThumbnail: thumbnailUri,
+      };
+      
+      setMessages(prev => [...prev, userMessage]);
+      await ChatHistoryManager.saveMessage(userId, userMessage);
+      
+      // Then process the video
+      await processVideoUpload(videoUri, videoDuration);
+    } catch (error) {
+      Alert.alert('Error', 'Failed to process camera video');
+    }
+  };
 
   // Initialize chat as primary interface
   const initializePrimaryChat = async () => {
@@ -71,12 +155,22 @@ const ChatScreen = ({ navigation, route }) => {
         msg => msg.messageType !== 'onboarding' && 
                msg.messageType !== 'contextual_welcome' &&
                msg.messageType !== 'video_processing' &&
-               !msg.text.includes("Hi! I'm your AI golf coach")
+               msg.messageType !== 'processing' && // Remove any saved processing messages
+               !(msg.text && msg.text.includes("Hi! I'm your AI golf coach"))
       );
-      setMessages(cleanMessages);
+      // Check for duplicate IDs before setting
+      const messageIds = cleanMessages.map(m => m.id);
+      const duplicateIds = messageIds.filter((id, index) => messageIds.indexOf(id) !== index);
+      if (duplicateIds.length > 0) {
+        console.error('🔥 DUPLICATE IDs in loaded messages:', duplicateIds);
+        console.error('🔥 Full messages:', cleanMessages);
+      }
       
-      // Clear any stuck processing state
-      setCurrentVideoProcessing(null);
+      console.log('✅ Setting', cleanMessages.length, 'clean messages');
+      setMessages(cleanMessages);
+      setIsInitialized(true);
+      
+      // ChatGPT-style: No processing state to clear
 
       // ChatGPT-style: No onboarding - just clean chat
 
@@ -84,6 +178,7 @@ const ChatScreen = ({ navigation, route }) => {
       console.error('Failed to initialize chat:', error);
       // Fallback to clean UI
       setMessages([]);
+      setIsInitialized(true);
     } finally {
       // ChatGPT-style: No loading state to clear
     }
@@ -92,142 +187,165 @@ const ChatScreen = ({ navigation, route }) => {
 
   // ChatGPT-style: No celebration logic needed
 
-  // Handle video upload
+  // Handle video upload - show options for camera or gallery
   const handleVideoUpload = () => {
-    console.log('🎥 Video upload button pressed');
-    setShowUploadModal(true);
-    console.log('📱 Upload modal should now be visible:', true);
+    Alert.alert(
+      'Upload Video',
+      'Choose how to upload your swing video',
+      [
+        { text: 'Camera', onPress: openCamera },
+        { text: 'Gallery', onPress: openGallery },
+        { text: 'Cancel', style: 'cancel' }
+      ]
+    );
   };
 
   const openCamera = () => {
-    // ChatGPT-style: Direct camera access
     navigation.navigate('Camera');
-    
-    // Add progress message
-    addSystemMessage('Get ready to record your swing! Position yourself so I can see your full swing from the side.', 'system');
+  };
+
+  // Generate video thumbnail
+  const generateVideoThumbnail = async (videoUri) => {
+    try {
+      const { uri } = await VideoThumbnails.getThumbnailAsync(videoUri, {
+        time: 1000, // 1 second into the video
+        quality: 0.8,
+      });
+      return uri;
+    } catch (error) {
+      console.error('Failed to generate thumbnail:', error);
+      return null;
+    }
   };
 
   const openGallery = async () => {
-    console.log('📱 Opening gallery...');
-    
     try {
-      // Close modal first, then check permissions
-      setShowUploadModal(false);
-      
-      console.log('📱 Requesting media library permissions...');
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      console.log('📱 Permission status:', status);
       
       if (status !== 'granted') {
-        console.log('❌ Permission denied');
         Alert.alert('Permission denied', 'Media library access is required');
         return;
       }
-
-      // Longer delay to ensure modal is fully dismissed
-      console.log('📱 Waiting for modal to close...');
-      await new Promise(resolve => setTimeout(resolve, 500));
-
-      console.log('📱 Launching image library picker...');
-      console.log('📱 About to call ImagePicker.launchImageLibraryAsync');
       
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ['videos'], // Use array format as recommended
-        allowsEditing: false,
+        mediaTypes: ['videos'],
+        allowsEditing: true,  // Enable video trimming
         quality: 0.8,
         videoMaxDuration: 120,
         allowsMultipleSelection: false,
+        videoExportPreset: ImagePicker.VideoExportPreset.MediumQuality,
       });
-
-      console.log('📱 Gallery picker finished, result:', result);
-      console.log('📱 Result type:', typeof result);
-      console.log('📱 Result canceled:', result?.canceled);
-      console.log('📱 Result assets length:', result?.assets?.length);
 
       if (!result.canceled && result.assets && result.assets.length > 0) {
         const video = result.assets[0];
-        console.log('📱 Video selected:', { uri: video.uri, duration: video.duration });
+        
+        // Generate thumbnail for the video
+        const thumbnailUri = await generateVideoThumbnail(video.uri);
+        
+        // Add user message with video thumbnail first
+        const userMessage = {
+          id: `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+          text: null,
+          sender: 'user',
+          timestamp: new Date(),
+          messageType: 'video',
+          hasVideo: true,
+          videoUri: video.uri,
+          videoThumbnail: thumbnailUri,
+        };
+        
+        setMessages(prev => [...prev, userMessage]);
+        await ChatHistoryManager.saveMessage(userId, userMessage);
+        
+        // Then process the video
         await processVideoUpload(video.uri, video.duration ? video.duration / 1000 : null);
-      } else {
-        console.log('📱 Gallery picker cancelled or no video selected');
       }
     } catch (error) {
-      console.error('❌ Error picking video:', error);
-      Alert.alert('Error', `Failed to select video from gallery: ${error.message}`);
+      Alert.alert('Error', 'Failed to select video from gallery');
     }
   };
 
   // Process video upload using real AWS integration
   const processVideoUpload = async (videoUri, videoDuration) => {
+    let messageInterval;
+    
     try {
-      const videoId = `chat_${Date.now()}`;
+      const videoId = `chat_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       
-      // Set current processing video with timeout protection
-      setCurrentVideoProcessing({
-        videoId,
-        stage: 'uploading',
-        progress: 0,
-      });
+      // Start processing with initial message
+      setIsProcessingVideo(true);
+      setProcessingMessage('Addressing the ball...');
       
-      // Auto-clear processing state after 5 minutes if stuck
-      setTimeout(() => {
-        setCurrentVideoProcessing(prev => {
-          if (prev && prev.videoId === videoId) {
-            console.log('⚠️ Auto-clearing stuck video processing after timeout');
-            return null;
-          }
-          return prev;
-        });
-      }, 300000); // 5 minutes
-
-      // Add video processing message
-      const processingMessage = {
-        id: `processing_${Date.now()}`,
-        sender: 'coach',
-        timestamp: new Date(),
-        messageType: 'video_processing',
-        videoId,
-        stage: 'uploading',
+      // Golf-themed processing messages
+      const golfMessages = [
+        'Addressing the ball...',
+        'Taking a practice swing...',
+        'Checking the wind...',
+        'Reading the lie...',
+        'Aligning the shot...',
+        'Measuring yardage...',
+        'Selecting the right club...',
+        'Checking grip pressure...',
+        'Finding the target line...',
+        'Taking dead aim...',
+        'Analyzing swing plane...',
+        'Studying tempo...',
+        'Reviewing impact position...',
+        'Calculating ball flight...',
+        'Replacing divots...'
+      ];
+      
+      let messageIndex = 0;
+      
+      // Update processing message function
+      const updateProcessingMessage = (newText) => {
+        setProcessingMessage(newText);
       };
-      setMessages(prev => [...prev, processingMessage]);
-      await ChatHistoryManager.saveMessage(userId, processingMessage);
+      
+      // Start message cycling
+      messageInterval = setInterval(() => {
+        messageIndex = (messageIndex + 1) % golfMessages.length;
+        updateProcessingMessage(golfMessages[messageIndex]);
+      }, 2000); // Change every 2 seconds
 
       // Step 1: Upload video and trigger analysis
       const uploadResult = await videoService.uploadAndAnalyze(
         videoUri, 
         videoDuration,
         (progress) => {
-          setCurrentVideoProcessing(prev => ({ 
-            ...prev, 
-            progress: progress * 0.3, // Upload is 30% of total
-            stage: 'uploading'
-          }));
+          // Update to upload-specific messages
+          const uploadMessages = [
+            'Teeing up your swing...',
+            'Loading into the cart...',
+            'Driving to the range...',
+            'Setting up on the tee box...'
+          ];
+          const msgIndex = Math.floor(progress * uploadMessages.length);
+          updateProcessingMessage(uploadMessages[Math.min(msgIndex, uploadMessages.length - 1)]);
         }
       );
       
-      console.log('✅ Upload complete, jobId:', uploadResult.jobId);
       
       // Step 2: Poll for analysis completion
-      setCurrentVideoProcessing(prev => ({ 
-        ...prev, 
-        stage: 'processing', 
-        progress: 30 
-      }));
       
       const analysisResult = await videoService.waitForAnalysisComplete(
         uploadResult.jobId,
         (progressInfo) => {
-          // Update progress from 30% to 100%
-          const analysisProgress = 30 + (progressInfo.progress * 70);
-          setCurrentVideoProcessing(prev => ({ 
-            ...prev, 
-            progress: analysisProgress,
-            stage: progressInfo.message?.includes('analyzing') ? 'analyzing' : 'processing'
-          }));
+          // Update to analysis-specific messages
+          const analysisMessages = [
+            'Reviewing your setup...',
+            'Analyzing swing plane...',
+            'Studying impact position...',
+            'Calculating ball flight...',
+            'Checking follow-through...',
+            'Finding improvement areas...',
+            'Preparing coaching tips...'
+          ];
+          const msgIndex = Math.floor((progressInfo.progress || 0) * analysisMessages.length);
+          updateProcessingMessage(analysisMessages[Math.min(msgIndex, analysisMessages.length - 1)]);
         }
       );
       
-      console.log('✅ Analysis complete:', analysisResult);
       
       // Step 3: Process analysis results
       if (analysisResult.status === 'completed' && analysisResult.analysis) {
@@ -237,29 +355,23 @@ const ChatScreen = ({ navigation, route }) => {
           : analysisResult.analysis;
         
         const isFirstAnalysis = conversationSummary?.analysisCount === 0;
+        // ChatGPT-style: Simple AI response message 
         const analysisMessage = {
-          id: `analysis_${Date.now()}`,
-          sender: 'coach',
+          id: `analysis_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+          sender: 'assistant', // ChatGPT-style sender
+          text: aiData.coaching_response || 'I had trouble analyzing that swing. Please try uploading another video.',
           timestamp: new Date(),
-          messageType: 'analysis_result',
-          videoId,
-          jobId: uploadResult.jobId,
-          analysisData: {
-            jobId: uploadResult.jobId,
-            overallScore: aiData.overall_score || 7.5,
-            strengths: aiData.strengths || [],
-            improvements: aiData.areas_for_improvement || [],
-            keyInsights: aiData.key_insights || [],
-            coachingResponse: aiData.coaching_response,
-            practiceRecommendations: aiData.practice_recommendations || [],
-            rawAnalysis: aiData
-          },
-          isFirstAnalysis,
+          messageType: 'response',
+          isProcessing: false,
         };
         
+        // Clear the message interval and add analysis message
+        clearInterval(messageInterval);
+        setProcessingMessage('');
+        
         setMessages(prev => [...prev, analysisMessage]);
+        
         await ChatHistoryManager.saveMessage(userId, analysisMessage);
-        await ChatHistoryManager.addVideoReference(userId, uploadResult.jobId, analysisMessage.analysisData);
         
         // Update conversation summary
         if (conversationSummary) {
@@ -270,67 +382,40 @@ const ChatScreen = ({ navigation, route }) => {
           });
         }
         
-        // Clear processing state
-        setCurrentVideoProcessing(null);
-        
-        // Show celebration for first analysis
-        if (isFirstAnalysis) {
-          setCelebrationData(analysisMessage.analysisData);
-          setTimeout(() => {
-            setShowCelebration(true);
-          }, 500);
-        }
+        setIsProcessingVideo(false);
+        setProcessingMessage(''); // Clear processing message
       } else {
         throw new Error('Analysis did not complete successfully');
       }
 
     } catch (error) {
       console.error('❌ Video processing failed:', error);
-      setCurrentVideoProcessing(null);
       
-      // More specific error messages
-      let errorMessage = 'Sorry, there was an issue processing your video. Please try again.';
-      if (error.message.includes('timeout')) {
-        errorMessage = 'Analysis is taking longer than expected. Please try again or check your connection.';
-      } else if (error.message.includes('network')) {
-        errorMessage = 'Network error. Please check your connection and try again.';
-      }
+      // Clear any running intervals
+      if (messageInterval) clearInterval(messageInterval);
       
-      addSystemMessage(errorMessage, 'error');
+      // Clear processing and show error message
+      setProcessingMessage('');
+      
+      const errorMessage = {
+        id: `error_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        text: 'Sorry, there was an issue processing your video. Please try again.',
+        sender: 'assistant',
+        timestamp: new Date(),
+        messageType: 'error',
+      };
+      
+      setMessages(prev => [...prev, errorMessage]);
+      
+      await ChatHistoryManager.saveMessage(userId, errorMessage);
+    } finally {
+      setIsProcessingVideo(false); // Reset processing flag
+      setProcessingMessage(''); // Clear processing message
     }
   };
 
 
-  // Add system messages
-  const addSystemMessage = async (text, type = 'system') => {
-    const systemMessage = {
-      id: `system_${Date.now()}`,
-      text,
-      sender: 'coach',
-      timestamp: new Date(),
-      messageType: type,
-    };
-    
-    setMessages(prev => [...prev, systemMessage]);
-    await ChatHistoryManager.saveMessage(userId, systemMessage);
-  };
 
-  // Use pure AI response - no canned phrases
-  const extractAIResponse = (analysisResult) => {
-    // The AI analysis already contains the natural coaching response
-    // Just extract it directly without any modifications
-    if (analysisResult?.coaching_response) {
-      return analysisResult.coaching_response;
-    }
-    
-    // If no coaching response, use the ai_analysis field
-    if (analysisResult?.ai_analysis?.coaching_response) {
-      return analysisResult.ai_analysis.coaching_response;
-    }
-    
-    // Last fallback - only for connection issues
-    return "I had trouble analyzing that swing. Please try uploading another video.";
-  };
 
   // Send message with real AI integration
   const sendMessage = async () => {
@@ -368,7 +453,7 @@ const ChatScreen = ({ navigation, route }) => {
       );
       
       const coachResponse = {
-        id: `coach_${Date.now()}`,
+        id: `coach_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
         text: result.response || 'I had trouble processing your message. Please try again.',
         sender: 'coach',
         timestamp: new Date(),
@@ -385,7 +470,7 @@ const ChatScreen = ({ navigation, route }) => {
       
       // Honest fallback - don't promise what we can't deliver
       const fallbackResponse = {
-        id: `coach_${Date.now()}`,
+        id: `coach_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
         text: 'I\'m having trouble connecting right now. Please try again in a few minutes.',
         sender: 'coach',
         timestamp: new Date(),
@@ -403,15 +488,15 @@ const ChatScreen = ({ navigation, route }) => {
   // ChatGPT-style: No onboarding actions needed
 
   // Render message component
-  // ChatGPT-style minimal header
+  // Option 3 header with status indicator
   const renderHeader = () => (
     <View style={styles.header}>
-      <Text style={styles.title}>Golf Coach</Text>
+      <Text style={styles.title}>Your Coach</Text>
+      <View style={styles.statusIndicator} />
     </View>
   );
 
-  // Message rendering with coaching presence
-  // ChatGPT-style simple message rendering - only user and assistant
+  // Option 3 message rendering with coaching design
   const renderMessage = ({ item }) => {
     if (item.sender === 'user') {
       return (
@@ -424,7 +509,11 @@ const ChatScreen = ({ navigation, route }) => {
               </View>
             </TouchableOpacity>
           )}
-          {item.text && <Text style={styles.userText}>{item.text}</Text>}
+          {item.text && (
+            <View style={styles.userMessageBubble}>
+              <Text style={styles.userText}>{item.text}</Text>
+            </View>
+          )}
         </View>
       );
     }
@@ -432,58 +521,41 @@ const ChatScreen = ({ navigation, route }) => {
     // Assistant message (coach) - simple loading state
     if (item.isLoading) {
       return (
-        <View style={styles.assistantMessageContainer}>
-          <Text style={styles.assistantText}>Analyzing your swing...</Text>
+        <View style={styles.coachMessageContainer}>
+          <Text style={styles.coachText}>Analyzing your swing...</Text>
         </View>
       );
     }
     
-    // Normal assistant message
+    // Coach message with Option 3 design
     return (
-      <View style={styles.assistantMessageContainer}>
-        <Text style={styles.assistantText}>{item.text}</Text>
+      <View style={styles.coachMessageContainer}>
+        {renderMarkdownText(item.text)}
       </View>
     );
   };
 
-  // Get processing message text
-  const getProcessingMessage = (stage) => {
-    switch (stage) {
-      case 'uploading':
-        return 'Uploading your swing video to the cloud...';
-      case 'processing':
-        return 'Processing video and preparing for analysis...';
-      case 'extracting':
-        return 'Extracting key swing positions (P1-P10)...';
-      case 'analyzing':
-        return 'AI coach is analyzing your technique...';
-      case 'complete':
-        return 'Analysis complete! Preparing your coaching insights...';
-      default:
-        return 'Processing your swing video...';
-    }
-  };
 
-  // ChatGPT-style input with camera button
+  // Option 3 input section with purple accents
   const renderInputSection = () => (
     <View style={styles.inputContainer}>
       <TouchableOpacity style={styles.cameraButton} onPress={handleVideoUpload}>
-        <Ionicons name="camera" size={20} color="#666" />
+        <Ionicons name="camera" size={20} color="#805AD5" />
       </TouchableOpacity>
       <TextInput
         style={styles.input}
-        placeholder="Message Golf Coach..."
+        placeholder="Ask your coach anything..."
         value={inputText}
         onChangeText={setInputText}
         multiline
         maxHeight={100}
       />
       <TouchableOpacity 
-        style={styles.sendButton} 
+        style={[styles.sendButton, inputText.trim() && !isLoading && styles.sendButtonActive]} 
         onPress={sendMessage}
         disabled={!inputText.trim() || isLoading}
       >
-        <Ionicons name="send" size={18} color={inputText.trim() && !isLoading ? "#000" : "#ccc"} />
+        <Ionicons name="send" size={18} color={inputText.trim() && !isLoading ? "white" : "#ccc"} />
       </TouchableOpacity>
     </View>
   );
@@ -513,12 +585,18 @@ const ChatScreen = ({ navigation, route }) => {
           onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
           showsVerticalScrollIndicator={false}
         />
-        )}
         
         {isLoading && (
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
             <ActivityIndicator size="small" color="#000" />
             <Text style={{ fontSize: 14, color: '#666', fontStyle: 'italic', marginLeft: 8 }}>Coach is thinking...</Text>
+          </View>
+        )}
+        
+        {isProcessingVideo && processingMessage && (
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+            <ActivityIndicator size="small" color="#805AD5" />
+            <Text style={{ fontSize: 14, color: '#666', fontStyle: 'italic', marginLeft: 8 }}>{processingMessage}</Text>
           </View>
         )}
         
@@ -528,66 +606,85 @@ const ChatScreen = ({ navigation, route }) => {
   );
 };
 
-// ChatGPT-inspired minimal styling
+// Option 3 AI Coach Companion styling
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#FFFFFF', // Pure white like ChatGPT
+    backgroundColor: '#F7FAFC', // Light blue-gray background
   },
   
   header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     padding: 16,
     borderBottomWidth: 1,
-    borderBottomColor: '#E5E5E5',
+    borderBottomColor: '#E2E8F0',
     backgroundColor: '#FFFFFF',
   },
   
   title: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#000000',
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#1B4332', // Primary green
+  },
+  
+  statusIndicator: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#805AD5', // Purple accent
   },
   
   messagesList: {
     flex: 1,
     paddingHorizontal: 16,
+    paddingTop: 8,
   },
   
-  // User messages (right-aligned, simple)
+  // User messages (right-aligned, green background)
   userMessageContainer: {
     alignSelf: 'flex-end',
-    maxWidth: '80%',
+    maxWidth: '85%',
     marginBottom: 16,
     marginTop: 8,
+  },
+  
+  userMessageBubble: {
+    backgroundColor: '#1B4332', // Primary green
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    borderRadius: 16,
   },
   
   userText: {
-    fontSize: 16,
-    color: '#000000',
-    lineHeight: 22,
+    fontSize: 17,
+    color: '#FFFFFF',
+    lineHeight: 24,
   },
   
-  // Assistant messages (left-aligned, simple)  
-  assistantMessageContainer: {
-    alignSelf: 'flex-start',
-    maxWidth: '80%',
-    marginBottom: 16,
-    marginTop: 8,
+  // Coach messages (full width like Claude/ChatGPT - no container)
+  coachMessageContainer: {
+    width: '100%',
+    marginBottom: 12,
+    marginTop: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
   },
   
-  assistantText: {
-    fontSize: 16,
-    color: '#000000',
-    lineHeight: 22,
+  coachText: {
+    fontSize: 17,
+    color: '#2D3748', // Dark gray text
+    lineHeight: 24,
   },
   
   // Video thumbnail in user messages
   videoThumbnail: {
     width: 200,
     height: 112,
-    borderRadius: 8,
+    borderRadius: 12,
     overflow: 'hidden',
-    marginBottom: 8,
+    marginBottom: 12,
     position: 'relative',
   },
   
@@ -610,20 +707,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   
-  // Simple input area
+  // Input area with purple accents
   inputContainer: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-end',
     padding: 16,
     borderTopWidth: 1,
-    borderTopColor: '#E5E5E5',
+    borderTopColor: '#E2E8F0',
     backgroundColor: '#FFFFFF',
   },
   
   cameraButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(128, 90, 213, 0.2)', // Purple with 20% opacity
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 12,
@@ -632,21 +730,27 @@ const styles = StyleSheet.create({
   input: {
     flex: 1,
     fontSize: 16,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderWidth: 1,
-    borderColor: '#E5E5E5',
-    borderRadius: 20,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderWidth: 2,
+    borderColor: '#E2E8F0',
+    borderRadius: 24,
     maxHeight: 100,
+    color: '#2D3748',
   },
   
   sendButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     justifyContent: 'center',
     alignItems: 'center',
     marginLeft: 12,
+    backgroundColor: 'transparent',
+  },
+  
+  sendButtonActive: {
+    backgroundColor: '#805AD5', // Purple accent
   },
 });
 

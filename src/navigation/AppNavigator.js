@@ -32,7 +32,7 @@ function MainTabs() {
       screenOptions={({ route }) => ({
         tabBarIcon: ({ focused, color, size }) => {
           let iconName;
-          let iconSize = focused ? 28 : 24; // Larger icons when focused
+          let iconSize = focused ? 26 : 24; // Option 3 sizing - slightly larger when focused
           
           if (route.name === 'Chat') {
             iconName = 'chatbubble';
@@ -45,21 +45,27 @@ function MainTabs() {
           }
           
           return (
-            <View style={{ alignItems: 'center' }}>
+            <View style={{ 
+              alignItems: 'center',
+              paddingHorizontal: spacing.sm,
+              paddingVertical: spacing.xs,
+              borderRadius: 8,
+              backgroundColor: focused ? colors.coachAccent + '10' : 'transparent', // Option 3 background tint
+            }}>
               <Ionicons name={iconName} size={iconSize} color={color} />
-              {focused && route.name === 'Chat' && (
+              {focused && (
                 <View style={{
                   width: 4,
                   height: 4,
                   borderRadius: 2,
-                  backgroundColor: colors.coachAccent,
+                  backgroundColor: colors.coachAccent, // Purple dot for all focused tabs
                   marginTop: 2,
                 }} />
               )}
             </View>
           );
         },
-        tabBarActiveTintColor: colors.primary,
+        tabBarActiveTintColor: colors.coachAccent, // Option 3 uses purple accent
         tabBarInactiveTintColor: colors.textLight,
         tabBarStyle: {
           backgroundColor: colors.surface,

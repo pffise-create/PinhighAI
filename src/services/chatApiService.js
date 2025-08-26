@@ -14,11 +14,18 @@ class ChatApiService {
     while (attempts <= this.maxRetries) {
       try {
         console.log(`💬 Sending message to coach API (attempt ${attempts + 1}/${this.maxRetries + 1})`);
+        console.log('💬 Request payload:', {
+          message: message,
+          userId: userId,
+          conversationHistoryLength: conversationHistory.length,
+          conversationHistory: conversationHistory,
+          coachingContext: coachingContext
+        });
         
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
 
-        const response = await fetch(`${API_BASE_URL}/api/chat/coaching`, {
+        const response = await fetch(`${API_BASE_URL}/api/chat`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -26,8 +33,9 @@ class ChatApiService {
           body: JSON.stringify({
             message: message,
             userId: userId,
-            messageType: 'general_coaching',
-            conversationHistory: conversationHistory.slice(-10), // Last 10 messages for context
+            context: null, // No specific swing context for general chat
+            jobId: null, // No specific video analysis for general chat
+            conversationHistory: conversationHistory.slice(-10), // Already filtered by formatConversationHistory
             coachingContext: {
               sessionMetadata: coachingContext.sessionMetadata || {},
               hasVideoUploads: coachingContext.hasVideoUploads || false,
@@ -59,6 +67,13 @@ class ChatApiService {
       } catch (error) {
         attempts++;
         console.error(`❌ Chat API attempt ${attempts} failed:`, error.message);
+        console.error('Full error:', error);
+        console.error('Request was:', {
+          url: `${API_BASE_URL}/api/chat`,
+          message: message,
+          userId: userId,
+          conversationHistoryLength: conversationHistory.length
+        });
 
         // If this was the last attempt, return fallback
         if (attempts > this.maxRetries) {
@@ -102,10 +117,11 @@ class ChatApiService {
     try {
       console.log('🔍 Testing chat API connection...');
       
-      const response = await fetch(`${API_BASE_URL}/api/chat/coaching`, {
+      const response = await fetch(`${API_BASE_URL}/api/chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'Authorization': 'Bearer guest-token', // Dummy token for guest users
         },
         body: JSON.stringify({
           message: 'ping',
@@ -133,10 +149,12 @@ class ChatApiService {
   formatConversationHistory(messages) {
     return messages
       .filter(msg => msg.messageType !== 'video_processing' && msg.messageType !== 'system')
+      .filter(msg => msg.sender === 'user') // Only user messages - Lambda crashes on assistant messages
+      .filter(msg => msg.text && msg.text.trim()) // Filter out null/empty content - Lambda crashes on these
       .slice(-10) // Last 10 relevant messages
       .map(msg => ({
-        role: msg.sender === 'user' ? 'user' : 'assistant',
-        content: msg.text
+        role: 'user',
+        content: msg.text.trim()
       }));
   }
 
