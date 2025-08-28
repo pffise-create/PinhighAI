@@ -31,6 +31,7 @@ Current navigation structure (AppNavigator.js)
 AWS backend architecture (aianalysis_lambda_code.js, golf_coach_tech_stack.md)
 Theme and styling system (theme.js)
 Main screens (ChatScreen.js, CoachingSummaryScreen.js, VideosScreen.js)
+Explore AWS architecture via CLI
 
 After reviewing, confirm you understand the current app structure before I give you the specific task.
 After implementing my requested changes, please commit with a descriptive message explaining what was implemented.

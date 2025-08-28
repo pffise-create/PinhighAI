@@ -961,7 +961,7 @@ async function analyzeSwingWithGPT4o(frameData, swingData) {
       coachingHistory = await fetchUserCoachingHistory(userId, analysisId);
     }
     
-    const systemPrompt = buildContextAwareGolfCoachingPrompt(frameData, coachingHistory);
+    const systemPrompt = await buildContextAwareGolfCoachingPrompt(frameData, coachingHistory);
     
     // Select key frames for analysis (cost optimization)
     const keyFrames = selectKeyFramesForAnalysis(frameData.frame_urls);
@@ -993,11 +993,8 @@ async function analyzeSwingWithGPT4o(frameData, swingData) {
     
     console.log(`Successfully converted ${base64Images.length} images to base64`);
     
-    // Build message content with base64 images
-    const userPromptText = 'Please analyze this golf swing sequence and provide coaching feedback following the guidelines in your system prompt.';
-    const messageContent = [
-      { type: "text", text: userPromptText }
-    ];
+    // Build message content with base64 images only - no dummy text
+    const messageContent = [];
     
     // Add each base64 image
     base64Images.forEach(frame => {
@@ -1010,13 +1007,10 @@ async function analyzeSwingWithGPT4o(frameData, swingData) {
       });
     });
     
-    // Use the actual coaching system prompt
-    const systemPromptText = systemPrompt;
-    
     const messages = [
       {
         role: "system",
-        content: systemPromptText
+        content: systemPrompt
       },
       {
         role: "user",
@@ -1024,9 +1018,9 @@ async function analyzeSwingWithGPT4o(frameData, swingData) {
       }
     ];
     
-    // Token estimation for logging (no blocking)
-    const systemTokens = estimateTokenCount(systemPromptText);
-    const userTokens = estimateTokenCount(userPromptText);
+    // Token estimation for logging (no blocking) 
+    const systemTokens = estimateTokenCount(systemPrompt);
+    const userTokens = 100; // Estimate for images
     const totalEstimatedTokens = systemTokens + userTokens + 600; // +600 for response buffer
     
     console.log(`Estimated token usage: ${totalEstimatedTokens} (system: ${systemTokens}, user: ${userTokens}) - no blocking applied`);
@@ -1044,6 +1038,25 @@ async function analyzeSwingWithGPT4o(frameData, swingData) {
     });
     
     console.log('Making enhanced GPT-4o API call with cost protection...');
+    
+    // DEBUG: Store debug info in DynamoDB for easy access
+    try {
+      const dynamodb = getDynamoClient();
+      await dynamodb.send(new PutCommand({
+        TableName: process.env.DYNAMODB_TABLE || 'golf-coach-analyses',
+        Item: {
+          analysis_id: 'debug-openai-request-' + Date.now(),
+          debug_system_prompt: systemPrompt,
+          debug_message_content: messageContent,
+          debug_full_messages: messages,
+          created_at: new Date().toISOString()
+        }
+      }));
+    } catch (debugError) {
+      console.log('Debug storage failed:', debugError);
+    }
+    
+    console.log('=== DEBUG: EXACT OPENAI REQUEST STORED IN DYNAMODB ===');
     
     const response = await makeHttpsRequest({
       hostname: 'api.openai.com',
@@ -1145,15 +1158,17 @@ async function buildContextAwarePrompt(frameData, swingData, userId) {
 }
 
 // Redirect to unified system
-function buildContextAwareGolfCoachingPrompt(frameData, coachingHistory = null) {
+async function buildContextAwareGolfCoachingPrompt(frameData, coachingHistory = null) {
   const userId = frameData && frameData.user_context && frameData.user_context.userId ? 
     frameData.user_context.userId : 'guest';
     
-  return buildUnifiedCoachingPrompt({
+  const result = await buildUnifiedCoachingPrompt({
     userId: userId,
     messageType: 'video_analysis',
     frameData: frameData
   });
+  
+  return result.systemPrompt; // Return just the system prompt string
 }
 
 // Helper function to extract focus areas from coaching history
@@ -1213,7 +1228,37 @@ async function buildUnifiedCoachingPrompt(options) {
 
   console.log(`Building unified prompt: ${messageType}, userId: ${userId}, video: ${!!frameData}, message: ${!!userMessage}, history: ${history.length}`);
 
-  const systemPrompt = `You are a friendly, experienced golf coach having a natural conversation with a golfer. You're their golf buddy and coach - use playful metaphors and emojis to make swing advice feel relatable. Just don't overdo it. The goal is to be fun and playful, not cheesy. Give natural, conversational coaching advice.`;
+  const systemPrompt = `Role/Persona:
+
+You are a supportive, Tour-level golf coach who communicates like a knowledgeable practice partner. You analyze swings (from user descriptions, photos, or video frames) and give feedback that's both technically sound and easy to apply.
+
+Style & Priorities:
+
+    Be conversational and encouraging, not robotic.
+
+    Always explain what you see (or what the user describes), why it matters, and what they can do about it.
+
+    Use both mechanics and feels/analogies ("throw your triceps," "slap the ball with the face") so the player has something actionable.
+
+    Vary the structure: sometimes step-by-step, sometimes casual and playful, depending on context.
+
+    Normalize misses as feedback, never shame bad swings.
+
+Golden Rules:
+
+    Don't overload: focus on one priority at a time.
+
+    Adapt to the player's build, tendencies, and goals.
+
+    Invite the player to test feels/drills and come back with feedback so you can refine.
+
+Example Behavior
+
+    If the user uploads a photo: "Your arms are a bit narrow in this frame, which is why you're getting stuck. Try feeling your triceps push away from your chest through impact."
+
+    If the user describes a miss: "Pulls usually mean your chest is outracing your arms. Feel your trail elbow and clubhead 'toss' toward the ball as your chest stays quiet for a beat."
+
+    If the user asks about pros: "Scottie looks like he's sweeping the whole trail arm toward the ball — for you, that same feel would keep your arms in front instead of collapsing."`;
 
   const context = await buildUnifiedContext({ userId, frameData, conversationHistory: history });
   const userPrompt = buildContextualUserPrompt(context, userMessage);

@@ -1,8 +1,95 @@
 # Golf Coach AI - Debugging Lessons Learned
 
-**Date:** August 25, 2025  
+**Date:** August 26, 2025  
 **Purpose:** Document critical debugging lessons to help future developers identify and resolve common issues  
-**Context:** Major stability fixes across video pipeline, chat API, and mobile app reliability
+**Context:** Root cause discovery and fix for structured AI response bug + unified prompt system
+
+---
+
+## 🚨 MAJOR DEBUGGING BREAKTHROUGH (August 26)
+
+### **📍 THE SMOKING GUN DISCOVERY**
+
+**❌ SYMPTOM:** AI responses always came back structured ("1. Setup, 2. Backswing") despite removing all structured prompts  
+**🔍 ROOT CAUSE:** Source code vs deployed code mismatch - we were editing one file but a different file was actually running on AWS  
+**⚡ LESSON:** Always verify which code is actually deployed, not just which code you're editing
+
+**Critical Files Mismatch:**
+```bash
+# What we were editing:
+AWS/aianalysis_lambda_code.js ← Source file ✅
+
+# What was actually deployed and running:  
+AWS/lambda-deployment/aianalysis_lambda_code.js ← Deployed file ❌
+```
+
+**The deployed file contained OLD structured prompts:**
+```javascript
+// DEPLOYED VERSION - CAUSING STRUCTURED RESPONSES:
+const prompt = `Format your response as JSON with the following structure:
+{
+  "coaching_response": "Detailed coaching feedback",
+  "symptoms_detected": [...],
+  "root_cause": "Main issue", 
+  "confidence_score": 85,
+  "practice_recommendations": [...]
+}`;
+```
+
+**🔧 PREVENTION:**
+- Always check which files are in deployment folders vs source folders
+- Use git to track deployment artifacts separately from source code  
+- Add deployment verification: log a unique identifier from source to confirm deployment
+- Consider CI/CD to eliminate manual file copying
+
+---
+
+### **📍 UNIFIED SYSTEM ANTI-PATTERN**
+
+**❌ SYMPTOM:** 5 different prompt-building functions across codebase with duplicate logic  
+**🔍 ROOT CAUSE:** Feature development without consolidation - each fix added another function instead of refactoring  
+**⚡ LESSON:** When you see duplicate code patterns, stop and consolidate before adding more
+
+**Duplicative Functions Found:**
+```javascript
+buildPromptForChat()
+buildPromptForVideo()  
+buildContextualPrompt()
+buildCoachingPrompt()
+buildSystemPrompt()
+// All doing similar things with slight variations
+```
+
+**🔧 PREVENTION:**
+- Refactor duplicates immediately when you see them
+- Use single source of truth for all prompt logic
+- Write functions that accept options rather than creating new functions
+
+---
+
+### **📍 DUMMY DATA ASSUMPTIONS**
+
+**❌ SYMPTOM:** Code making assumptions about user types and providing fallback dummy data  
+**🔍 ROOT CAUSE:** Developer assumptions instead of letting AI handle context intelligently  
+**⚡ LESSON:** Let AI be smart with raw context - don't force structure or make assumptions
+
+**Example Issues Found:**
+```javascript
+// BAD - Making assumptions:
+conversationHistory = []  // What if there IS conversation history?
+hasSwingData: false       // What if user DOES have swing data?
+if (userId !== 'guest')   // Assumes only guests lack data
+
+// GOOD - Handle reality:
+const history = conversationHistory || [];
+const context = await getActualUserContext(userId);
+// Pass raw context to AI, let it decide relevance
+```
+
+**🔧 PREVENTION:**
+- Query for actual data instead of assuming
+- Remove all hardcoded default values that could override real data
+- Let AI handle context intelligence rather than pre-processing
 
 ---
 
@@ -506,6 +593,14 @@ class CircuitBreaker {
 ---
 
 ## 📋 DEBUGGING CHECKLIST FOR FUTURE ISSUES
+
+### **When AI Responses Don't Match Expected Behavior:**
+- [ ] **CRITICAL: Verify deployed code matches source code** - Check deployment folder vs source files
+- [ ] Look for duplicate prompt functions and consolidate them
+- [ ] Remove all structured formatting requirements (JSON, numbered lists) 
+- [ ] Check if code makes assumptions about user data instead of querying actual data
+- [ ] Verify AI gets raw context, not pre-processed assumptions
+- [ ] Test with actual user data, not placeholder/dummy values
 
 ### **When Chat API Fails:**
 - [ ] Check specific HTTP status code (not just "error")

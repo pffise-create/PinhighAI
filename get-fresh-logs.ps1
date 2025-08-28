@@ -1,0 +1,1 @@
+aws logs get-log-events --log-group-name "/aws/lambda/golf-ai-analysis" --log-stream-name "2025/08/26/[$LATEST]00aa6c21808a4e30b9088570957df968" --region us-east-1 --output json

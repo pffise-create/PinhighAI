@@ -1,0 +1,17 @@
+{
+  "Records": [
+    {
+      "eventName": "MODIFY",
+      "dynamodb": {
+        "NewImage": {
+          "analysis_id": {"S": "test-stream-check"},
+          "status": {"S": "COMPLETED"},
+          "ai_analysis_completed": {"BOOL": false},
+          "user_id": {"S": "guest-user"},
+          "s3_key": {"S": "test-video.mov"},
+          "bucket_name": {"S": "golf-coach-videos-1753203601"}
+        }
+      }
+    }
+  ]
+}

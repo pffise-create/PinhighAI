@@ -1,0 +1,4 @@
+{
+  "httpMethod": "POST",
+  "body": "{\"message\": \"debug-prompt-test\", \"userId\": \"guest\", \"context\": null, \"jobId\": null}"
+}
