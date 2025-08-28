@@ -22,6 +22,8 @@ import chatApiService from '../services/chatApiService';
 import * as ImagePicker from 'expo-image-picker';
 import { Video } from 'expo-av';
 import * as VideoThumbnails from 'expo-video-thumbnails';
+import Markdown from 'react-native-markdown-display';
+import { colors, typography, spacing, borderRadius } from '../utils/theme';
 
 const ChatScreen = ({ navigation, route }) => {
   const { user, isAuthenticated } = useAuth();
@@ -37,52 +39,80 @@ const ChatScreen = ({ navigation, route }) => {
   
   const userId = user?.email || 'guest';
 
-  // Simple markdown renderer for coach messages
+  // Markdown styles to match golf coaching app theme
+  const markdownStyles = {
+    // Basic text styling
+    body: {
+      fontSize: typography.fontSizes.base,
+      color: colors.text,
+      lineHeight: typography.lineHeights.relaxed * typography.fontSizes.base,
+      fontFamily: typography.fontFamily,
+    },
+    // Headers
+    heading1: {
+      fontSize: typography.fontSizes['2xl'],
+      fontWeight: typography.fontWeights.bold,
+      color: colors.primary,
+      marginBottom: spacing.sm,
+      marginTop: spacing.base,
+    },
+    heading2: {
+      fontSize: typography.fontSizes.xl,
+      fontWeight: typography.fontWeights.semibold,
+      color: colors.primary,
+      marginBottom: spacing.xs,
+      marginTop: spacing.sm,
+    },
+    heading3: {
+      fontSize: typography.fontSizes.lg,
+      fontWeight: typography.fontWeights.semibold,
+      color: colors.coachAccent,
+      marginBottom: spacing.xs,
+      marginTop: spacing.sm,
+    },
+    // Text formatting
+    strong: {
+      fontWeight: typography.fontWeights.bold,
+      color: colors.coachAccent,
+    },
+    em: {
+      fontStyle: 'italic',
+      color: colors.primary,
+    },
+    // Lists
+    bullet_list: {
+      marginBottom: spacing.sm,
+    },
+    ordered_list: {
+      marginBottom: spacing.sm,
+    },
+    list_item: {
+      marginBottom: spacing.xs,
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+    },
+    bullet_list_icon: {
+      color: colors.coachAccent,
+      fontSize: typography.fontSizes.base,
+      marginRight: spacing.xs,
+      marginTop: 2,
+    },
+    // Paragraphs
+    paragraph: {
+      marginBottom: spacing.sm,
+      fontSize: typography.fontSizes.base,
+      lineHeight: typography.lineHeights.relaxed * typography.fontSizes.base,
+    },
+  };
+
+  // Enhanced markdown renderer for coach messages
   const renderMarkdownText = (text) => {
     if (!text) return null;
     
-    // First replace dashes with bullets
-    let processedText = text.replace(/^- /gm, '• ');
-    
-    const parts = [];
-    let lastIndex = 0;
-    const boldRegex = /\*\*(.*?)\*\*/g;
-    let match;
-    
-    while ((match = boldRegex.exec(processedText)) !== null) {
-      // Add text before bold
-      if (match.index > lastIndex) {
-        parts.push(processedText.substring(lastIndex, match.index));
-      }
-      
-      // Add bold text
-      parts.push({
-        text: match[1],
-        bold: true
-      });
-      
-      lastIndex = match.index + match[0].length;
-    }
-    
-    // Add remaining text
-    if (lastIndex < processedText.length) {
-      parts.push(processedText.substring(lastIndex));
-    }
-    
     return (
-      <Text style={styles.coachText}>
-        {parts.map((part, index) => {
-          if (typeof part === 'string') {
-            return part;
-          } else {
-            return (
-              <Text key={index} style={[styles.coachText, { fontWeight: 'bold' }]}>
-                {part.text}
-              </Text>
-            );
-          }
-        })}
-      </Text>
+      <Markdown style={markdownStyles}>
+        {text}
+      </Markdown>
     );
   };
 
