@@ -27,7 +27,9 @@ const CameraScreen = ({ navigation }) => {
         console.log('Starting recording...');
         setIsRecording(true);
         
-        const video = await cameraRef.current.recordAsync();
+        const video = await cameraRef.current.recordAsync({
+          maxDuration: 5000, // 5 seconds limit for cost control
+        });
         
         console.log('Recording completed:', video);
         setIsRecording(false);

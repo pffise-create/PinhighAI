@@ -708,7 +708,7 @@ async function triggerFrameExtraction(swingData) {
     };
     
     const invokeCommand = new InvokeCommand({
-      FunctionName: 'golf-coach-frame-extractor-v2', // Use the working Docker version
+      FunctionName: 'golf-coach-frame-extractor', // Use Python version with 0.1s intervals
       InvocationType: 'Event', // Asynchronous invocation
       Payload: JSON.stringify(frameExtractionPayload)
     });
@@ -963,12 +963,18 @@ async function analyzeSwingWithGPT4o(frameData, swingData) {
     
     const systemPrompt = await buildContextAwareGolfCoachingPrompt(frameData, coachingHistory);
     
-    // Select key frames for analysis (cost optimization)
-    const keyFrames = selectKeyFramesForAnalysis(frameData.frame_urls);
+    // Use ALL frames for analysis (0.1s intervals = better swing detection)
+    const allFrameUrls = frameData.frame_urls || {};
+    const keyFrames = Object.keys(allFrameUrls).sort().map(frameKey => ({
+      phase: frameKey,
+      url: allFrameUrls[frameKey]
+    }));
     
     if (keyFrames.length === 0) {
       throw new Error('No valid frame URLs found for analysis');
     }
+    
+    console.log(`Using ALL ${keyFrames.length} frames for better swing position detection (0.1s intervals)`);
     
     console.log(`Converting ${keyFrames.length} P1-P10 frames to base64 with compression...`);
     
@@ -993,10 +999,15 @@ async function analyzeSwingWithGPT4o(frameData, swingData) {
     
     console.log(`Successfully converted ${base64Images.length} images to base64`);
     
-    // Build message content with base64 images only - no dummy text
-    const messageContent = [];
+    // Build message content with analysis request + all frames
+    const messageContent = [
+      {
+        type: "text",
+        text: `Here are ${base64Images.length} frames from a golf swing, captured every 0.1 seconds. From these, select whichever frames are most relevant for analysis and coaching. Focus on what will help this golfer improve - respond in whatever format is most helpful for their development.`
+      }
+    ];
     
-    // Add each base64 image
+    // Add each base64 image (unlabeled)
     base64Images.forEach(frame => {
       messageContent.push({
         type: "image_url",

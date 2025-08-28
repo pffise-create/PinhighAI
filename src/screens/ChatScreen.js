@@ -257,8 +257,18 @@ const ChatScreen = ({ navigation, route }) => {
         setMessages(prev => [...prev, userMessage]);
         await ChatHistoryManager.saveMessage(userId, userMessage);
         
+        // Check video duration limit (5 seconds)
+        const durationInSeconds = video.duration ? video.duration / 1000 : 0;
+        if (durationInSeconds > 5) {
+          Alert.alert(
+            'Video Length Limit', 
+            `Please select a video 5 seconds or shorter (${durationInSeconds.toFixed(1)}s selected).`
+          );
+          return;
+        }
+        
         // Then process the video
-        await processVideoUpload(video.uri, video.duration ? video.duration / 1000 : null);
+        await processVideoUpload(video.uri, durationInSeconds);
       }
     } catch (error) {
       Alert.alert('Error', 'Failed to select video from gallery');
