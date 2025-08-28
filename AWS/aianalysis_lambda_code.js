@@ -1003,7 +1003,9 @@ async function analyzeSwingWithGPT4o(frameData, swingData) {
     const messageContent = [
       {
         type: "text",
-        text: `Here are ${base64Images.length} frames from a golf swing, captured every 0.1 seconds. From these, select whichever frames are most relevant for analysis and coaching. Focus on what will help this golfer improve - respond in whatever format is most helpful for their development.`
+        text: `Here are ${base64Images.length} frames from a golf swing, captured every 0.1 seconds. From these, select whichever frames are most relevant for analysis and coaching. Focus on what will help this golfer improve - respond in whatever format is most helpful for their development. 
+
+Also, please mention what color shirt and shorts the golfer is wearing to confirm the frames are visible.`
       }
     ];
     
