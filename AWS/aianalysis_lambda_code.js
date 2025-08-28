@@ -1289,6 +1289,7 @@ FORMATTING FOR CLARITY:
 - Use *italics* for feels/sensations ("*feel like you're stepping into a throw*")
 - Lists for drills when helpful, but keep conversational in casual chat
 - Keep paragraphs short for mobile readability
+- Use emojis naturally to enhance communication, but don't overdo it
 
 RESPONSE STRUCTURE (COACHING MODE ONLY):
 When they're asking for swing coaching, use this structure:
