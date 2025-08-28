@@ -1280,7 +1280,38 @@ Always coach their actual swing video, never give generic golf advice. Be their 
   const context = await buildUnifiedContext({ userId, frameData, conversationHistory: history });
   const userPrompt = buildContextualUserPrompt(context, userMessage);
 
-  return { systemPrompt, userPrompt };
+  // Build complete messages array with conversation history integration
+  const messages = [
+    { role: "system", content: systemPrompt }
+  ];
+
+  // Add conversation history if available (for chat interactions)
+  if (history && history.length > 0 && messageType === 'chat') {
+    console.log(`🗣️ Adding ${history.length} conversation history messages to context`);
+    
+    // Add the conversation history messages
+    history.forEach(msg => {
+      if (msg.role && msg.content && msg.content.trim()) {
+        messages.push({
+          role: msg.role,
+          content: msg.content.trim()
+        });
+      }
+    });
+  }
+
+  // Add the current user message
+  if (userMessage && userMessage.trim()) {
+    messages.push({ role: "user", content: userMessage.trim() });
+  } else if (userPrompt && userPrompt.trim()) {
+    messages.push({ role: "user", content: userPrompt.trim() });
+  }
+
+  return { 
+    systemPrompt, 
+    userPrompt, 
+    messages // Complete messages array for OpenAI API
+  };
 }
 
 async function buildUnifiedContext({ userId, frameData, conversationHistory }) {
@@ -1680,21 +1711,21 @@ async function handleChatRequest(event, userContext) {
       userContext
     });
     
-    // STEP 2: Build unified prompt 
-    const { systemPrompt, userPrompt } = await buildUnifiedCoachingPrompt({
+    // STEP 2: Build unified prompt with integrated conversation history
+    const { systemPrompt, userPrompt, messages } = await buildUnifiedCoachingPrompt({
       userId: userId,
       messageType: 'chat',
       conversationHistory: conversationHistory,
       userMessage: message
     });
     
-    // STEP 3: Call GPT with unified prompts (same as video analysis)
+    console.log(`🎯 Built messages array with ${messages.length} total messages (system + history + current)`);
+    console.log('🎯 Messages preview:', messages.map((msg, i) => `${i}: ${msg.role} - ${msg.content.substring(0, 50)}...`));
+    
+    // STEP 3: Call GPT with complete messages array including conversation history
     const requestData = JSON.stringify({
       model: "gpt-4o",
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt }
-      ],
+      messages: messages, // Use the complete messages array with conversation history
       max_tokens: 1500,
       temperature: 0.7,
       top_p: 0.9,
