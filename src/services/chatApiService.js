@@ -21,6 +21,7 @@ class ChatApiService {
           conversationHistory: conversationHistory,
           coachingContext: coachingContext
         });
+        console.log('💬 Conversation history preview:', conversationHistory.map(msg => `${msg.role}: ${msg.content.substring(0, 50)}...`));
         
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -145,15 +146,15 @@ class ChatApiService {
     }
   }
 
-  // Format conversation history for API
+  // Format conversation history for API - Include both user and assistant messages
   formatConversationHistory(messages) {
     return messages
       .filter(msg => msg.messageType !== 'video_processing' && msg.messageType !== 'system')
-      .filter(msg => msg.sender === 'user') // Only user messages - Lambda crashes on assistant messages
-      .filter(msg => msg.text && msg.text.trim()) // Filter out null/empty content - Lambda crashes on these
-      .slice(-10) // Last 10 relevant messages
+      .filter(msg => msg.sender === 'user' || msg.sender === 'coach') // Include both user and coach messages
+      .filter(msg => msg.text && msg.text.trim()) // Filter out null/empty content
+      .slice(-10) // Last 10 relevant messages (both user and assistant)
       .map(msg => ({
-        role: 'user',
+        role: msg.sender === 'user' ? 'user' : 'assistant',
         content: msg.text.trim()
       }));
   }
