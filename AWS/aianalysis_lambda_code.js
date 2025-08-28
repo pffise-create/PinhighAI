@@ -1759,8 +1759,8 @@ async function handleChatRequest(event, userContext) {
       contextSources: ['unified_system']
     };
     
-    // STEP 4: Store conversation state for continuity
-    await storeEnhancedFollowUpConversationState(userId, message, response, assembledContext);
+    // STEP 4: Store conversation in golf-coach-analyses table (simplified, reliable method)
+    await storeConversationSimple(userId, message, response.text, assembledContext.jobId);
     
     // STEP 5: Track enhanced metrics
     await trackEnhancedFollowUpMetrics(userId, response, assembledContext);
@@ -2180,172 +2180,54 @@ async function callEnhancedContextAwareGPT(prompt, assembledContext) {
   }
 }
 
-// STORE ENHANCED FOLLOW-UP CONVERSATION STATE
-async function storeEnhancedFollowUpConversationState(userId, userMessage, response, assembledContext) {
+// SIMPLE, RELIABLE CONVERSATION STORAGE - Single table, no complexity
+async function storeConversationSimple(userId, userMessage, aiResponse, jobId = null) {
   try {
-    console.log('💾 Storing enhanced follow-up conversation state with coaching integration');
+    console.log('💾 Storing conversation in golf-coach-analyses table (simple method)');
     
-    // Store in both systems for full integration
-    
-    // 1. Store in existing conversation tracking (if jobId available)
-    if (assembledContext.jobId) {
-      await storeInExistingConversationSystem(assembledContext.jobId, userMessage, response);
-    }
-    
-    // 2. Store in coaching conversations system (Sprint 3A) if user is authenticated
-    if (assembledContext.userContext?.isAuthenticated) {
-      await storeInEnhancedCoachingSystem(userId, userMessage, response, assembledContext);
-    }
-    
-    console.log('✅ Enhanced conversation state stored in integrated systems');
-    
-  } catch (error) {
-    console.error('❌ Error storing enhanced follow-up conversation state:', error);
-    // Don't throw - conversation should continue even if storage fails
-  }
-}
-
-// STORE IN EXISTING CONVERSATION SYSTEM
-async function storeInExistingConversationSystem(jobId, userMessage, response) {
-  try {
     const dynamodb = getDynamoClient();
+    const timestamp = new Date().toISOString();
     
+    // Create conversation entry with both user message and AI response
     const conversationEntry = {
-      timestamp: new Date().toISOString(),
+      timestamp: timestamp,
       user_message: userMessage,
-      ai_response: response.text,
-      tokens_used: response.tokensUsed || 0,
-      context_sources: response.contextSources || 0,
-      enhanced_integration: true
+      ai_response: aiResponse,
+      tokens_used: 0, // Simple version - no token tracking
+      storage_method: 'simple_reliable'
     };
     
-    // Update the analysis record with conversation history
+    // Store in user's general conversation record OR specific analysis if jobId provided
+    const recordKey = jobId || `conversation_${userId}`;
+    
     const params = {
       TableName: process.env.DYNAMODB_TABLE || 'golf-coach-analyses',
-      Key: { analysis_id: jobId },
-      UpdateExpression: 'SET follow_up_conversations = list_append(if_not_exists(follow_up_conversations, :empty_list), :new_conversation), updated_at = :timestamp',
+      Key: { analysis_id: recordKey },
+      UpdateExpression: `
+        SET 
+          follow_up_conversations = list_append(if_not_exists(follow_up_conversations, :empty_list), :new_conversation),
+          updated_at = :timestamp,
+          user_id = if_not_exists(user_id, :userId)
+      `,
       ExpressionAttributeValues: {
         ':new_conversation': [conversationEntry],
         ':empty_list': [],
-        ':timestamp': new Date().toISOString()
-      }
-    };
-    
-    await dynamodb.send(new UpdateCommand(params));
-    console.log('✅ Stored in existing analysis system with enhanced integration');
-    
-  } catch (error) {
-    console.error('❌ Error storing in existing system:', error);
-  }
-}
-
-// STORE IN ENHANCED COACHING CONVERSATIONS SYSTEM (SPRINT 3A)
-async function storeInEnhancedCoachingSystem(userId, userMessage, response, assembledContext) {
-  try {
-    console.log('🔗 Storing in enhanced Sprint 3A coaching conversations system');
-    
-    // Try to call the coaching chat Lambda to store the conversation
-    const lambda = getLambdaClient();
-    
-    const storePayload = {
-      httpMethod: 'POST',
-      path: '/store-conversation',
-      body: JSON.stringify({
-        userId: userId,
-        userMessage: userMessage,
-        assistantResponse: response.text,
-        messageType: 'enhanced_follow_up',
-        swingReference: assembledContext.jobId,
-        tokensUsed: response.tokensUsed || 0,
-        contextSources: response.contextSources || 0,
-        timestamp: response.timestamp,
-        integrationVersion: 'sprint_3b'
-      })
-    };
-    
-    const invokeParams = {
-      FunctionName: 'golf-coaching-chat',
-      InvocationType: 'Event', // Async invoke
-      Payload: JSON.stringify(storePayload)
-    };
-    
-    await lambda.send(new InvokeCommand(invokeParams));
-    console.log('✅ Async enhanced storage request sent to coaching system');
-    
-  } catch (error) {
-    console.warn('⚠️ Could not store in enhanced coaching system, using fallback:', error.message);
-    
-    // Fallback: Store directly in DynamoDB
-    try {
-      await storeDirectlyInEnhancedCoachingTable(userId, userMessage, response, assembledContext);
-    } catch (fallbackError) {
-      console.error('❌ Enhanced fallback storage also failed:', fallbackError.message);
-    }
-  }
-}
-
-// FALLBACK: STORE DIRECTLY IN ENHANCED COACHING CONVERSATIONS TABLE
-async function storeDirectlyInEnhancedCoachingTable(userId, userMessage, response, assembledContext) {
-  try {
-    const dynamodb = getDynamoClient();
-    const conversationId = `conv_${userId}`;
-    const timestamp = new Date().toISOString();
-    
-    const userMessageObj = {
-      message_id: `msg_${Date.now()}_user`,
-      role: 'user',
-      content: userMessage,
-      timestamp,
-      swing_reference: assembledContext.jobId || null,
-      message_type: 'enhanced_follow_up',
-      tokens_used: 0,
-      integration_version: 'sprint_3b'
-    };
-    
-    const assistantMessageObj = {
-      message_id: `msg_${Date.now()}_assistant`,
-      role: 'assistant',
-      content: response.text,
-      timestamp,
-      swing_reference: assembledContext.jobId || null,
-      message_type: 'enhanced_follow_up',
-      tokens_used: response.tokensUsed || 0,
-      context_sources: response.contextSources || 0,
-      integration_version: 'sprint_3b'
-    };
-    
-    const params = {
-      TableName: 'coaching-conversations',
-      Key: { conversation_id: conversationId },
-      UpdateExpression: `
-        SET 
-          user_id = :userId,
-          last_updated = :timestamp,
-          recent_messages = list_append(if_not_exists(recent_messages, :emptyList), :newMessages),
-          total_tokens_used = if_not_exists(total_tokens_used, :zero) + :tokensUsed,
-          conversation_status = :status,
-          integration_version = :integrationVersion
-      `,
-      ExpressionAttributeValues: {
-        ':userId': userId,
         ':timestamp': timestamp,
-        ':newMessages': [userMessageObj, assistantMessageObj],
-        ':emptyList': [],
-        ':tokensUsed': response.tokensUsed || 0,
-        ':zero': 0,
-        ':status': 'active',
-        ':integrationVersion': 'sprint_3b'
+        ':userId': userId
       }
     };
     
     await dynamodb.send(new UpdateCommand(params));
-    console.log('✅ Enhanced fallback storage in coaching table successful');
+    console.log(`✅ Conversation stored successfully in record: ${recordKey}`);
     
   } catch (error) {
-    console.error('❌ Enhanced direct coaching table storage failed:', error);
-    throw error;
+    console.error('❌ Simple conversation storage failed:', error);
+    // Don't throw - let conversation continue
   }
 }
+
+// REMOVED: Complex storage functions that were causing failures
+// All conversation storage now handled by storeConversationSimple() function above
 
 // TRACK ENHANCED FOLLOW-UP METRICS
 async function trackEnhancedFollowUpMetrics(userId, response, assembledContext) {
