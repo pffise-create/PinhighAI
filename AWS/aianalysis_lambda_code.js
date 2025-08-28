@@ -962,6 +962,9 @@ async function analyzeSwingWithGPT4o(frameData, swingData) {
     }
     
     const systemPrompt = await buildContextAwareGolfCoachingPrompt(frameData, coachingHistory);
+    console.log('🎯 COACHING SYSTEM PROMPT LOADED - First 200 chars:', systemPrompt.substring(0, 200));
+    console.log('🎯 System prompt contains video-specific coaching:', systemPrompt.includes('VIDEO-SPECIFIC'));
+    console.log('🎯 System prompt contains practice partner approach:', systemPrompt.includes('practice partner'));
     
     // Use ALL frames for analysis (0.1s intervals = better swing detection)
     const allFrameUrls = frameData.frame_urls || {};
@@ -1042,7 +1045,7 @@ async function analyzeSwingWithGPT4o(frameData, swingData) {
       model: "gpt-4o",
       messages: messages,
       max_tokens: 2000,
-      temperature: 0.9,
+      temperature: 0.7,
       top_p: 0.9,
       frequency_penalty: 0.1,
       presence_penalty: 0.1
@@ -1686,7 +1689,7 @@ async function handleChatRequest(event, userContext) {
         { role: "user", content: userPrompt }
       ],
       max_tokens: 1500,
-      temperature: 0.9,
+      temperature: 0.7,
       top_p: 0.9,
       frequency_penalty: 0.1,
       presence_penalty: 0.1,
@@ -2099,7 +2102,7 @@ async function callEnhancedContextAwareGPT(prompt, assembledContext) {
       model: "gpt-4o",
       messages: prompt.messages,
       max_tokens: 1500,
-      temperature: 0.9,
+      temperature: 0.7,
       top_p: 0.9,
       frequency_penalty: 0.1,
       presence_penalty: 0.1,
