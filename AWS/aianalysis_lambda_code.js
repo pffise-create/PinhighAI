@@ -1848,11 +1848,11 @@ function checkEnhancedChatRateLimit(userId, userContext) {
   };
 }
 
-// ASSEMBLE ENHANCED FOLLOW-UP CONTEXT FROM MULTIPLE SOURCES
+// SIMPLE, RELIABLE CONTEXT ASSEMBLY - Uses same storage as conversation saving
 async function assembleEnhancedFollowUpContext(options) {
   const { userId, jobId, existingContext, coachingContext, conversationHistory, userContext } = options;
   
-  console.log('📋 Assembling enhanced follow-up context from multiple sources...');
+  console.log('📋 Assembling context from reliable golf-coach-analyses table...');
   
   const context = {
     userId,
@@ -1862,62 +1862,37 @@ async function assembleEnhancedFollowUpContext(options) {
   };
   
   try {
-    // SOURCE 1: Current swing analysis context
+    // Add basic contexts that don't require DB calls
     if (existingContext) {
       context.currentSwingAnalysis = existingContext;
       console.log('✅ Current swing analysis context loaded');
     }
     
-    // SOURCE 2: Mobile app coaching context
     if (coachingContext) {
       context.mobileCoachingContext = coachingContext;
       console.log('✅ Mobile coaching context loaded');
     }
     
-    // SOURCE 3: Recent conversation history
+    // MAIN IMPROVEMENT: Fetch recent conversations from the same location we store them
+    const recentConversations = await fetchRecentConversationsSimple(userId, jobId);
+    if (recentConversations && recentConversations.length > 0) {
+      context.recentStoredConversations = recentConversations;
+      console.log(`✅ Retrieved ${recentConversations.length} recent conversations from storage`);
+    } else {
+      console.log('ℹ️ No recent stored conversations found');
+    }
+    
+    // Use mobile app conversation history as backup/additional context
     if (conversationHistory && conversationHistory.length > 0) {
-      context.recentConversationHistory = conversationHistory.slice(-10); // Last 10 messages
-      console.log(`✅ Recent conversation history loaded (${conversationHistory.length} messages)`);
+      context.recentConversationHistory = conversationHistory.slice(-10);
+      console.log(`✅ Mobile app conversation history loaded (${conversationHistory.length} messages)`);
     }
     
-    // SOURCE 4: Fetch coaching conversations from Sprint 3A system
-    if (userContext?.isAuthenticated) {
-      try {
-        context.coachingConversations = await fetchCoachingConversationsFromAPI(userId);
-        console.log('✅ Coaching conversations from Sprint 3A system loaded');
-      } catch (error) {
-        console.warn('⚠️ Could not fetch coaching conversations:', error.message);
-        context.coachingConversations = null;
-      }
-    }
-    
-    // SOURCE 5: User coaching history from existing system
-    if (userContext?.isAuthenticated) {
-      try {
-        context.userCoachingHistory = await fetchUserCoachingHistory(userId, jobId);
-        console.log('✅ User coaching history loaded');
-      } catch (error) {
-        console.warn('⚠️ Could not fetch user coaching history:', error.message);
-        context.userCoachingHistory = null;
-      }
-    }
-    
-    // SOURCE 6: Current swing analysis if jobId provided
-    if (jobId) {
-      try {
-        context.currentSwingData = await getCurrentSwingAnalysisData(jobId);
-        console.log('✅ Current swing data loaded');
-      } catch (error) {
-        console.warn('⚠️ Could not fetch current swing analysis:', error.message);
-        context.currentSwingData = null;
-      }
-    }
-    
-    console.log(`📋 Enhanced context assembly complete: ${Object.keys(context).length} sources integrated`);
+    console.log(`📋 Simple context assembly complete: reliable data from golf-coach-analyses table`);
     return context;
     
   } catch (error) {
-    console.error('❌ Error assembling enhanced follow-up context:', error);
+    console.error('❌ Error assembling context:', error);
     
     // Return minimal context to allow conversation to continue
     return {
@@ -1930,69 +1905,8 @@ async function assembleEnhancedFollowUpContext(options) {
   }
 }
 
-// FETCH COACHING CONVERSATIONS FROM SPRINT 3A API
-async function fetchCoachingConversationsFromAPI(userId) {
-  try {
-    console.log(`🔗 Fetching coaching conversations for user: ${userId}`);
-    
-    // Check if the coaching chat Lambda is available in the same region
-    const lambda = getLambdaClient();
-    
-    const invokeParams = {
-      FunctionName: 'golf-coaching-chat',
-      InvocationType: 'RequestResponse',
-      Payload: JSON.stringify({
-        httpMethod: 'GET',
-        path: '/context',
-        queryStringParameters: {
-          userId: userId,
-          limit: '5'
-        }
-      })
-    };
-    
-    const result = await lambda.send(new InvokeCommand(invokeParams));
-    const response = JSON.parse(Buffer.from(result.Payload).toString());
-    
-    if (response.statusCode === 200) {
-      const data = JSON.parse(response.body);
-      return data.conversations || [];
-    } else {
-      console.warn('Coaching conversations API returned error:', response.statusCode);
-      return null;
-    }
-    
-  } catch (error) {
-    console.warn('Could not fetch coaching conversations from API:', error.message);
-    
-    // Fallback: Try to fetch directly from DynamoDB
-    try {
-      const dynamodb = getDynamoClient();
-      const conversationId = `conv_${userId}`;
-      
-      const params = {
-        TableName: 'coaching-conversations',
-        Key: { conversation_id: conversationId }
-      };
-      
-      const result = await dynamodb.send(new GetCommand(params));
-      
-      if (result.Item) {
-        return [{
-          conversation_id: result.Item.conversation_id,
-          recent_messages: result.Item.recent_messages || [],
-          coaching_themes: result.Item.coaching_themes || {},
-          last_updated: result.Item.last_updated
-        }];
-      }
-      
-    } catch (fallbackError) {
-      console.warn('Fallback coaching conversations fetch failed:', fallbackError.message);
-    }
-    
-    return null;
-  }
-}
+// REMOVED: fetchCoachingConversationsFromAPI - tried to access non-existent golf-coaching-chat Lambda
+// All conversation retrieval now handled by fetchRecentConversationsSimple() function above
 
 // GET CURRENT SWING ANALYSIS DATA
 async function getCurrentSwingAnalysisData(jobId) {
@@ -2226,8 +2140,93 @@ async function storeConversationSimple(userId, userMessage, aiResponse, jobId = 
   }
 }
 
-// REMOVED: Complex storage functions that were causing failures
-// All conversation storage now handled by storeConversationSimple() function above
+// SIMPLE CONVERSATION RETRIEVAL - Matches storage location exactly
+async function fetchRecentConversationsSimple(userId, jobId = null) {
+  try {
+    console.log('🔍 Fetching recent conversations from golf-coach-analyses table');
+    
+    const dynamodb = getDynamoClient();
+    
+    // Check the same locations where we store conversations
+    const recordsToCheck = [];
+    
+    // If jobId provided, check specific analysis record first
+    if (jobId) {
+      recordsToCheck.push(jobId);
+    }
+    
+    // Always check general user conversation record as fallback
+    recordsToCheck.push(`conversation_${userId}`);
+    
+    let allConversations = [];
+    
+    // Check each record location
+    for (const recordKey of recordsToCheck) {
+      try {
+        const params = {
+          TableName: process.env.DYNAMODB_TABLE || 'golf-coach-analyses',
+          Key: { analysis_id: recordKey }
+        };
+        
+        const result = await dynamodb.send(new GetCommand(params));
+        
+        if (result.Item && result.Item.follow_up_conversations) {
+          const conversations = result.Item.follow_up_conversations || [];
+          console.log(`📝 Found ${conversations.length} conversations in record: ${recordKey}`);
+          
+          // Add record source to each conversation for context
+          const conversationsWithSource = conversations.map(conv => ({
+            ...conv,
+            source_record: recordKey
+          }));
+          
+          allConversations.push(...conversationsWithSource);
+        }
+      } catch (error) {
+        console.warn(`⚠️ Could not fetch from record ${recordKey}:`, error.message);
+      }
+    }
+    
+    // Sort by timestamp (most recent first) and take last 20 messages
+    const sortedConversations = allConversations
+      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+      .slice(0, 20);
+    
+    // Format for GPT prompt (convert to role-based messages)
+    const formattedMessages = [];
+    sortedConversations.reverse(); // Oldest first for proper conversation flow
+    
+    sortedConversations.forEach(conv => {
+      // Add user message
+      if (conv.user_message && conv.user_message.trim()) {
+        formattedMessages.push({
+          role: 'user',
+          content: conv.user_message.trim(),
+          timestamp: conv.timestamp,
+          source: conv.source_record
+        });
+      }
+      
+      // Add AI response
+      if (conv.ai_response && conv.ai_response.trim()) {
+        formattedMessages.push({
+          role: 'assistant',
+          content: conv.ai_response.trim(),
+          timestamp: conv.timestamp,
+          source: conv.source_record
+        });
+      }
+    });
+    
+    console.log(`✅ Retrieved and formatted ${formattedMessages.length} messages from ${allConversations.length} conversation entries`);
+    
+    return formattedMessages;
+    
+  } catch (error) {
+    console.error('❌ Error fetching recent conversations:', error);
+    return [];
+  }
+}
 
 // TRACK ENHANCED FOLLOW-UP METRICS
 async function trackEnhancedFollowUpMetrics(userId, response, assembledContext) {
