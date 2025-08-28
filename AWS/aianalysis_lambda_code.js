@@ -999,13 +999,11 @@ async function analyzeSwingWithGPT4o(frameData, swingData) {
     
     console.log(`Successfully converted ${base64Images.length} images to base64`);
     
-    // Build message content with analysis request + all frames
+    // Replace the generic user prompt (lines 1079-1115) with this simple coaching prompt:
     const messageContent = [
       {
         type: "text",
-        text: `Here are ${base64Images.length} frames from a golf swing, captured every 0.1 seconds. From these, select whichever frames are most relevant for analysis and coaching. Focus on what will help this golfer improve - respond in whatever format is most helpful for their development. 
-
-Also, please mention what color shirt and shorts the golfer is wearing to confirm the frames are visible.`
+        text: `I'm looking at this golfer's swing video frames. Talk to them like their golf coach about what I observe in their swing. Focus on what they're doing well and the one main thing that would help them improve most.`
       }
     ];
     
