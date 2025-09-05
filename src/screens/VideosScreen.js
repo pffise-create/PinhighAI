@@ -35,7 +35,7 @@ export default function VideosScreen({ navigation }) {
     themes: []
   });
   
-  const userId = user?.email || 'guest';
+  const userId = user?.id || 'guest';
 
   useEffect(() => {
     loadVideos();

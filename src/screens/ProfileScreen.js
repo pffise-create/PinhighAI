@@ -28,7 +28,7 @@ const ProfileScreen = ({ navigation }) => {
   const [userStats, setUserStats] = useState(null);
   const [activeModal, setActiveModal] = useState(null); // 'goals', 'preferences', 'settings', 'export'
   
-  const userId = user?.email || 'guest';
+  const userId = user?.id || 'guest';
 
   useEffect(() => {
     loadProfileData();

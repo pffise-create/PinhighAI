@@ -7,43 +7,36 @@ class ChatApiService {
     this.timeoutMs = 15000; // 15 second timeout
   }
 
-  // Send message to AI coach with retry logic
-  async sendMessage(message, userId, conversationHistory = [], coachingContext = {}) {
+  // Send message to AI coach with simplified user thread payload
+  async sendMessage(message, userId, authHeaders = {}) {
     let attempts = 0;
     
     while (attempts <= this.maxRetries) {
       try {
         console.log(`💬 Sending message to coach API (attempt ${attempts + 1}/${this.maxRetries + 1})`);
-        console.log('💬 Request payload:', {
-          message: message,
-          userId: userId,
-          conversationHistoryLength: conversationHistory.length,
-          conversationHistory: conversationHistory,
-          coachingContext: coachingContext
+        console.log('💬 Simplified request payload:', {
+          message: message.trim(),
+          userId: userId
         });
-        console.log('💬 Conversation history preview:', conversationHistory.map(msg => `${msg.role}: ${msg.content.substring(0, 50)}...`));
         
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
 
+        const requestPayload = {
+          message: message.trim(),
+          userId: userId  // Always include userId for thread continuity
+          // Remove: jobId, conversationHistory, swingContext - backend handles this now
+        };
+
+        const headers = {
+          'Content-Type': 'application/json',
+          ...authHeaders
+        };
+        
         const response = await fetch(`${API_BASE_URL}/api/chat`, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            message: message,
-            userId: userId,
-            context: null, // No specific swing context for general chat
-            jobId: null, // No specific video analysis for general chat
-            conversationHistory: conversationHistory.slice(-10), // Already filtered by formatConversationHistory
-            coachingContext: {
-              sessionMetadata: coachingContext.sessionMetadata || {},
-              hasVideoUploads: coachingContext.hasVideoUploads || false,
-              analysisCount: coachingContext.analysisCount || 0,
-              recentCoachingThemes: coachingContext.recentCoachingThemes || []
-            }
-          }),
+          headers: headers,
+          body: JSON.stringify(requestPayload),
           signal: controller.signal
         });
 
@@ -72,8 +65,7 @@ class ChatApiService {
         console.error('Request was:', {
           url: `${API_BASE_URL}/api/chat`,
           message: message,
-          userId: userId,
-          conversationHistoryLength: conversationHistory.length
+          userId: userId
         });
 
         // If this was the last attempt, return fallback
@@ -114,16 +106,19 @@ class ChatApiService {
   }
 
   // Test API connectivity
-  async testConnection() {
+  async testConnection(authHeaders = {}) {
     try {
       console.log('🔍 Testing chat API connection...');
       
+      const headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer guest-token', // Dummy token for guest users
+        ...authHeaders
+      };
+      
       const response = await fetch(`${API_BASE_URL}/api/chat`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer guest-token', // Dummy token for guest users
-        },
+        headers: headers,
         body: JSON.stringify({
           message: 'ping',
           userId: 'test',
@@ -146,42 +141,6 @@ class ChatApiService {
     }
   }
 
-  // Format conversation history for API - Include both user and assistant messages
-  formatConversationHistory(messages) {
-    return messages
-      .filter(msg => msg.messageType !== 'video_processing' && msg.messageType !== 'system')
-      .filter(msg => msg.sender === 'user' || msg.sender === 'coach') // Include both user and coach messages
-      .filter(msg => msg.text && msg.text.trim()) // Filter out null/empty content
-      .slice(-10) // Last 10 relevant messages (both user and assistant)
-      .map(msg => ({
-        role: msg.sender === 'user' ? 'user' : 'assistant',
-        content: msg.text.trim()
-      }));
-  }
-
-  // Extract coaching context from conversation summary
-  formatCoachingContext(conversationSummary, messages = []) {
-    const recentAnalyses = messages
-      .filter(msg => msg.messageType === 'analysis_result')
-      .slice(-3); // Last 3 analyses
-
-    const recentCoachingThemes = recentAnalyses
-      .map(msg => msg.analysisData?.keyInsights || [])
-      .flat()
-      .slice(0, 5);
-
-    return {
-      sessionMetadata: {
-        totalMessages: conversationSummary?.totalMessages || 0,
-        analysisCount: conversationSummary?.analysisCount || 0,
-        isFirstTime: conversationSummary?.isFirstTime || false,
-        lastInteraction: conversationSummary?.lastInteraction
-      },
-      hasVideoUploads: conversationSummary?.hasVideoUploads || false,
-      analysisCount: conversationSummary?.analysisCount || 0,
-      recentCoachingThemes: recentCoachingThemes
-    };
-  }
 }
 
 // Export singleton instance

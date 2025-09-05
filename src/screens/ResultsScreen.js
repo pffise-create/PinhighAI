@@ -43,7 +43,7 @@ const ResultsScreen = ({ navigation, route }) => {
   // Load coaching context for authenticated users
   useEffect(() => {
     const loadCoachingContext = async () => {
-      if (!isAuthenticated || !user?.email) {
+      if (!isAuthenticated || !user?.id) {
         console.log('👤 Guest user - skipping context loading');
         return;
       }
@@ -71,7 +71,7 @@ const ResultsScreen = ({ navigation, route }) => {
     };
     
     loadCoachingContext();
-  }, [isAuthenticated, user?.email, jobId]);
+  }, [isAuthenticated, user?.id, jobId]);
 
   useEffect(() => {
     if (preLoadedAnalysisData) {
@@ -151,7 +151,7 @@ const ResultsScreen = ({ navigation, route }) => {
     setIsSendingMessage(true);
 
     // Store user message for authenticated users
-    if (isAuthenticated && user?.email) {
+    if (isAuthenticated && user?.id) {
       try {
         await ConversationContextService.storeConversationMessage(
           user.email,
@@ -220,7 +220,7 @@ const ResultsScreen = ({ navigation, route }) => {
       setChatMessages(prev => [...prev, aiMessage]);
 
       // Store AI response for authenticated users
-      if (isAuthenticated && user?.email) {
+      if (isAuthenticated && user?.id) {
         try {
           await ConversationContextService.storeConversationMessage(
             user.email,

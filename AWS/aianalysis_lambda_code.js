@@ -171,14 +171,38 @@ async function validateToken(authHeader) {
 
 // Extract user context from event (handles both authenticated and guest users)
 async function extractUserContext(event) {
-  // Check for Authorization header
+  // For DynamoDB streams, we MUST get real user context
+  if (event.Records && event.Records.length > 0) {
+    const record = event.Records[0];
+    
+    if (record.eventSource === 'aws:dynamodb') {
+      const newImage = record.dynamodb?.NewImage;
+      
+      if (!newImage) {
+        throw new Error('DynamoDB stream missing NewImage data');
+      }
+      
+      const userId = newImage.user_id?.S;
+      if (!userId) {
+        throw new Error('DynamoDB stream missing user_id');
+      }
+      
+      return {
+        isAuthenticated: newImage.is_authenticated?.BOOL || false,
+        userId: userId,
+        email: newImage.user_email?.S || null,
+        name: newImage.user_name?.S || 'Guest User',
+        userType: newImage.user_type?.S || 'guest'
+      };
+    }
+  }
+  
+  // For HTTP requests, check for Authorization header
   const authHeader = event.headers?.Authorization || event.headers?.authorization;
   
   if (authHeader) {
-    // Authenticated user
     const tokenValidation = await validateToken(authHeader);
     if (tokenValidation.valid) {
-      console.log(`Authenticated user: ${tokenValidation.email} (${tokenValidation.userId})`);
       return {
         isAuthenticated: true,
         userId: tokenValidation.userId,
@@ -186,28 +210,17 @@ async function extractUserContext(event) {
         name: tokenValidation.name,
         userType: 'authenticated'
       };
-    } else {
-      console.warn('Invalid authentication token:', tokenValidation.error);
-      // Return guest context for invalid tokens (backward compatibility)
-      return {
-        isAuthenticated: false,
-        userId: 'guest-user',
-        email: null,
-        name: 'Guest User',
-        userType: 'guest'
-      };
     }
-  } else {
-    // Guest user (backward compatibility)
-    console.log('No authentication header found, treating as guest user');
-    return {
-      isAuthenticated: false,
-      userId: 'guest-user',
-      email: null,
-      name: 'Guest User',
-      userType: 'guest'
-    };
   }
+  
+  // Fallback for HTTP requests without valid auth
+  return {
+    isAuthenticated: false,
+    userId: 'guest-user',
+    email: null,
+    name: 'Guest User',
+    userType: 'guest'
+  };
 }
 
 // Send CloudWatch metrics
@@ -397,12 +410,18 @@ async function fetchUserCoachingHistory(userId, currentAnalysisId) {
 }
 
 exports.handler = async (event) => {
-  console.log('AI Analysis Lambda triggered:', JSON.stringify(event, null, 2));
+  console.log('LAMBDA START - Event:', JSON.stringify(event, null, 2));
+  console.log('LAMBDA START - Environment Check:', {
+    hasOpenAIKey: !!process.env.OPENAI_API_KEY,
+    dynamoTable: process.env.DYNAMODB_TABLE,
+    userThreadsTable: process.env.USER_THREADS_TABLE
+  });
+  console.log('LAMBDA START - Event type:', event.Records ? 'DynamoDB_Stream' : 'HTTP_Request');
   
   try {
     // Extract user context from the request (handles both authenticated and guest users)
     const userContext = await extractUserContext(event);
-    console.log('User context:', userContext);
+    console.log('USER CONTEXT:', userContext);
     // CHECK 1: Is this a GET request for results?
     if (event.httpMethod === 'GET' && event.pathParameters && event.pathParameters.jobId) {
       console.log('GET request for results detected');
@@ -459,7 +478,8 @@ exports.handler = async (event) => {
     
     // CHECK 5: Is this a DynamoDB Stream event?
     if (event.Records) {
-      console.log('DynamoDB Stream event detected');
+      console.log('DYNAMO STREAM: Detected', event.Records.length, 'records');
+      console.log('DYNAMO RECORD:', JSON.stringify(event.Records[0], null, 2));
       
       // Process DynamoDB Stream records
       for (const record of event.Records) {
@@ -485,7 +505,19 @@ exports.handler = async (event) => {
             await triggerFrameExtraction(swingData);
           } else if (shouldTriggerAI) {
             console.log(`STREAM TRIGGER: Processing AI analysis for: ${analysisId}`);
-            await processSwingAnalysis(swingData);
+            console.log('FUNCTION CHECK: processSwingAnalysis type:', typeof processSwingAnalysis);
+            console.log('FUNCTION CHECK: processSwingAnalysis exists:', processSwingAnalysis !== undefined);
+            console.log('FUNCTION CHECK: swingData:', JSON.stringify(swingData, null, 2));
+            try {
+              console.log('CALLING processSwingAnalysis...');
+              await processSwingAnalysis(swingData);
+              console.log('SUCCESS: processSwingAnalysis completed');
+            } catch (processError) {
+              console.error('ERROR in processSwingAnalysis:', processError);
+              console.error('ERROR stack:', processError.stack);
+              console.error('ERROR name:', processError.name);
+              console.error('ERROR message:', processError.message);
+            }
           } else {
             console.log(`STREAM SKIP: status=${status}, ai_completed=${aiCompleted} - No triggers needed`);
           }
@@ -708,7 +740,7 @@ async function triggerFrameExtraction(swingData) {
     };
     
     const invokeCommand = new InvokeCommand({
-      FunctionName: 'golf-coach-frame-extractor', // Use Python version with 0.1s intervals
+      FunctionName: 'golf-coach-frame-extractor-v2', // Use working Docker version with 0.1s intervals
       InvocationType: 'Event', // Asynchronous invocation
       Payload: JSON.stringify(frameExtractionPayload)
     });
@@ -716,10 +748,10 @@ async function triggerFrameExtraction(swingData) {
     await lambdaClient.send(invokeCommand);
     console.log(`Successfully triggered Docker frame extraction for ${analysisId}`);
     
-    console.log(`✅ Frame extraction trigger completed for ${analysisId}, Docker Lambda will process it`);
+    console.log(`SUCCESS: Frame extraction trigger completed for ${analysisId}, Docker Lambda will process it`);
     
   } catch (error) {
-    console.error(`❌ Frame extraction failed for ${analysisId}:`, error);
+    console.error(`ERROR: Frame extraction failed for ${analysisId}:`, error);
     
     // Update status to FAILED
     const dynamodb = getDynamoClient();
@@ -739,66 +771,128 @@ async function triggerFrameExtraction(swingData) {
   }
 }
 
+// PROCESS SWING ANALYSIS - Called by DynamoDB stream when frame extraction completes
 async function processSwingAnalysis(swingData) {
-  const analysisId = swingData.analysis_id?.S;
-  const userId = swingData.user_id?.S || 'mobile-user'; // HOTFIX: Add fallback for userId
-  const connectionId = swingData.connection_id?.S;
-  
-  if (!analysisId) {
-    console.error('No analysis_id found in swing data');
-    return;
-  }
-  
-  if (!userId) {
-    console.warn(`No userId found for analysis ${analysisId}, using fallback`);
-  }
-  
   try {
-    console.log(`[DEBUG] Starting AI analysis for swing ${analysisId}`);
+    console.log('DIAGNOSTIC: processSwingAnalysis function called');
+    console.log('DIAGNOSTIC: swingData parameter:', JSON.stringify(swingData, null, 2));
+    console.log('STEP 1: Processing swing analysis from DynamoDB stream trigger...');
     
-    // Notify user that AI analysis is starting (optional WebSocket)
-    await sendWebSocketMessage(connectionId, {
-      type: 'ai_analysis_started',
-      message: 'Getting your personalized coaching...'
+    const analysisId = swingData.analysis_id?.S;
+    const status = swingData.status?.S;
+    
+    if (!analysisId) {
+      console.error('ERROR: STEP 1 FAILED: No analysis_id found in DynamoDB record');
+      console.error('swingData structure:', JSON.stringify(swingData, null, 2));
+      return;
+    }
+    
+    console.log(`INFO: STEP 2: Starting AI analysis for: ${analysisId}, status: ${status}`);
+    
+    // Get the full analysis data from DynamoDB to prepare for AI analysis
+    console.log('STEP STEP 3: Getting DynamoDB client...');
+    const dynamodb = getDynamoClient();
+    
+    console.log(`STEP STEP 4: Fetching full record for ${analysisId}...`);
+    const result = await dynamodb.send(new GetCommand({
+      TableName: process.env.DYNAMODB_TABLE || 'golf-coach-analyses',
+      Key: { analysis_id: analysisId }
+    }));
+    
+    if (!result.Item) {
+      console.error(`ERROR: STEP 4 FAILED: Analysis record not found: ${analysisId}`);
+      console.error('DynamoDB result:', JSON.stringify(result, null, 2));
+      return;
+    }
+    
+    console.log('SUCCESS: STEP 4 SUCCESS: Got full record from DynamoDB');
+    const fullSwingData = result.Item;
+    
+    // Check if frame data exists
+    const frameData = fullSwingData.analysis_results?.M;
+    if (!frameData || !frameData.frames?.L) {
+      console.error(`ERROR: No frame data found for analysis: ${analysisId}`);
+      return;
+    }
+    
+    console.log(`SUCCESS: Found ${frameData.frames.L.length} frames for AI analysis`);
+    
+    // Convert DynamoDB format to expected format for analyzeSwingWithGPT4o
+    const frame_urls = {};
+    frameData.frames.L.forEach(frame => {
+      const frameMap = frame.M;
+      if (frameMap.phase?.S && frameMap.url?.S) {
+        frame_urls[frameMap.phase.S] = frameMap.url.S;
+      }
     });
     
-    // Get frame URLs and metadata from DynamoDB
-    console.log(`[DEBUG] Step 1: Getting frame data for ${analysisId}`);
-    const frameData = await getSwingFrameData(analysisId);
-    console.log(`[DEBUG] Frame data retrieved for analysis - ${Object.keys(frameData.frame_urls).length} frames found`);
+    // Create the expected frameData structure
+    const convertedFrameData = {
+      frame_urls: frame_urls,
+      // Include other frame metadata if needed
+      video_duration: frameData.video_duration?.N ? parseFloat(frameData.video_duration.N) : null,
+      fps: frameData.fps?.N ? parseFloat(frameData.fps.N) : null,
+      frames_extracted: frameData.frames_extracted?.N ? parseInt(frameData.frames_extracted.N) : frameData.frames.L.length
+    };
     
-    // Analyze swing with GPT-4o
-    console.log(`[DEBUG] Step 2: Starting GPT-4o analysis for ${analysisId}`);
-    const aiAnalysis = await analyzeSwingWithGPT4o(frameData, swingData);
-    console.log(`[DEBUG] GPT-4o analysis complete for ${analysisId}`);
+    console.log(`SUCCESS: STEP 6/7 SUCCESS: Converted ${Object.keys(frame_urls).length} frame URLs for AI analysis`);
+    console.log('Sample frame URLs:', Object.keys(frame_urls).slice(0, 3));
     
-    // Store AI analysis results
-    console.log(`[DEBUG] Step 3: Storing AI analysis results for ${analysisId}`);
-    await storeAIAnalysis(analysisId, aiAnalysis);
-    console.log(`[DEBUG] AI analysis stored successfully for ${analysisId}`);
+    // Call our unified threading AI analysis function with converted data
+    console.log('STEP STEP 8: Calling analyzeSwingWithGPT4o...');
+    const aiResult = await analyzeSwingWithGPT4o(convertedFrameData, fullSwingData);
+    console.log('SUCCESS: STEP 8 COMPLETED: analyzeSwingWithGPT4o returned result');
     
-    // Send coaching response to user (optional WebSocket)
-    await sendWebSocketMessage(connectionId, {
-      type: 'ai_coaching_complete',
-      coaching: aiAnalysis.coaching_response,
-      symptoms: aiAnalysis.symptoms_detected,
-      root_cause: aiAnalysis.root_cause,
-      confidence: aiAnalysis.confidence_score
-    });
+    console.log('STEP STEP 9: Processing AI analysis result...');
+    console.log('aiResult type:', typeof aiResult);
+    console.log('aiResult keys:', aiResult ? Object.keys(aiResult) : 'NULL');
+    console.log('aiResult.response exists:', !!aiResult?.response);
     
-    console.log(`[SUCCESS] AI Analysis completed for swing ${analysisId}`);
+    if (aiResult && aiResult.response) {
+      console.log(`SUCCESS: STEP 9 SUCCESS: AI analysis completed successfully for: ${analysisId}`);
+      
+      console.log('STEP STEP 10: Updating DynamoDB with AI results...');
+      // Update the record with AI analysis results
+      await dynamodb.send(new UpdateCommand({
+        TableName: process.env.DYNAMODB_TABLE || 'golf-coach-analyses',
+        Key: { analysis_id: analysisId },
+        UpdateExpression: 'SET ai_analysis = :analysis, ai_analysis_completed = :completed, #status = :status, progress_message = :progress, updated_at = :timestamp',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: {
+          ':analysis': JSON.stringify(aiResult),
+          ':completed': true,
+          ':status': 'AI_COMPLETED',
+          ':progress': 'AI coaching analysis completed successfully',
+          ':timestamp': new Date().toISOString()
+        }
+      }));
+      
+      console.log(`🎉 STEP 10 SUCCESS: Analysis fully completed for: ${analysisId}`);
+    } else {
+      console.error(`ERROR: STEP 9 FAILED: AI analysis returned invalid result for: ${analysisId}`);
+      console.error('Full aiResult:', JSON.stringify(aiResult, null, 2));
+    }
     
   } catch (error) {
-    console.error(`[ERROR] Error processing swing ${analysisId}:`, error);
-    console.error(`[ERROR] Error stack:`, error.stack);
+    console.error('ERROR: Error in processSwingAnalysis:', error);
     
-    // Send error message to user (optional WebSocket)
-    await sendWebSocketMessage(connectionId, {
-      type: 'ai_analysis_error',
-      message: 'We encountered an issue processing your swing analysis. Please try uploading again.'
-    });
-    
-    throw error; // Re-throw to see the error in lambda logs
+    // Update status to indicate failure
+    try {
+      const dynamodb = getDynamoClient();
+      await dynamodb.send(new UpdateCommand({
+        TableName: process.env.DYNAMODB_TABLE || 'golf-coach-analyses',
+        Key: { analysis_id: swingData.analysis_id?.S },
+        UpdateExpression: 'SET #status = :status, progress_message = :progress, updated_at = :timestamp',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: {
+          ':status': 'FAILED',
+          ':progress': `AI analysis failed: ${error.message}`,
+          ':timestamp': new Date().toISOString()
+        }
+      }));
+    } catch (updateError) {
+      console.error('Failed to update error status:', updateError);
+    }
   }
 }
 
@@ -937,53 +1031,95 @@ async function downloadImageAsBase64(url) {
 }
 
 async function analyzeSwingWithGPT4o(frameData, swingData) {
-  const startTime = Date.now();
-  
   try {
-    console.log('Starting enhanced GPT-4o analysis with cost protection...');
+    console.log('DIAGNOSTIC: Starting analyzeSwingWithGPT4o function');
+    console.log('DIAGNOSTIC: Input frameData type:', typeof frameData);
+    console.log('DIAGNOSTIC: Input swingData type:', typeof swingData);
+    console.log('DIAGNOSTIC: swingData structure:', JSON.stringify(swingData, null, 2));
     
     if (!process.env.OPENAI_API_KEY) {
+      console.error('DIAGNOSTIC: OPENAI_API_KEY environment variable not set');
       throw new Error('OPENAI_API_KEY environment variable not set');
     }
+    console.log('DIAGNOSTIC: OpenAI API key exists:', !!process.env.OPENAI_API_KEY);
 
-    // CONTEXT-AWARE COACHING: Include user history for authenticated users
-    console.log('Using context-aware coaching prompt (Sprint 1A restored)');
-    
-    // Extract analysis ID and user info from swingData
+    // 1. Extract userId from swingData with detailed logging
+    console.log('DIAGNOSTIC: Extracting analysisId and userId from swingData...');
     const analysisId = swingData.analysis_id?.S;
     const userId = swingData.user_id?.S;
-    const isAuthenticated = swingData.is_authenticated?.BOOL;
     
-    // Fetch coaching history for authenticated users
-    let coachingHistory = null;
-    if (isAuthenticated && userId && userId !== 'guest-user') {
-      console.log(`Fetching coaching history for authenticated user: ${userId}`);
-      coachingHistory = await fetchUserCoachingHistory(userId, analysisId);
+    console.log('DIAGNOSTIC: Extracted analysisId:', analysisId);
+    console.log('DIAGNOSTIC: Extracted userId:', userId);
+    console.log('DIAGNOSTIC: userId type:', typeof userId);
+    console.log('DIAGNOSTIC: userId is null/undefined:', userId == null);
+    console.log('DIAGNOSTIC: userId is empty string:', userId === '');
+    
+    if (!userId) {
+      console.error('DIAGNOSTIC: userId validation failed - userId is required for user thread management');
+      throw new Error('userId is required for user thread management');
     }
     
-    const systemPrompt = await buildContextAwareGolfCoachingPrompt(frameData, coachingHistory);
-    console.log('🎯 COACHING SYSTEM PROMPT LOADED - First 200 chars:', systemPrompt.substring(0, 200));
-    console.log('🎯 System prompt contains video-specific coaching:', systemPrompt.includes('VIDEO-SPECIFIC'));
-    console.log('🎯 System prompt contains practice partner approach:', systemPrompt.includes('practice partner'));
+    console.log(`DIAGNOSTIC: Processing swing analysis for user: ${userId}`);
     
-    // Use ALL frames for analysis (0.1s intervals = better swing detection)
+    // 2. Check for existing user thread with comprehensive error handling
+    console.log('DIAGNOSTIC: About to call getUserThread with userId:', userId);
+    let userThreadData;
+    try {
+      userThreadData = await getUserThread(userId);
+      console.log('DIAGNOSTIC: getUserThread returned successfully');
+      console.log('DIAGNOSTIC: userThreadData:', JSON.stringify(userThreadData, null, 2));
+    } catch (getUserThreadError) {
+      console.error('DIAGNOSTIC: getUserThread failed with error:', getUserThreadError);
+      console.error('DIAGNOSTIC: getUserThread error name:', getUserThreadError.name);
+      console.error('DIAGNOSTIC: getUserThread error message:', getUserThreadError.message);
+      console.error('DIAGNOSTIC: getUserThread error stack:', getUserThreadError.stack);
+      throw getUserThreadError;
+    }
+    let threadId = userThreadData?.thread_id;
+    
+    // 3. If no thread exists, create new OpenAI thread with coaching system prompt
+    if (!threadId) {
+      console.log(`Creating new coaching thread for user ${userId}`);
+      const threadResponse = await makeHttpsRequest({
+        hostname: 'api.openai.com',
+        path: '/v1/threads',
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+          'Content-Type': 'application/json',
+          'OpenAI-Beta': 'assistants=v2'
+        }
+      }, JSON.stringify({}));
+      
+      const newThread = JSON.parse(threadResponse);
+      threadId = newThread.id;
+      
+      userThreadData = {
+        thread_id: threadId,
+        swing_count: 0,
+        created_at: new Date().toISOString()
+      };
+      await storeUserThread(userId, userThreadData);
+    } else {
+      console.log(`Using existing thread ${threadId} for user ${userId}`);
+    }
+    
+    // 4. Send ALL frames from frameData.frame_urls to existing/new thread
     const allFrameUrls = frameData.frame_urls || {};
-    const keyFrames = Object.keys(allFrameUrls).sort().map(frameKey => ({
+    const allFrames = Object.keys(allFrameUrls).sort().map(frameKey => ({
       phase: frameKey,
       url: allFrameUrls[frameKey]
     }));
     
-    if (keyFrames.length === 0) {
+    if (allFrames.length === 0) {
       throw new Error('No valid frame URLs found for analysis');
     }
     
-    console.log(`Using ALL ${keyFrames.length} frames for better swing position detection (0.1s intervals)`);
+    console.log(`Sending ALL ${allFrames.length} frames to user thread ${threadId}`);
     
-    console.log(`Converting ${keyFrames.length} P1-P10 frames to base64 with compression...`);
-    
-    // Download and convert images to base64 SEQUENTIALLY (reliable)
+    // Download and convert ALL images to base64
     const base64Images = [];
-    for (const frame of keyFrames) {
+    for (const frame of allFrames) {
       try {
         const base64Image = await downloadAndCompressImage(frame.url);
         base64Images.push({
@@ -992,7 +1128,6 @@ async function analyzeSwingWithGPT4o(frameData, swingData) {
         });
       } catch (error) {
         console.warn(`Failed to download frame ${frame.phase}:`, error.message);
-        // Continue with other frames
       }
     }
     
@@ -1000,18 +1135,25 @@ async function analyzeSwingWithGPT4o(frameData, swingData) {
       throw new Error('No frame images could be downloaded and converted');
     }
     
-    console.log(`Successfully converted ${base64Images.length} images to base64`);
-    
-    // Replace the generic user prompt (lines 1079-1115) with this simple coaching prompt:
+    // 5. Enhanced prompt: "Analyze this swing and identify 6-8 key frames. Reference previous swings if this helps with progression."
     const messageContent = [
       {
         type: "text",
-        text: `I'm looking at this golfer's swing video frames. Talk to them like their golf coach about what I observe in their swing. Focus on what they're doing well and the one main thing that would help them improve most.`
+        text: `Analyze this swing and identify 6-8 key frames. Reference previous swings if this helps with progression.
+
+Provide comprehensive coaching advice, then end with key frames in this format:
+KEY_FRAMES: frame_001,frame_008,frame_015,frame_022,frame_029,frame_036
+
+Select the most critical frames showing key swing positions.`
       }
     ];
     
-    // Add each base64 image (unlabeled)
+    // Add all frames with labels
     base64Images.forEach(frame => {
+      messageContent.push({
+        type: "text", 
+        text: `Frame: ${frame.phase}`
+      });
       messageContent.push({
         type: "image_url",
         image_url: {
@@ -1021,94 +1163,158 @@ async function analyzeSwingWithGPT4o(frameData, swingData) {
       });
     });
     
-    const messages = [
-      {
-        role: "system",
-        content: systemPrompt
-      },
-      {
-        role: "user",
-        content: messageContent
-      }
-    ];
-    
-    // Token estimation for logging (no blocking) 
-    const systemTokens = estimateTokenCount(systemPrompt);
-    const userTokens = 100; // Estimate for images
-    const totalEstimatedTokens = systemTokens + userTokens + 600; // +600 for response buffer
-    
-    console.log(`Estimated token usage: ${totalEstimatedTokens} (system: ${systemTokens}, user: ${userTokens}) - no blocking applied`);
-    
-    // TOKEN LIMITS REMOVED - letting all requests through
-    
-    const requestData = JSON.stringify({
-      model: "gpt-4o",
-      messages: messages,
-      max_tokens: 2000,
-      temperature: 0.7,
-      top_p: 0.9,
-      frequency_penalty: 0.1,
-      presence_penalty: 0.1
-    });
-    
-    console.log('Making enhanced GPT-4o API call with cost protection...');
-    
-    // DEBUG: Log exact request being sent to OpenAI
-    console.log('=== DEBUG: EXACT OPENAI REQUEST ===');
-    console.log('System prompt:', JSON.stringify(systemPrompt));
-    console.log('Message content length:', messageContent.length);
-    console.log('Message content:', JSON.stringify(messageContent));
-    console.log('Full messages array:', JSON.stringify(messages));
-    console.log('=== END DEBUG ===');
-    
-    const response = await makeHttpsRequest({
+    // Add message to thread
+    await makeHttpsRequest({
       hostname: 'api.openai.com',
-      path: '/v1/chat/completions',
+      path: `/v1/threads/${threadId}/messages`,
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
         'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(requestData)
+        'OpenAI-Beta': 'assistants=v2'
       }
-    }, requestData);
+    }, JSON.stringify({ role: 'user', content: messageContent }));
     
-    const responseData = JSON.parse(response);
+    // Create and run assistant
+    const assistantResponse = await makeHttpsRequest({
+      hostname: 'api.openai.com',
+      path: '/v1/assistants',
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+        'OpenAI-Beta': 'assistants=v2'
+      }
+    }, JSON.stringify({
+      name: 'Golf Swing Coach',
+      instructions: 'You are a professional golf coach analyzing swing videos. Provide natural, conversational coaching advice.',
+      model: 'gpt-4o',
+      tools: []
+    }));
     
-    if (responseData.error) {
-      throw new Error(`OpenAI API error: ${responseData.error.message}`);
+    const assistant = JSON.parse(assistantResponse);
+    
+    const runResponse = await makeHttpsRequest({
+      hostname: 'api.openai.com',
+      path: `/v1/threads/${threadId}/runs`,
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+        'OpenAI-Beta': 'assistants=v2'
+      }
+    }, JSON.stringify({
+      assistant_id: assistant.id,
+      max_completion_tokens: 2500,
+      temperature: 0.7
+    }));
+    
+    const run = JSON.parse(runResponse);
+    
+    // Wait for completion
+    let attempts = 0;
+    let completedRun;
+    while (attempts < 30) {
+      const statusResponse = await makeHttpsRequest({
+        hostname: 'api.openai.com',
+        path: `/v1/threads/${threadId}/runs/${run.id}`,
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+          'OpenAI-Beta': 'assistants=v2'
+        }
+      });
+      
+      completedRun = JSON.parse(statusResponse);
+      
+      if (completedRun.status === 'completed') {
+        break;
+      }
+      if (completedRun.status === 'failed' || completedRun.status === 'cancelled') {
+        throw new Error(`OpenAI run ${completedRun.status}: ${completedRun.last_error?.message || 'Unknown error'}`);
+      }
+      
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      attempts++;
     }
     
-    const aiResponse = responseData.choices[0].message.content;
-    const responseTokens = estimateTokenCount(aiResponse);
-    const totalTokensUsed = systemTokens + userTokens + responseTokens;
-    const processingTime = Date.now() - startTime;
+    if (completedRun.status !== 'completed') {
+      throw new Error('OpenAI run timed out');
+    }
     
-    console.log(`Enhanced GPT-4o analysis completed successfully`);
-    console.log(`Total tokens used: ${totalTokensUsed} (response: ${responseTokens})`);
-    console.log(`Processing time: ${processingTime}ms`);
+    // Get response
+    const messagesResponse = await makeHttpsRequest({
+      hostname: 'api.openai.com',
+      path: `/v1/threads/${threadId}/messages`,
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'OpenAI-Beta': 'assistants=v2'
+      }
+    });
     
-    // ULTRA-SIMPLIFIED: Skip CloudWatch metrics for now
-    console.log('Skipping CloudWatch metrics (ultra-simplified Sprint 1A)');
+    const messages = JSON.parse(messagesResponse);
+    const aiResponse = messages.data[0].content[0].text.value;
     
-    // RAW RESPONSE: Use AI response directly without any parsing
-    console.log('Returning raw AI response without parsing');
-    return {
-      coaching_response: aiResponse.trim(),
+    // 6. Parse response to extract coaching text + key frame list
+    const keyFrameMatch = aiResponse.match(/KEY_FRAMES:\s*([^\n\r]+)/);
+    const keyFrames = keyFrameMatch ? keyFrameMatch[1].split(',').map(f => f.trim()) : [];
+    const coachingText = aiResponse.replace(/KEY_FRAMES:.*$/g, '').trim();
+    
+    console.log(`Parsed ${keyFrames.length} key frames for curation`);
+    
+    // 7. Use OpenAI Threads API to delete non-key frame messages immediately
+    let deletedCount = 0;
+    for (const message of messages.data) {
+      if (message.role === 'user' && message.content) {
+        const frameMatch = message.content.find(c => c.type === 'text' && c.text.value.startsWith('Frame: '));
+        if (frameMatch) {
+          const frameId = frameMatch.text.value.replace('Frame: ', '');
+          if (!keyFrames.includes(frameId)) {
+            await makeHttpsRequest({
+              hostname: 'api.openai.com',
+              path: `/v1/threads/${threadId}/messages/${message.id}`,
+              method: 'DELETE',
+              headers: {
+                'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+                'OpenAI-Beta': 'assistants=v2'
+              }
+            });
+            deletedCount++;
+          }
+        }
+      }
+    }
+    console.log(`Frame curation complete: deleted ${deletedCount} non-key frames`);
+    
+    // 8. Update user thread metadata with new swing analysis
+    const swingMetadata = {
+      analysis_id: analysisId,
+      date: new Date().toISOString(),
+      key_frames: keyFrames
+    };
+    await addSwingToUserHistory(userId, swingMetadata);
+    
+    console.log(`User thread swing analysis completed for ${userId}`);
+    
+    // Function should work with existing storeAIAnalysis() for response storage
+    const analysisResult = {
+      coaching_response: coachingText,
+      thread_id: threadId,
+      selected_frames: keyFrames,
       symptoms_detected: [],
       root_cause: null,
       confidence_score: null,
       practice_recommendations: []
     };
     
+    // 9. Return coaching response for immediate display
+    return analysisResult;
+    
   } catch (error) {
-    const processingTime = Date.now() - startTime;
-    console.error('Error in enhanced GPT-4o analysis:', error);
-    console.error(`Analysis failed after ${processingTime}ms`);
+    console.error('Error in user thread swing analysis:', error);
     
-    // ULTRA-SIMPLIFIED: Skip error metrics for now  
-    console.log('Skipping error metrics (ultra-simplified Sprint 1A)');
-    
-    // Enhanced error handling with graceful degradation
+    // Function should maintain existing error handling patterns
     if (error.message.includes('Rate limit exceeded')) {
       throw new Error('Too many coaching requests. Please wait an hour before requesting another analysis to help us manage costs.');
     } else if (error.message.includes('Request too large')) {
@@ -1151,71 +1357,8 @@ function makeHttpsRequest(options, data) {
   });
 }
 
-// Redirect to unified system
-async function buildContextAwarePrompt(frameData, swingData, userId) {
-  return buildUnifiedCoachingPrompt({
-    userId: userId || 'guest',
-    messageType: 'video_analysis',
-    frameData: frameData
-  });
-}
 
-// Redirect to unified system
-async function buildContextAwareGolfCoachingPrompt(frameData, coachingHistory = null) {
-  const userId = frameData && frameData.user_context && frameData.user_context.userId ? 
-    frameData.user_context.userId : 'guest';
-    
-  const result = await buildUnifiedCoachingPrompt({
-    userId: userId,
-    messageType: 'video_analysis',
-    frameData: frameData
-  });
-  
-  return result.systemPrompt; // Return just the system prompt string
-}
 
-// Helper function to extract focus areas from coaching history
-function extractFocusAreas(recentSessions) {
-  const focusAreas = [];
-  
-  recentSessions.forEach(session => {
-    if (session.ai_analysis && session.ai_analysis.focus_areas) {
-      focusAreas.push(...session.ai_analysis.focus_areas);
-    }
-  });
-  
-  // Remove duplicates and return most common focus areas
-  const uniqueAreas = [...new Set(focusAreas)];
-  return uniqueAreas.slice(0, 3); // Top 3 focus areas
-}
-
-// Helper function to extract progress notes from coaching history
-function extractProgressNotes(recentSessions) {
-  const progressIndicators = [];
-  
-  recentSessions.forEach((session, index) => {
-    if (session.ai_analysis && session.ai_analysis.coaching_recommendations) {
-      const analysis = session.ai_analysis.coaching_recommendations;
-      
-      // Extract key progress indicators
-      if (analysis.includes('improvement') || analysis.includes('better') || analysis.includes('progress')) {
-        progressIndicators.push(`Session ${index + 1}: Showed improvement`);
-      }
-      
-      // Look for specific technical progress
-      if (analysis.includes('swing plane') && analysis.includes('good')) {
-        progressIndicators.push('Swing plane improving');
-      }
-      if (analysis.includes('impact') && analysis.includes('solid')) {
-        progressIndicators.push('Impact position strengthening');
-      }
-    }
-  });
-  
-  return progressIndicators.length > 0 
-    ? progressIndicators.join(', ')
-    : 'Building fundamental swing improvements';
-}
 
 // UNIFIED COACHING PROMPT SYSTEM - Let AI be intelligent with raw context
 async function buildUnifiedCoachingPrompt(options) {
@@ -1484,49 +1627,44 @@ function buildBasicGolfCoachingPrompt(frameData) {
   });
 }
 
-function selectKeyFramesForAnalysis(frameUrls) {
-  console.log('Available frame phases:', Object.keys(frameUrls));
-  
-  // FIXED: Work with actual frame format (frame_000, frame_001, etc.)
-  const selectedFrames = [];
-  const frameKeys = Object.keys(frameUrls).sort(); // Sort to get proper order
-  
-  // Select evenly distributed frames for analysis (max 10 frames)
-  const maxFrames = Math.min(10, frameKeys.length);
-  const step = Math.max(1, Math.floor(frameKeys.length / maxFrames));
-  
-  for (let i = 0; i < frameKeys.length; i += step) {
-    if (selectedFrames.length >= maxFrames) break;
+// Parse dual response (coaching + P1-P10 frame selection)
+async function parseDualResponse(aiResponse) {
+  try {
+    console.log('Parsing dual response for coaching and P1-P10 frame selection...');
     
-    const frameKey = frameKeys[i];
-    if (frameUrls[frameKey]) {
-      selectedFrames.push({
-        phase: frameKey,
-        url: frameUrls[frameKey]
-      });
+    // Try to extract JSON from response
+    const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const parsedResponse = JSON.parse(jsonMatch[0]);
+      
+      // Validate that we have both coaching response and selected frames
+      if (parsedResponse.coaching_response && parsedResponse.selected_frames) {
+        console.log('Successfully parsed dual response with coaching and P1-P10 frames');
+        return {
+          coaching_response: parsedResponse.coaching_response,
+          selected_frames: parsedResponse.selected_frames,
+          frame_explanations: parsedResponse.frame_explanations || {}
+        };
+      }
     }
+    
+    // Fallback: if JSON parsing fails, return raw response as coaching
+    console.log('JSON parsing failed, using raw response as coaching');
+    return {
+      coaching_response: aiResponse.trim(),
+      selected_frames: {},
+      frame_explanations: {}
+    };
+    
+  } catch (error) {
+    console.error('Error parsing dual response:', error);
+    // Fallback: return raw response
+    return {
+      coaching_response: aiResponse.trim(),
+      selected_frames: {},
+      frame_explanations: {}
+    };
   }
-  
-  // Always include first and last frames if available
-  const firstFrame = frameKeys[0];
-  const lastFrame = frameKeys[frameKeys.length - 1];
-  
-  if (firstFrame && !selectedFrames.some(f => f.phase === firstFrame)) {
-    selectedFrames.unshift({
-      phase: firstFrame,
-      url: frameUrls[firstFrame]
-    });
-  }
-  
-  if (lastFrame && lastFrame !== firstFrame && !selectedFrames.some(f => f.phase === lastFrame)) {
-    selectedFrames.push({
-      phase: lastFrame,
-      url: frameUrls[lastFrame]
-    });
-  }
-  
-  console.log(`Selected ${selectedFrames.length} frames for AI analysis:`, selectedFrames.map(f => f.phase));
-  return selectedFrames;
 }
 
 // Enhanced response parser with coaching continuity support
@@ -1636,19 +1774,36 @@ async function storeAIAnalysis(analysisId, analysis) {
   try {
     const dynamodb = getDynamoClient();
     
+    // Enhanced storage: Save both coaching response and selected P1-P10 frames
+    const updateExpression = 'SET ai_analysis = :analysis, ai_analysis_completed = :completed, updated_at = :timestamp';
+    const expressionAttributeValues = {
+      ':analysis': analysis,
+      ':completed': true,
+      ':timestamp': new Date().toISOString()
+    };
+    
+    // Add P1-P10 frame selections if available
+    if (analysis.selected_frames && Object.keys(analysis.selected_frames).length > 0) {
+      updateExpression += ', selected_frames = :frames';
+      expressionAttributeValues[':frames'] = analysis.selected_frames;
+      console.log('Storing P1-P10 frame selections:', Object.keys(analysis.selected_frames).join(', '));
+    }
+    
+    // Add frame explanations if available
+    if (analysis.frame_explanations && Object.keys(analysis.frame_explanations).length > 0) {
+      updateExpression += ', frame_explanations = :explanations';
+      expressionAttributeValues[':explanations'] = analysis.frame_explanations;
+    }
+    
     const command = new UpdateCommand({
       TableName: process.env.DYNAMODB_TABLE || 'golf-coach-analyses',
       Key: { analysis_id: analysisId },
-      UpdateExpression: 'SET ai_analysis = :analysis, ai_analysis_completed = :completed, updated_at = :timestamp',
-      ExpressionAttributeValues: {
-        ':analysis': analysis,
-        ':completed': true,
-        ':timestamp': new Date().toISOString()
-      }
+      UpdateExpression: updateExpression,
+      ExpressionAttributeValues: expressionAttributeValues
     });
     
     await dynamodb.send(command);
-    console.log(`AI analysis stored for ${analysisId}`);
+    console.log(`Enhanced AI analysis with P1-P10 frames stored for ${analysisId}`);
   } catch (error) {
     console.error('Error storing AI analysis:', error);
     throw error;
@@ -1684,13 +1839,15 @@ async function sendWebSocketMessage(connectionId, message) {
 // handleChatRequest - ENHANCED function for POST /api/chat with Sprint 3B integration
 async function handleChatRequest(event, userContext) {
   try {
-    console.log('🎯 Processing enhanced chat request with Sprint 3B context integration');
+    console.log('Starting user thread chat continuation...');
     
+    // 1. Parse request body to extract: message, userId
     const body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
-    const { message, context, jobId, conversationHistory, coachingContext } = body;
+    const { message } = body;
+    const userId = userContext?.userId || body.userId || 'guest-user';
     
+    // 2. Basic input validation only
     if (!message) {
-      console.log('ERROR: No message provided in chat request');
       return {
         statusCode: 400,
         headers: {
@@ -1705,97 +1862,143 @@ async function handleChatRequest(event, userContext) {
       };
     }
     
-    // Extract userId for context linking
-    const userId = userContext?.userId || body.userId || 'guest-user';
-    console.log(`Enhanced chat request from user: ${userId} (${userContext?.userType || 'guest'})`);
+    console.log(`Chat request from user: ${userId}`);
     
-    // ENHANCED RATE LIMITING with user context
-    const rateLimitCheck = checkEnhancedChatRateLimit(userId, userContext);
-    if (!rateLimitCheck.allowed) {
-      console.log(`Enhanced chat rate limit exceeded for user: ${userId}`);
-      const resetTime = new Date(rateLimitCheck.resetTime);
-      return {
-        statusCode: 429,
+    // 3. Get user's existing thread: getUserThread(userId)
+    let userThreadData = await getUserThread(userId);
+    let threadId = userThreadData?.thread_id;
+    
+    // 4. If no thread exists, create general coaching thread (no swing context)
+    if (!threadId) {
+      console.log(`Creating new general coaching thread for user ${userId}`);
+      const threadResponse = await makeHttpsRequest({
+        hostname: 'api.openai.com',
+        path: '/v1/threads',
+        method: 'POST',
         headers: {
+          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
           'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*'
-        },
-        body: JSON.stringify({
-          error: 'Rate limit exceeded',
-          message: `You've reached your ${rateLimitCheck.userType || 'guest'} limit of ${rateLimitCheck.limit} requests per hour. ${userContext?.isAuthenticated ? 'As an authenticated user, you get higher limits!' : 'Sign in for higher limits!'} Please try again at ${resetTime.toLocaleTimeString()}.`,
-          resetTime: rateLimitCheck.resetTime,
-          requestCount: rateLimitCheck.requestCount,
-          limit: rateLimitCheck.limit,
-          success: false
-        })
+          'OpenAI-Beta': 'assistants=v2'
+        }
+      }, JSON.stringify({}));
+      
+      const newThread = JSON.parse(threadResponse);
+      threadId = newThread.id;
+      
+      userThreadData = {
+        thread_id: threadId,
+        swing_count: 0,
+        created_at: new Date().toISOString()
       };
+      await storeUserThread(userId, userThreadData);
+    } else {
+      console.log(`Using existing thread ${threadId} for user ${userId}`);
     }
     
-    console.log(`Enhanced chat rate limit check passed: ${rateLimitCheck.requestCount}/${rateLimitCheck.limit} requests used`);
-    
-    // STEP 1: Assemble coaching context from multiple sources
-    const assembledContext = await assembleEnhancedFollowUpContext({
-      userId,
-      jobId,
-      existingContext: context,
-      coachingContext,
-      conversationHistory,
-      userContext
-    });
-    
-    // STEP 2: Build unified prompt with integrated conversation history
-    const { systemPrompt, userPrompt, messages } = await buildUnifiedCoachingPrompt({
-      userId: userId,
-      messageType: 'chat',
-      conversationHistory: conversationHistory,
-      userMessage: message
-    });
-    
-    console.log(`🎯 Built messages array with ${messages.length} total messages (system + history + current)`);
-    console.log('🎯 Messages preview:', messages.map((msg, i) => `${i}: ${msg.role} - ${msg.content.substring(0, 50)}...`));
-    
-    // STEP 3: Call GPT with complete messages array including conversation history
-    const requestData = JSON.stringify({
-      model: "gpt-4o",
-      messages: messages, // Use the complete messages array with conversation history
-      max_tokens: 1500,
-      temperature: 0.7,
-      top_p: 0.9,
-      frequency_penalty: 0.1,
-      presence_penalty: 0.1,
-      user: userId
-    });
-    
-    const apiResponse = await makeHttpsRequest({
+    // 5. Add user's message to their OpenAI thread
+    await makeHttpsRequest({
       hostname: 'api.openai.com',
-      path: '/v1/chat/completions',
+      path: `/v1/threads/${threadId}/messages`,
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
         'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(requestData)
+        'OpenAI-Beta': 'assistants=v2'
       }
-    }, requestData);
+    }, JSON.stringify({
+      role: 'user',
+      content: message
+    }));
     
-    const responseData = JSON.parse(apiResponse);
+    // 6. Call OpenAI API with thread continuation (no additional context needed)
+    const assistantResponse = await makeHttpsRequest({
+      hostname: 'api.openai.com',
+      path: '/v1/assistants',
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+        'OpenAI-Beta': 'assistants=v2'
+      }
+    }, JSON.stringify({
+      name: 'Golf Coach',
+      instructions: 'You are a professional golf coach having ongoing conversations with golfers. Provide natural, conversational coaching advice.',
+      model: 'gpt-4o',
+      tools: []
+    }));
     
-    if (responseData.error) {
-      throw new Error(`OpenAI API error: ${responseData.error.message}`);
+    const assistant = JSON.parse(assistantResponse);
+    
+    const runResponse = await makeHttpsRequest({
+      hostname: 'api.openai.com',
+      path: `/v1/threads/${threadId}/runs`,
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+        'OpenAI-Beta': 'assistants=v2'
+      }
+    }, JSON.stringify({
+      assistant_id: assistant.id,
+      max_completion_tokens: 1500,
+      temperature: 0.7
+    }));
+    
+    const run = JSON.parse(runResponse);
+    
+    // Wait for completion
+    let attempts = 0;
+    let completedRun;
+    while (attempts < 30) {
+      const statusResponse = await makeHttpsRequest({
+        hostname: 'api.openai.com',
+        path: `/v1/threads/${threadId}/runs/${run.id}`,
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+          'OpenAI-Beta': 'assistants=v2'
+        }
+      });
+      
+      completedRun = JSON.parse(statusResponse);
+      
+      if (completedRun.status === 'completed') {
+        break;
+      }
+      if (completedRun.status === 'failed' || completedRun.status === 'cancelled') {
+        throw new Error(`OpenAI run ${completedRun.status}: ${completedRun.last_error?.message || 'Unknown error'}`);
+      }
+      
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      attempts++;
     }
     
-    const chatResponse = responseData.choices[0].message.content;
-    const response = {
-      text: chatResponse.trim(),
-      tokensUsed: responseData.usage?.total_tokens || 0,
-      timestamp: new Date().toISOString(),
-      contextSources: ['unified_system']
-    };
+    if (completedRun.status !== 'completed') {
+      throw new Error('OpenAI run timed out');
+    }
     
-    // STEP 4: Store conversation in golf-coach-analyses table (simplified, reliable method)
-    await storeConversationSimple(userId, message, response.text, assembledContext.jobId);
+    // Get response
+    const messagesResponse = await makeHttpsRequest({
+      hostname: 'api.openai.com',
+      path: `/v1/threads/${threadId}/messages`,
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'OpenAI-Beta': 'assistants=v2'
+      }
+    });
     
-    // STEP 5: Track enhanced metrics
-    await trackEnhancedFollowUpMetrics(userId, response, assembledContext);
+    const messages = JSON.parse(messagesResponse);
+    
+    // 7. Parse AI response and return formatted result
+    const chatResponse = messages.data[0].content[0].text.value;
+    
+    // 8. Update thread metadata (last_updated, message_count)
+    userThreadData.last_updated = new Date().toISOString();
+    userThreadData.message_count = (userThreadData.message_count || 0) + 1;
+    await storeUserThread(userId, userThreadData);
+    
+    console.log(`User thread chat continuation completed for ${userId}`);
     
     return {
       statusCode: 200,
@@ -1804,19 +2007,17 @@ async function handleChatRequest(event, userContext) {
         'Access-Control-Allow-Origin': '*'
       },
       body: JSON.stringify({
-        response: response.text,
-        message: response.text, // Fallback for app compatibility
-        tokensUsed: response.tokensUsed,
-        contextSources: response.contextSources,
-        timestamp: response.timestamp,
+        response: chatResponse.trim(),
+        message: chatResponse.trim(), // Fallback for app compatibility
+        thread_id: threadId,
+        timestamp: new Date().toISOString(),
         success: true
       })
     };
     
   } catch (error) {
-    console.error('❌ Error in enhanced chat request:', error);
+    console.error('Error in user thread chat continuation:', error);
     
-    // NO FALLBACK - Return honest error instead of fake coaching
     return {
       statusCode: 500,
       headers: {
@@ -1880,65 +2081,238 @@ function checkEnhancedChatRateLimit(userId, userContext) {
   };
 }
 
-// SIMPLE, RELIABLE CONTEXT ASSEMBLY - Uses same storage as conversation saving
-async function assembleEnhancedFollowUpContext(options) {
-  const { userId, jobId, existingContext, coachingContext, conversationHistory, userContext } = options;
-  
-  console.log('📋 Assembling context from reliable golf-coach-analyses table...');
-  
-  const context = {
-    userId,
-    jobId,
-    userContext,
-    timestamp: new Date().toISOString()
-  };
-  
-  try {
-    // Add basic contexts that don't require DB calls
-    if (existingContext) {
-      context.currentSwingAnalysis = existingContext;
-      console.log('✅ Current swing analysis context loaded');
-    }
-    
-    if (coachingContext) {
-      context.mobileCoachingContext = coachingContext;
-      console.log('✅ Mobile coaching context loaded');
-    }
-    
-    // MAIN IMPROVEMENT: Fetch recent conversations from the same location we store them
-    const recentConversations = await fetchRecentConversationsSimple(userId, jobId);
-    if (recentConversations && recentConversations.length > 0) {
-      context.recentStoredConversations = recentConversations;
-      console.log(`✅ Retrieved ${recentConversations.length} recent conversations from storage`);
-    } else {
-      console.log('ℹ️ No recent stored conversations found');
-    }
-    
-    // Use mobile app conversation history as backup/additional context
-    if (conversationHistory && conversationHistory.length > 0) {
-      context.recentConversationHistory = conversationHistory.slice(-10);
-      console.log(`✅ Mobile app conversation history loaded (${conversationHistory.length} messages)`);
-    }
-    
-    console.log(`📋 Simple context assembly complete: reliable data from golf-coach-analyses table`);
-    return context;
-    
-  } catch (error) {
-    console.error('❌ Error assembling context:', error);
-    
-    // Return minimal context to allow conversation to continue
-    return {
-      userId,
-      jobId,
-      userContext,
-      timestamp: new Date().toISOString(),
-      error: 'Partial context due to assembly error'
-    };
-  }
-}
 
 // REMOVED: fetchCoachingConversationsFromAPI - tried to access non-existent golf-coaching-chat Lambda
 // All conversation retrieval now handled by fetchRecentConversationsSimple() function above
+
+// USER THREAD MANAGEMENT FUNCTIONS FOR UNIFIED THREADING
+async function getUserThread(userId) {
+  try {
+    console.log('DIAGNOSTIC: getUserThread called with userId:', userId);
+    console.log('DIAGNOSTIC: userId type:', typeof userId);
+    console.log('DIAGNOSTIC: USER_THREADS_TABLE env var:', process.env.USER_THREADS_TABLE);
+    
+    const tableName = process.env.USER_THREADS_TABLE || 'golf-user-threads';
+    console.log('DIAGNOSTIC: Using table name:', tableName);
+    
+    console.log('DIAGNOSTIC: Getting DynamoDB client...');
+    const dynamodb = getDynamoClient();
+    console.log('DIAGNOSTIC: DynamoDB client obtained successfully');
+    
+    console.log('DIAGNOSTIC: Creating GetCommand with key structure:', { user_id: userId });
+    const getCommand = new GetCommand({
+      TableName: tableName,
+      Key: { user_id: userId }
+    });
+    console.log('DIAGNOSTIC: GetCommand created successfully');
+    
+    console.log('DIAGNOSTIC: Sending GetCommand to DynamoDB...');
+    const response = await dynamodb.send(getCommand);
+    console.log('DIAGNOSTIC: DynamoDB response received');
+    console.log('DIAGNOSTIC: DynamoDB response structure:', JSON.stringify(response, null, 2));
+    
+    if (response.Item) {
+      console.log('DIAGNOSTIC: Found existing thread for user:', userId);
+      console.log('DIAGNOSTIC: Thread data:', JSON.stringify(response.Item, null, 2));
+      return response.Item;
+    } else {
+      console.log('DIAGNOSTIC: No existing thread found for user:', userId);
+      return null;
+    }
+    
+  } catch (error) {
+    console.error('DIAGNOSTIC: getUserThread error occurred');
+    console.error('DIAGNOSTIC: Error type:', typeof error);
+    console.error('DIAGNOSTIC: Error name:', error.name);
+    console.error('DIAGNOSTIC: Error message:', error.message);
+    console.error('DIAGNOSTIC: Error code:', error.code);
+    console.error('DIAGNOSTIC: Error statusCode:', error.statusCode);
+    console.error('DIAGNOSTIC: Error stack:', error.stack);
+    console.error('DIAGNOSTIC: Full error object:', JSON.stringify(error, null, 2));
+    
+    // Don't return null, let the error propagate so we can see what's happening
+    throw error;
+  }
+}
+
+async function storeUserThread(userId, threadData) {
+  try {
+    console.log(`💾 Storing user thread for: ${userId}`);
+    
+    const dynamodb = getDynamoClient();
+    const item = {
+      user_id: userId,
+      thread_id: threadData.thread_id,
+      created_at: threadData.created_at || new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      swing_count: threadData.swing_count || 0,
+      last_activity: new Date().toISOString()
+    };
+    
+    await dynamodb.send(new PutCommand({
+      TableName: process.env.USER_THREADS_TABLE || 'golf-user-threads',
+      Item: item
+    }));
+    
+    console.log(`SUCCESS: Stored thread mapping: ${userId} -> ${threadData.thread_id}`);
+    return true;
+    
+  } catch (error) {
+    console.error(`ERROR: Error storing user thread for ${userId}:`, error);
+    return false;
+  }
+}
+
+async function addSwingToUserHistory(userId, swingMetadata) {
+  try {
+    console.log(`📈 Adding swing to history for user: ${userId}`);
+    
+    const dynamodb = getDynamoClient();
+    
+    // Increment swing count and update last activity
+    await dynamodb.send(new UpdateCommand({
+      TableName: process.env.USER_THREADS_TABLE || 'golf-user-threads',
+      Key: { user_id: userId },
+      UpdateExpression: 'ADD swing_count :inc SET last_activity = :timestamp, last_swing_id = :swing_id',
+      ExpressionAttributeValues: {
+        ':inc': 1,
+        ':timestamp': new Date().toISOString(),
+        ':swing_id': swingMetadata.analysis_id
+      }
+    }));
+    
+    console.log(`SUCCESS: Updated swing history for user: ${userId}`);
+    return true;
+    
+  } catch (error) {
+    console.error(`ERROR: Error adding swing to user history for ${userId}:`, error);
+    return false;
+  }
+}
+
+// Removed duplicate processSwingAnalysis function - using enhanced version above
+
+// GET CURRENT SWING ANALYSIS DATA
+async function getCurrentSwingAnalysisData(jobId) {
+  try {
+    
+    const analysisId = swingData.analysis_id?.S;
+    const status = swingData.status?.S;
+    
+    if (!analysisId) {
+      console.error('ERROR: STEP 1 FAILED: No analysis_id found in DynamoDB record');
+      console.error('swingData structure:', JSON.stringify(swingData, null, 2));
+      return;
+    }
+    
+    console.log(`INFO: STEP 2: Starting AI analysis for: ${analysisId}, status: ${status}`);
+    
+    // Get the full analysis data from DynamoDB to prepare for AI analysis
+    console.log('STEP STEP 3: Getting DynamoDB client...');
+    const dynamodb = getDynamoClient();
+    
+    console.log(`STEP STEP 4: Fetching full record for ${analysisId}...`);
+    const result = await dynamodb.send(new GetCommand({
+      TableName: process.env.DYNAMODB_TABLE || 'golf-coach-analyses',
+      Key: { analysis_id: analysisId }
+    }));
+    
+    if (!result.Item) {
+      console.error(`ERROR: STEP 4 FAILED: Analysis record not found: ${analysisId}`);
+      console.error('DynamoDB result:', JSON.stringify(result, null, 2));
+      return;
+    }
+    
+    console.log('SUCCESS: STEP 4 SUCCESS: Got full record from DynamoDB');
+    const fullSwingData = result.Item;
+    
+    // Check if frame data exists
+    const frameData = fullSwingData.analysis_results?.M;
+    if (!frameData || !frameData.frames?.L) {
+      console.error(`ERROR: No frame data found for analysis: ${analysisId}`);
+      return;
+    }
+    
+    console.log(`SUCCESS: Found ${frameData.frames.L.length} frames for AI analysis`);
+    
+    // Convert DynamoDB format to expected format for analyzeSwingWithGPT4o
+    const frame_urls = {};
+    frameData.frames.L.forEach(frame => {
+      const frameMap = frame.M;
+      if (frameMap.phase?.S && frameMap.url?.S) {
+        frame_urls[frameMap.phase.S] = frameMap.url.S;
+      }
+    });
+    
+    // Create the expected frameData structure
+    const convertedFrameData = {
+      frame_urls: frame_urls,
+      // Include other frame metadata if needed
+      video_duration: frameData.video_duration?.N ? parseFloat(frameData.video_duration.N) : null,
+      fps: frameData.fps?.N ? parseFloat(frameData.fps.N) : null,
+      frames_extracted: frameData.frames_extracted?.N ? parseInt(frameData.frames_extracted.N) : frameData.frames.L.length
+    };
+    
+    console.log(`SUCCESS: STEP 6/7 SUCCESS: Converted ${Object.keys(frame_urls).length} frame URLs for AI analysis`);
+    console.log('Sample frame URLs:', Object.keys(frame_urls).slice(0, 3));
+    
+    // Call our unified threading AI analysis function with converted data
+    console.log('STEP STEP 8: Calling analyzeSwingWithGPT4o...');
+    const aiResult = await analyzeSwingWithGPT4o(convertedFrameData, fullSwingData);
+    console.log('SUCCESS: STEP 8 COMPLETED: analyzeSwingWithGPT4o returned result');
+    
+    console.log('STEP STEP 9: Processing AI analysis result...');
+    console.log('aiResult type:', typeof aiResult);
+    console.log('aiResult keys:', aiResult ? Object.keys(aiResult) : 'NULL');
+    console.log('aiResult.response exists:', !!aiResult?.response);
+    
+    if (aiResult && aiResult.response) {
+      console.log(`SUCCESS: STEP 9 SUCCESS: AI analysis completed successfully for: ${analysisId}`);
+      
+      console.log('STEP STEP 10: Updating DynamoDB with AI results...');
+      // Update the record with AI analysis results
+      await dynamodb.send(new UpdateCommand({
+        TableName: process.env.DYNAMODB_TABLE || 'golf-coach-analyses',
+        Key: { analysis_id: analysisId },
+        UpdateExpression: 'SET ai_analysis = :analysis, ai_analysis_completed = :completed, #status = :status, progress_message = :progress, updated_at = :timestamp',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: {
+          ':analysis': JSON.stringify(aiResult),
+          ':completed': true,
+          ':status': 'AI_COMPLETED',
+          ':progress': 'AI coaching analysis completed successfully',
+          ':timestamp': new Date().toISOString()
+        }
+      }));
+      
+      console.log(`🎉 STEP 10 SUCCESS: Analysis fully completed for: ${analysisId}`);
+    } else {
+      console.error(`ERROR: STEP 9 FAILED: AI analysis returned invalid result for: ${analysisId}`);
+      console.error('Full aiResult:', JSON.stringify(aiResult, null, 2));
+    }
+    
+  } catch (error) {
+    console.error('ERROR: Error in processSwingAnalysis:', error);
+    
+    // Update status to indicate failure
+    try {
+      const dynamodb = getDynamoClient();
+      await dynamodb.send(new UpdateCommand({
+        TableName: process.env.DYNAMODB_TABLE || 'golf-coach-analyses',
+        Key: { analysis_id: swingData.analysis_id?.S },
+        UpdateExpression: 'SET #status = :status, progress_message = :progress, updated_at = :timestamp',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: {
+          ':status': 'FAILED',
+          ':progress': `AI analysis failed: ${error.message}`,
+          ':timestamp': new Date().toISOString()
+        }
+      }));
+    } catch (updateError) {
+      console.error('Failed to update error status:', updateError);
+    }
+  }
+}
 
 // GET CURRENT SWING ANALYSIS DATA
 async function getCurrentSwingAnalysisData(jobId) {
@@ -1976,155 +2350,6 @@ async function getCurrentSwingAnalysisData(jobId) {
   }
 }
 
-// BUILD ENHANCED CONTEXT-AWARE FOLLOW-UP PROMPT
-function buildEnhancedContextAwareFollowUpPrompt(message, assembledContext) {
-  const { userId, userContext, currentSwingAnalysis, coachingConversations, userCoachingHistory, currentSwingData } = assembledContext;
-  
-  // Build system prompt with integrated context
-  let systemPrompt = `You are a warm, encouraging PGA golf instructor providing follow-up coaching through Pin High's integrated coaching system.`;
-  
-  // Add user relationship context
-  if (userContext?.isAuthenticated) {
-    systemPrompt += `\n\nCOACHING RELATIONSHIP CONTEXT:`;
-    systemPrompt += `\n- This is an authenticated user with ongoing coaching relationship`;
-    systemPrompt += `\n- User: ${userContext.name || userContext.email}`;
-    
-    // Add coaching history context
-    if (userCoachingHistory && userCoachingHistory.sessionCount > 0) {
-      systemPrompt += `\n- Previous sessions: ${userCoachingHistory.sessionCount}`;
-      systemPrompt += `\n- Current focus areas: ${userCoachingHistory.focusAreas.map(f => f.focus).join(', ')}`;
-      
-      if (userCoachingHistory.lastSessionDate) {
-        const daysSince = Math.floor((Date.now() - new Date(userCoachingHistory.lastSessionDate).getTime()) / (1000 * 60 * 60 * 24));
-        systemPrompt += `\n- Last session: ${daysSince} days ago`;
-      }
-    }
-    
-    // Add coaching conversations context
-    if (coachingConversations && coachingConversations.length > 0) {
-      const recentConversation = coachingConversations[0];
-      if (recentConversation.recent_messages && recentConversation.recent_messages.length > 0) {
-        systemPrompt += `\n- Recent coaching discussions available`;
-        systemPrompt += `\n- Last interaction: ${recentConversation.last_updated}`;
-      }
-    }
-  } else {
-    systemPrompt += `\n\nGUEST COACHING SESSION:`;
-    systemPrompt += `\n- Provide excellent coaching experience`;
-    systemPrompt += `\n- Focus on immediate actionable improvements`;
-  }
-  
-  // Add current swing context
-  if (currentSwingData && currentSwingData.ai_analysis) {
-    systemPrompt += `\n\nCURRENT SWING ANALYSIS CONTEXT:`;
-    
-    if (typeof currentSwingData.ai_analysis === 'object') {
-      const analysis = currentSwingData.ai_analysis;
-      systemPrompt += `\n- Root cause: ${analysis.root_cause || 'General improvement'}`;
-      systemPrompt += `\n- Confidence: ${analysis.confidence_score || 'N/A'}/100`;
-      
-      if (analysis.symptoms_detected && analysis.symptoms_detected.length > 0) {
-        systemPrompt += `\n- Key symptoms: ${analysis.symptoms_detected.join(', ')}`;
-      }
-      
-      if (analysis.practice_recommendations && analysis.practice_recommendations.length > 0) {
-        systemPrompt += `\n- Current focus: ${analysis.practice_recommendations.slice(0, 2).join(', ')}`;
-      }
-    }
-  }
-  
-  // Add response guidelines
-  systemPrompt += `\n\nRESPONSE GUIDELINES:`;
-  systemPrompt += `\n- Reference our coaching relationship naturally when context available`;
-  systemPrompt += `\n- Connect current question to swing analysis and coaching history`;
-  systemPrompt += `\n- Provide specific, actionable advice`;
-  systemPrompt += `\n- Use encouraging, supportive coaching tone`;
-  systemPrompt += `\n- Ask follow-up questions to deepen understanding`;
-  systemPrompt += `\n- Keep responses under 250 words for mobile users`;
-  
-  // Build conversation messages
-  const messages = [
-    { role: 'system', content: systemPrompt }
-  ];
-  
-  // Add recent conversation history for context
-  if (assembledContext.recentConversationHistory) {
-    assembledContext.recentConversationHistory.slice(-6).forEach(msg => {
-      messages.push({
-        role: msg.role,
-        content: msg.content
-      });
-    });
-  }
-  
-  // Add coaching conversations context if available
-  if (coachingConversations && coachingConversations[0]?.recent_messages) {
-    const recentMessages = coachingConversations[0].recent_messages.slice(-4);
-    recentMessages.forEach(msg => {
-      messages.push({
-        role: msg.role === 'coach' ? 'assistant' : 'user',
-        content: msg.content
-      });
-    });
-  }
-  
-  // Add current user message
-  messages.push({
-    role: 'user',
-    content: message
-  });
-  
-  return { messages, systemPrompt };
-}
-
-// CALL ENHANCED CONTEXT-AWARE GPT
-async function callEnhancedContextAwareGPT(prompt, assembledContext) {
-  try {
-    console.log('🤖 Calling enhanced context-aware GPT with integrated coaching context');
-    
-    const requestData = JSON.stringify({
-      model: "gpt-4o",
-      messages: prompt.messages,
-      max_tokens: 1500,
-      temperature: 0.7,
-      top_p: 0.9,
-      frequency_penalty: 0.1,
-      presence_penalty: 0.1,
-      user: assembledContext.userId // For OpenAI usage tracking
-    });
-    
-    const response = await makeHttpsRequest({
-      hostname: 'api.openai.com',
-      path: '/v1/chat/completions',
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(requestData)
-      }
-    }, requestData);
-    
-    const responseData = JSON.parse(response);
-    
-    if (responseData.error) {
-      throw new Error(`OpenAI API error: ${responseData.error.message}`);
-    }
-    
-    const chatResponse = responseData.choices[0].message.content;
-    
-    return {
-      text: chatResponse,
-      tokensUsed: responseData.usage?.total_tokens || 0,
-      model: responseData.model,
-      timestamp: new Date().toISOString(),
-      contextSources: Object.keys(assembledContext).filter(key => assembledContext[key] !== null && assembledContext[key] !== undefined).length
-    };
-    
-  } catch (error) {
-    console.error('❌ Error calling enhanced context-aware GPT:', error);
-    throw error;
-  }
-}
 
 // SIMPLE, RELIABLE CONVERSATION STORAGE - Single table, no complexity
 async function storeConversationSimple(userId, userMessage, aiResponse, jobId = null) {
@@ -2164,10 +2389,10 @@ async function storeConversationSimple(userId, userMessage, aiResponse, jobId = 
     };
     
     await dynamodb.send(new UpdateCommand(params));
-    console.log(`✅ Conversation stored successfully in record: ${recordKey}`);
+    console.log(`SUCCESS: Conversation stored successfully in record: ${recordKey}`);
     
   } catch (error) {
-    console.error('❌ Simple conversation storage failed:', error);
+    console.error('ERROR: Simple conversation storage failed:', error);
     // Don't throw - let conversation continue
   }
 }
@@ -2250,13 +2475,149 @@ async function fetchRecentConversationsSimple(userId, jobId = null) {
       }
     });
     
-    console.log(`✅ Retrieved and formatted ${formattedMessages.length} messages from ${allConversations.length} conversation entries`);
+    console.log(`SUCCESS: Retrieved and formatted ${formattedMessages.length} messages from ${allConversations.length} conversation entries`);
     
     return formattedMessages;
     
   } catch (error) {
-    console.error('❌ Error fetching recent conversations:', error);
+    console.error('ERROR: Error fetching recent conversations:', error);
     return [];
+  }
+}
+
+// USER THREAD MANAGEMENT FUNCTIONS - STEP 3
+
+// Get or create user's conversation thread
+async function getUserThread(userId) {
+  try {
+    console.log(`🔍 Getting user thread for: ${userId}`);
+    
+    const dynamodb = getDynamoClient();
+    
+    // 1. Query DynamoDB for existing user thread record
+    const command = new GetCommand({
+      TableName: process.env.DYNAMODB_TABLE || 'golf-coach-analyses',
+      Key: { analysis_id: `user_${userId}` }
+    });
+    
+    const result = await dynamodb.send(command);
+    
+    // 2. If exists, return { thread_id, swing_count, created_at }
+    if (result.Item && result.Item.thread_id) {
+      console.log(`SUCCESS: Found existing thread ${result.Item.thread_id} for user ${userId}`);
+      return {
+        thread_id: result.Item.thread_id,
+        swing_count: result.Item.total_swings || 0,
+        created_at: result.Item.created_at,
+        last_updated: result.Item.last_updated,
+        message_count: result.Item.message_count || 0
+      };
+    }
+    
+    console.log(`📝 No existing thread found for user ${userId}`);
+    return null;
+    
+  } catch (error) {
+    console.error(`ERROR: Error getting user thread for ${userId}:`, error);
+    return null;
+  }
+}
+
+// Store/update user thread information
+async function storeUserThread(userId, threadData) {
+  try {
+    console.log(`💾 Storing user thread data for: ${userId}`);
+    
+    const dynamodb = getDynamoClient();
+    
+    // 1. Update or create DynamoDB record with thread mapping
+    const updateExpression = `SET 
+      record_type = :recordType,
+      user_id = :userId,
+      thread_id = :threadId,
+      created_at = if_not_exists(created_at, :createdAt),
+      swing_analyses = if_not_exists(swing_analyses, :emptyArray),
+      total_swings = if_not_exists(total_swings, :zero),
+      message_count = if_not_exists(message_count, :zero),
+      last_updated = :lastUpdated`;
+    
+    const expressionAttributeValues = {
+      ':recordType': 'user_thread',
+      ':userId': userId,
+      ':threadId': threadData.thread_id,
+      ':createdAt': threadData.created_at || new Date().toISOString(),
+      ':emptyArray': [],
+      ':zero': 0,
+      ':lastUpdated': threadData.last_updated || new Date().toISOString()
+    };
+    
+    // Add optional fields if they exist in threadData
+    if (threadData.swing_count !== undefined) {
+      updateExpression += ', total_swings = :swingCount';
+      expressionAttributeValues[':swingCount'] = threadData.swing_count;
+    }
+    
+    if (threadData.message_count !== undefined) {
+      updateExpression += ', message_count = :messageCount';
+      expressionAttributeValues[':messageCount'] = threadData.message_count;
+    }
+    
+    const command = new UpdateCommand({
+      TableName: process.env.DYNAMODB_TABLE || 'golf-coach-analyses',
+      Key: { analysis_id: `user_${userId}` },
+      UpdateExpression: updateExpression,
+      ExpressionAttributeValues: expressionAttributeValues
+    });
+    
+    await dynamodb.send(command);
+    console.log(`SUCCESS: User thread data stored successfully for ${userId}`);
+    
+  } catch (error) {
+    console.error(`ERROR: Error storing user thread for ${userId}:`, error);
+    throw error;
+  }
+}
+
+// Add swing analysis metadata to user's record
+async function addSwingToUserHistory(userId, swingMetadata) {
+  try {
+    console.log(`INFO: Adding swing to user history for: ${userId}`);
+    
+    const dynamodb = getDynamoClient();
+    
+    // 1. Update user's DynamoDB record to add swing to swing_analyses array
+    const timestamp = new Date().toISOString();
+    const swingEntry = {
+      analysis_id: swingMetadata.analysis_id,
+      date: swingMetadata.date || timestamp,
+      key_frames: swingMetadata.key_frames || [],
+      coaching_focus: swingMetadata.coaching_focus || 'general'
+    };
+    
+    const command = new UpdateCommand({
+      TableName: process.env.DYNAMODB_TABLE || 'golf-coach-analyses',
+      Key: { analysis_id: `user_${userId}` },
+      UpdateExpression: `
+        SET 
+          swing_analyses = list_append(if_not_exists(swing_analyses, :emptyArray), :newSwing),
+          total_swings = if_not_exists(total_swings, :zero) + :one,
+          last_updated = :timestamp
+      `,
+      ExpressionAttributeValues: {
+        ':newSwing': [swingEntry],
+        ':emptyArray': [],
+        ':zero': 0,
+        ':one': 1,
+        ':timestamp': timestamp
+      }
+    });
+    
+    await dynamodb.send(command);
+    console.log(`SUCCESS: Swing analysis added to user history for ${userId}`);
+    
+  } catch (error) {
+    console.error(`ERROR: Error adding swing to user history for ${userId}:`, error);
+    throw error;
   }
 }
 
@@ -2278,10 +2639,10 @@ async function trackEnhancedFollowUpMetrics(userId, response, assembledContext) 
     
     await sendCloudWatchMetrics('ContextIntegrationSuccess', integrationSuccessCount, 'Count', userId);
     
-    console.log('📊 Enhanced follow-up metrics tracked successfully');
+    console.log('INFO: Enhanced follow-up metrics tracked successfully');
     
   } catch (error) {
-    console.error('❌ Error tracking enhanced follow-up metrics:', error);
+    console.error('ERROR: Error tracking enhanced follow-up metrics:', error);
     // Don't throw - metrics failure shouldn't affect user experience
   }
 }

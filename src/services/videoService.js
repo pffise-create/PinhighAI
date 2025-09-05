@@ -7,22 +7,28 @@ class VideoService {
   }
 
   // Generate unique filename for video upload
-  generateFileName(userId = 'user') {
+  generateFileName(userId) {
+    if (!userId) {
+      throw new Error('userId is required for generateFileName');
+    }
     const timestamp = Date.now();
     const random = Math.random().toString(36).substr(2, 9);
     return `golf-swings/${userId}/${timestamp}-${random}.mov`;
   }
 
   // Step 1: Get presigned URL for S3 upload
-  async getPresignedUrl(fileName, contentType = 'video/quicktime') {
+  async getPresignedUrl(fileName, contentType = 'video/quicktime', authHeaders = {}) {
     try {
       console.log('🔗 Getting presigned URL for:', fileName);
       
+      const headers = {
+        'Content-Type': 'application/json',
+        ...authHeaders
+      };
+      
       const response = await fetch(`${API_BASE_URL}/api/video/presigned-url`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: headers,
         body: JSON.stringify({
           fileName: fileName,
           contentType,
@@ -73,6 +79,7 @@ class VideoService {
       });
 
       const xhr = new XMLHttpRequest();
+      xhr.timeout = 90000; // 90 second timeout for video uploads
       
       return new Promise((resolve, reject) => {
         xhr.upload.addEventListener('progress', (event) => {
@@ -95,6 +102,10 @@ class VideoService {
           reject(new Error('Network error during upload'));
         });
 
+        xhr.addEventListener('timeout', () => {
+          reject(new Error('Video upload timed out after 90 seconds'));
+        });
+
         xhr.open('PUT', presignedUrl);
         xhr.setRequestHeader('Content-Type', 'video/quicktime');
         xhr.send(formData._parts[0][1]); // Extract the actual file data
@@ -107,20 +118,34 @@ class VideoService {
   }
 
   // Step 3: Trigger analysis after upload
-  async triggerAnalysis(fileName, bucketName = 'golf-coach-videos-1753203601') {
+  async triggerAnalysis(fileName, bucketName = 'golf-coach-videos-1753203601', message = '', userId, authHeaders = {}) {
     try {
       console.log('🔄 Triggering analysis for:', fileName);
       
+      if (!userId) {
+        throw new Error('userId is required for triggerAnalysis');
+      }
+      
+      const requestBody = {
+        s3Key: fileName,
+        bucketName: bucketName,
+        userId: userId
+      };
+      
+      // Add message if provided
+      if (message && message.trim()) {
+        requestBody.message = message.trim();
+      }
+      
+      const headers = {
+        'Content-Type': 'application/json',
+        ...authHeaders
+      };
+      
       const response = await fetch(`${API_BASE_URL}/api/video/analyze`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          s3Key: fileName,
-          bucketName: bucketName,
-          userId: 'mobile-user'
-        }),
+        headers: headers,
+        body: JSON.stringify(requestBody),
       });
 
       if (!response.ok) {
@@ -142,16 +167,19 @@ class VideoService {
   }
 
   // Step 4: Get analysis results
-  async getAnalysisResults(jobIdOrAnalysisId) {
+  async getAnalysisResults(jobIdOrAnalysisId, authHeaders = {}) {
     try {
       console.log('📋 Getting analysis results for:', jobIdOrAnalysisId);
+      
+      const headers = {
+        'Content-Type': 'application/json',
+        ...authHeaders
+      };
       
       // First try as jobId
       let response = await fetch(`${API_BASE_URL}/api/video/results/${jobIdOrAnalysisId}`, {
         method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: headers,
       });
 
       // If that fails, try querying DynamoDB directly through a different endpoint
@@ -164,9 +192,7 @@ class VideoService {
         // Call your Lambda directly to get from DynamoDB
         response = await fetch(`${API_BASE_URL}/api/analysis/${analysisId}`, {
           method: 'GET',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers: headers,
         });
       }
 
@@ -236,18 +262,22 @@ class VideoService {
   }
 
   // Step 5: Complete upload and analysis workflow
-  async uploadAndAnalyze(videoUri, videoDuration, onProgress) {
+  async uploadAndAnalyze(videoUri, videoDuration, onProgress, message = '', userId, authHeaders = {}) {
     try {
-      const fileName = this.generateFileName();
+      if (!userId) {
+        throw new Error('userId is required for uploadAndAnalyze');
+      }
+      
+      const fileName = this.generateFileName(userId);
       
       // Step 1: Get presigned URL
-      const presignedUrl = await this.getPresignedUrl(fileName);
+      const presignedUrl = await this.getPresignedUrl(fileName, 'video/quicktime', authHeaders);
       
       // Step 2: Upload video
       await this.uploadVideoToS3(videoUri, presignedUrl, onProgress);
       
-      // Step 3: Trigger analysis
-      const analysisResult = await this.triggerAnalysis(fileName);
+      // Step 3: Trigger analysis with message
+      const analysisResult = await this.triggerAnalysis(fileName, 'golf-coach-videos-1753203601', message, userId, authHeaders);
       
       return {
         jobId: analysisResult.jobId,
@@ -262,7 +292,7 @@ class VideoService {
   }
 
   // Step 6: Poll for analysis completion with progress updates
-  async waitForAnalysisComplete(jobId, onProgress, maxAttempts = 60, intervalMs = 5000) {
+  async waitForAnalysisComplete(jobId, onProgress, maxAttempts = 60, intervalMs = 5000, authHeaders = {}) {
     console.log('⏳ Starting to poll for results...');
     
     const startTime = Date.now();
@@ -275,7 +305,7 @@ class VideoService {
         
         // Use the analysis ID we saved earlier if jobId fails
         const idToCheck = this.currentAnalysisId || jobId;
-        const results = await this.getAnalysisResults(idToCheck);
+        const results = await this.getAnalysisResults(idToCheck, authHeaders);
         
         // Log status changes
         if (results.status !== lastStatus) {

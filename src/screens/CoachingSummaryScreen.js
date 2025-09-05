@@ -29,7 +29,7 @@ export default function CoachingSummaryScreen({ navigation }) {
   const [videoCount, setVideoCount] = useState(0);
   const [firstAnalysisData, setFirstAnalysisData] = useState(null);
   
-  const userId = user?.email || 'guest';
+  const userId = user?.id || 'guest';
 
   // Enhanced header with coaching context
   const renderHeader = () => (

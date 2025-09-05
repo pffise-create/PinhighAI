@@ -4,18 +4,97 @@ import {
   Text,
   StyleSheet,
 } from 'react-native';
+import Markdown from 'react-native-markdown-display';
 import { colors, typography, spacing, borderRadius, shadows } from '../utils/theme';
 import CoachingAnalysisCard from './CoachingAnalysisCard';
 
 const ChatMessage = ({ message, analysisData }) => {
   const isAI = message.sender === 'ai';
 
+  // Markdown styles for coach messages
+  const markdownStyles = {
+    body: {
+      fontSize: typography.fontSizes.base,
+      color: isAI ? colors.background : colors.text,
+      lineHeight: typography.lineHeights.relaxed * typography.fontSizes.base,
+      fontFamily: typography.fontFamily,
+    },
+    heading1: {
+      fontSize: typography.fontSizes['2xl'],
+      fontWeight: typography.fontWeights.bold,
+      color: isAI ? colors.background : colors.primary,
+      marginBottom: spacing.sm,
+      marginTop: spacing.base,
+    },
+    heading2: {
+      fontSize: typography.fontSizes.xl,
+      fontWeight: typography.fontWeights.semibold,
+      color: isAI ? colors.background : colors.primary,
+      marginBottom: spacing.xs,
+      marginTop: spacing.sm,
+    },
+    heading3: {
+      fontSize: typography.fontSizes.lg,
+      fontWeight: typography.fontWeights.semibold,
+      color: isAI ? colors.background : colors.coachAccent,
+      marginBottom: spacing.xs,
+      marginTop: spacing.sm,
+    },
+    strong: {
+      fontWeight: typography.fontWeights.bold,
+      color: isAI ? colors.background : colors.coachAccent,
+    },
+    em: {
+      fontStyle: 'italic',
+      color: isAI ? colors.background : colors.primary,
+    },
+    bullet_list: {
+      marginBottom: spacing.sm,
+    },
+    ordered_list: {
+      marginBottom: spacing.sm,
+    },
+    list_item: {
+      marginBottom: spacing.xs,
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+    },
+    bullet_list_icon: {
+      color: isAI ? colors.background : colors.coachAccent,
+      fontSize: typography.fontSizes.base,
+      marginRight: spacing.xs,
+      marginTop: 2,
+    },
+    paragraph: {
+      marginBottom: spacing.sm,
+      fontSize: typography.fontSizes.base,
+      lineHeight: typography.lineHeights.relaxed * typography.fontSizes.base,
+    },
+  };
+
+  const renderMessageText = (text) => {
+    if (!text) return null;
+    
+    // Use markdown for AI messages, plain text for user messages
+    if (isAI) {
+      return (
+        <Markdown style={markdownStyles}>
+          {text}
+        </Markdown>
+      );
+    } else {
+      return (
+        <Text style={[styles.messageText, styles.userText]}>
+          {text}
+        </Text>
+      );
+    }
+  };
+
   return (
     <View style={[styles.messageContainer, isAI ? styles.aiMessage : styles.userMessage]}>
       <View style={[styles.messageBubble, isAI ? styles.aiBubble : styles.userBubble]}>
-        <Text style={[styles.messageText, isAI ? styles.aiText : styles.userText]}>
-          {message.text}
-        </Text>
+        {renderMessageText(message.text)}
 
         {message.type === 'coaching_analysis' && message.metadata && (
           <View style={styles.additionalInfo}>

@@ -1,0 +1,159 @@
+{
+    "events": [
+        {
+            "logStreamName": "2025/09/02/[$LATEST]87bd034a1840400abf6e06b9fa56d990",
+            "timestamp": 1756878533396,
+            "message": "INIT_START Runtime Version: python:3.9.v111\tRuntime Version ARN: arn:aws:lambda:us-east-1::runtime:37f2a22b6df6b3d6c4d8ad1cbfd84eb865b6c4e810c097e722b65a41742c7d19\n",
+            "ingestionTime": 1756878533757,
+            "eventId": "39179700518032370041219186671385482166852709971189104640"
+        },
+        {
+            "logStreamName": "2025/09/02/[$LATEST]87bd034a1840400abf6e06b9fa56d990",
+            "timestamp": 1756878533696,
+            "message": "[WARNING]\t2025-09-03T05:48:53.696Z\t\tLAMBDA_WARNING: Unhandled exception. The most likely cause is an issue in the function code. However, in rare cases, a Lambda runtime update can cause unexpected function behavior. For functions using managed runtimes, runtime updates can be triggered by a function change, or can be applied automatically. To determine if the runtime has been updated, check the runtime version in the INIT_START log entry. If this error correlates with a change in the runtime version, you may be able to mitigate this error by temporarily rolling back to the previous runtime version. For more information, see https://docs.aws.amazon.com/lambda/latest/dg/runtimes-update.html\r\n",
+            "ingestionTime": 1756878533757,
+            "eventId": "39179700524722593600778373613846197648647218422983229441"
+        },
+        {
+            "logStreamName": "2025/09/02/[$LATEST]87bd034a1840400abf6e06b9fa56d990",
+            "timestamp": 1756878533696,
+            "message": "[ERROR] Runtime.ImportModuleError: Unable to import module 'lambda_function': No module named 'PIL'\nTraceback (most recent call last):",
+            "ingestionTime": 1756878533757,
+            "eventId": "39179700524722593600778373613846197648647218422983229442"
+        },
+        {
+            "logStreamName": "2025/09/02/[$LATEST]87bd034a1840400abf6e06b9fa56d990",
+            "timestamp": 1756878533729,
+            "message": "INIT_REPORT Init Duration: 332.77 ms\tPhase: init\tStatus: error\tError Type: Runtime.ImportModuleError\n",
+            "ingestionTime": 1756878533782,
+            "eventId": "39179700525458518192329884177547156063205872311887265792"
+        },
+        {
+            "logStreamName": "2025/09/02/[$LATEST]87bd034a1840400abf6e06b9fa56d990",
+            "timestamp": 1756878533944,
+            "message": "[WARNING]\t2025-09-03T05:48:53.944Z\t\tLAMBDA_WARNING: Unhandled exception. The most likely cause is an issue in the function code. However, in rare cases, a Lambda runtime update can cause unexpected function behavior. For functions using managed runtimes, runtime updates can be triggered by a function change, or can be applied automatically. To determine if the runtime has been updated, check the runtime version in the INIT_START log entry. If this error correlates with a change in the runtime version, you may be able to mitigate this error by temporarily rolling back to the previous runtime version. For more information, see https://docs.aws.amazon.com/lambda/latest/dg/runtimes-update.html\r\n",
+            "ingestionTime": 1756878533949,
+            "eventId": "39179700530253178410013968153179663920642532727734796288"
+        },
+        {
+            "logStreamName": "2025/09/02/[$LATEST]87bd034a1840400abf6e06b9fa56d990",
+            "timestamp": 1756878533944,
+            "message": "[ERROR] Runtime.ImportModuleError: Unable to import module 'lambda_function': No module named 'PIL'\nTraceback (most recent call last):",
+            "ingestionTime": 1756878533949,
+            "eventId": "39179700530253178410013968153179663920642532727734796289"
+        },
+        {
+            "logStreamName": "2025/09/02/[$LATEST]87bd034a1840400abf6e06b9fa56d990",
+            "timestamp": 1756878533976,
+            "message": "INIT_REPORT Init Duration: 234.22 ms\tPhase: invoke\tStatus: error\tError Type: Runtime.ImportModuleError\n",
+            "ingestionTime": 1756878542996,
+            "eventId": "39179700530966802256366948104645707537776756478327848960"
+        },
+        {
+            "logStreamName": "2025/09/02/[$LATEST]87bd034a1840400abf6e06b9fa56d990",
+            "timestamp": 1756878533976,
+            "message": "START RequestId: 4c1ae6cd-44a6-4566-a6e4-ea7e65002914 Version: $LATEST\n",
+            "ingestionTime": 1756878542996,
+            "eventId": "39179700530966802256366948104645707537776756478327848961"
+        },
+        {
+            "logStreamName": "2025/09/02/[$LATEST]87bd034a1840400abf6e06b9fa56d990",
+            "timestamp": 1756878533981,
+            "message": "END RequestId: 4c1ae6cd-44a6-4566-a6e4-ea7e65002914\n",
+            "ingestionTime": 1756878542996,
+            "eventId": "39179700531078305982359601220353386129139998285857751042"
+        },
+        {
+            "logStreamName": "2025/09/02/[$LATEST]87bd034a1840400abf6e06b9fa56d990",
+            "timestamp": 1756878533981,
+            "message": "REPORT RequestId: 4c1ae6cd-44a6-4566-a6e4-ea7e65002914\tDuration: 245.53 ms\tBilled Duration: 246 ms\tMemory Size: 1536 MB\tMax Memory Used: 57 MB\tStatus: error\tError Type: Runtime.ImportModuleError\n",
+            "ingestionTime": 1756878542996,
+            "eventId": "39179700531078305982359601220353386129139998285857751043"
+        },
+        {
+            "logStreamName": "2025/09/02/[$LATEST]87bd034a1840400abf6e06b9fa56d990",
+            "timestamp": 1756878594370,
+            "message": "[WARNING]\t2025-09-03T05:49:54.370Z\t\tLAMBDA_WARNING: Unhandled exception. The most likely cause is an issue in the function code. However, in rare cases, a Lambda runtime update can cause unexpected function behavior. For functions using managed runtimes, runtime updates can be triggered by a function change, or can be applied automatically. To determine if the runtime has been updated, check the runtime version in the INIT_START log entry. If this error correlates with a change in the runtime version, you may be able to mitigate this error by temporarily rolling back to the previous runtime version. For more information, see https://docs.aws.amazon.com/lambda/latest/dg/runtimes-update.html\r\n",
+            "ingestionTime": 1756878594394,
+            "eventId": "39179701877798007776425402176690149231125597909547614208"
+        },
+        {
+            "logStreamName": "2025/09/02/[$LATEST]87bd034a1840400abf6e06b9fa56d990",
+            "timestamp": 1756878594370,
+            "message": "[ERROR] Runtime.ImportModuleError: Unable to import module 'lambda_function': No module named 'PIL'\nTraceback (most recent call last):",
+            "ingestionTime": 1756878594394,
+            "eventId": "39179701877798007776425402176690149231125597909547614209"
+        },
+        {
+            "logStreamName": "2025/09/02/[$LATEST]87bd034a1840400abf6e06b9fa56d990",
+            "timestamp": 1756878594408,
+            "message": "INIT_REPORT Init Duration: 235.14 ms\tPhase: invoke\tStatus: error\tError Type: Runtime.ImportModuleError\n",
+            "ingestionTime": 1756878603433,
+            "eventId": "39179701878645436093969565866995943393286709848612470784"
+        },
+        {
+            "logStreamName": "2025/09/02/[$LATEST]87bd034a1840400abf6e06b9fa56d990",
+            "timestamp": 1756878594408,
+            "message": "START RequestId: 4c1ae6cd-44a6-4566-a6e4-ea7e65002914 Version: $LATEST\n",
+            "ingestionTime": 1756878603433,
+            "eventId": "39179701878645436093969565866995943393286709848612470785"
+        },
+        {
+            "logStreamName": "2025/09/02/[$LATEST]87bd034a1840400abf6e06b9fa56d990",
+            "timestamp": 1756878594413,
+            "message": "END RequestId: 4c1ae6cd-44a6-4566-a6e4-ea7e65002914\n",
+            "ingestionTime": 1756878603433,
+            "eventId": "39179701878756939819962218982703621984649951656142372866"
+        },
+        {
+            "logStreamName": "2025/09/02/[$LATEST]87bd034a1840400abf6e06b9fa56d990",
+            "timestamp": 1756878594413,
+            "message": "REPORT RequestId: 4c1ae6cd-44a6-4566-a6e4-ea7e65002914\tDuration: 246.85 ms\tBilled Duration: 247 ms\tMemory Size: 1536 MB\tMax Memory Used: 57 MB\tStatus: error\tError Type: Runtime.ImportModuleError\n",
+            "ingestionTime": 1756878603433,
+            "eventId": "39179701878756939819962218982703621984649951656142372867"
+        },
+        {
+            "logStreamName": "2025/09/02/[$LATEST]87bd034a1840400abf6e06b9fa56d990",
+            "timestamp": 1756878720749,
+            "message": "[WARNING]\t2025-09-03T05:52:00.749Z\t\tLAMBDA_WARNING: Unhandled exception. The most likely cause is an issue in the function code. However, in rare cases, a Lambda runtime update can cause unexpected function behavior. For functions using managed runtimes, runtime updates can be triggered by a function change, or can be applied automatically. To determine if the runtime has been updated, check the runtime version in the INIT_START log entry. If this error correlates with a change in the runtime version, you may be able to mitigate this error by temporarily rolling back to the previous runtime version. For more information, see https://docs.aws.amazon.com/lambda/latest/dg/runtimes-update.html\r\n",
+            "ingestionTime": 1756878720820,
+            "eventId": "39179704696143885221527024333672368602751233503535955968"
+        },
+        {
+            "logStreamName": "2025/09/02/[$LATEST]87bd034a1840400abf6e06b9fa56d990",
+            "timestamp": 1756878720749,
+            "message": "[ERROR] Runtime.ImportModuleError: Unable to import module 'lambda_function': No module named 'PIL'\nTraceback (most recent call last):",
+            "ingestionTime": 1756878720820,
+            "eventId": "39179704696143885221527024333672368602751233503535955969"
+        },
+        {
+            "logStreamName": "2025/09/02/[$LATEST]87bd034a1840400abf6e06b9fa56d990",
+            "timestamp": 1756878720783,
+            "message": "INIT_REPORT Init Duration: 242.63 ms\tPhase: invoke\tStatus: error\tError Type: Runtime.ImportModuleError\n",
+            "ingestionTime": 1756878720843,
+            "eventId": "39179704696902110558277065520512243658887874251689689088"
+        },
+        {
+            "logStreamName": "2025/09/02/[$LATEST]87bd034a1840400abf6e06b9fa56d990",
+            "timestamp": 1756878720783,
+            "message": "START RequestId: 4c1ae6cd-44a6-4566-a6e4-ea7e65002914 Version: $LATEST\n",
+            "ingestionTime": 1756878720843,
+            "eventId": "39179704696902110558277065520512243658887874251689689089"
+        },
+        {
+            "logStreamName": "2025/09/02/[$LATEST]87bd034a1840400abf6e06b9fa56d990",
+            "timestamp": 1756878720786,
+            "message": "END RequestId: 4c1ae6cd-44a6-4566-a6e4-ea7e65002914\n",
+            "ingestionTime": 1756878720843,
+            "eventId": "39179704696969012793872657389936850813705819336207630338"
+        },
+        {
+            "logStreamName": "2025/09/02/[$LATEST]87bd034a1840400abf6e06b9fa56d990",
+            "timestamp": 1756878720786,
+            "message": "REPORT RequestId: 4c1ae6cd-44a6-4566-a6e4-ea7e65002914\tDuration: 252.35 ms\tBilled Duration: 253 ms\tMemory Size: 1536 MB\tMax Memory Used: 57 MB\tStatus: error\tError Type: Runtime.ImportModuleError\n",
+            "ingestionTime": 1756878720843,
+            "eventId": "39179704696969012793872657389936850813705819336207630339"
+        }
+    ],
+    "searchedLogStreams": []
+}

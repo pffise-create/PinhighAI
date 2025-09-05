@@ -26,7 +26,7 @@ import Markdown from 'react-native-markdown-display';
 import { colors, typography, spacing, borderRadius } from '../utils/theme';
 
 const ChatScreen = ({ navigation, route }) => {
-  const { user, isAuthenticated } = useAuth();
+  const { user, isAuthenticated, getAuthHeaders } = useAuth();
   // ChatGPT-style simple state
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
@@ -35,9 +35,13 @@ const ChatScreen = ({ navigation, route }) => {
   const [isInitialized, setIsInitialized] = useState(false);
   const [isProcessingVideo, setIsProcessingVideo] = useState(false);
   const [processingMessage, setProcessingMessage] = useState('');
+  const [selectedVideo, setSelectedVideo] = useState(null);
+  const [videoThumbnail, setVideoThumbnail] = useState(null);
+  const [showAttachmentOptions, setShowAttachmentOptions] = useState(false);
   const flatListRef = useRef(null);
   
-  const userId = user?.email || 'guest';
+  const userId = user?.id || 'guest';
+  const authHeaders = getAuthHeaders();
 
   // Markdown styles to match golf coaching app theme
   const markdownStyles = {
@@ -218,20 +222,23 @@ const ChatScreen = ({ navigation, route }) => {
   // ChatGPT-style: No celebration logic needed
 
   // Handle video upload - show options for camera or gallery
-  const handleVideoUpload = () => {
+  const handleVideoAttachment = () => {
     Alert.alert(
-      'Upload Video',
-      'Choose how to upload your swing video',
+      'Add Video',
+      'Choose how to add your swing video',
       [
-        { text: 'Camera', onPress: openCamera },
-        { text: 'Gallery', onPress: openGallery },
+        { text: 'Camera', onPress: recordVideo },
+        { text: 'Photo & Video Library', onPress: selectFromLibrary },
         { text: 'Cancel', style: 'cancel' }
       ]
     );
   };
 
-  const openCamera = () => {
-    navigation.navigate('Camera');
+  const recordVideo = () => {
+    navigation.navigate('Camera', { 
+      returnTo: 'Chat',
+      onVideoRecorded: handleVideoSelected 
+    });
   };
 
   // Generate video thumbnail
@@ -239,7 +246,11 @@ const ChatScreen = ({ navigation, route }) => {
     try {
       const { uri } = await VideoThumbnails.getThumbnailAsync(videoUri, {
         time: 1000, // 1 second into the video
-        quality: 0.8,
+        quality: 0.7,
+        // Create vertical thumbnail for better chat display
+        headers: {
+          'Content-Type': 'image/jpeg',
+        },
       });
       return uri;
     } catch (error) {
@@ -248,12 +259,12 @@ const ChatScreen = ({ navigation, route }) => {
     }
   };
 
-  const openGallery = async () => {
+  const selectFromLibrary = async () => {
     try {
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
       
       if (status !== 'granted') {
-        Alert.alert('Permission denied', 'Media library access is required');
+        Alert.alert('Permission denied', 'Photo & Video Library access is required');
         return;
       }
       
@@ -268,45 +279,85 @@ const ChatScreen = ({ navigation, route }) => {
 
       if (!result.canceled && result.assets && result.assets.length > 0) {
         const video = result.assets[0];
-        
-        // Generate thumbnail for the video
-        const thumbnailUri = await generateVideoThumbnail(video.uri);
-        
-        // Add user message with video thumbnail first
-        const userMessage = {
-          id: `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-          text: null,
-          sender: 'user',
-          timestamp: new Date(),
-          messageType: 'video',
-          hasVideo: true,
-          videoUri: video.uri,
-          videoThumbnail: thumbnailUri,
-        };
-        
-        setMessages(prev => [...prev, userMessage]);
-        await ChatHistoryManager.saveMessage(userId, userMessage);
-        
-        // Check video duration limit (5 seconds)
-        const durationInSeconds = video.duration ? video.duration / 1000 : 0;
-        if (durationInSeconds > 5) {
-          Alert.alert(
-            'Video Length Limit', 
-            `Please select a video 5 seconds or shorter (${durationInSeconds.toFixed(1)}s selected).`
-          );
-          return;
-        }
-        
-        // Then process the video
-        await processVideoUpload(video.uri, durationInSeconds);
+        await handleVideoSelected(video);
       }
     } catch (error) {
-      Alert.alert('Error', 'Failed to select video from gallery');
+      console.error('Failed to select video:', error);
+      Alert.alert('Error', 'Failed to select video from Photo & Video Library');
     }
   };
 
+  // Handle video selection (from camera or library)
+  const handleVideoSelected = async (video) => {
+    try {
+      // Check video duration limit (5 seconds)
+      const durationInSeconds = video.duration ? video.duration / 1000 : 0;
+      if (durationInSeconds > 5) {
+        Alert.alert(
+          'Video Length Limit', 
+          `Please select a video 5 seconds or shorter (${durationInSeconds.toFixed(1)}s selected).`
+        );
+        return;
+      }
+      
+      // Generate thumbnail for preview
+      const thumbnailUri = await generateVideoThumbnail(video.uri);
+      
+      // Set video for attachment
+      setSelectedVideo({
+        uri: video.uri,
+        duration: durationInSeconds,
+        width: video.width,
+        height: video.height
+      });
+      setVideoThumbnail(thumbnailUri);
+      
+    } catch (error) {
+      console.error('Failed to process selected video:', error);
+      Alert.alert('Error', 'Failed to process selected video');
+    }
+  };
+
+  // Clear selected video
+  const clearSelectedVideo = () => {
+    setSelectedVideo(null);
+    setVideoThumbnail(null);
+  };
+
+  // Send message with video attachment
+  const sendVideoMessage = async () => {
+    const messageText = inputText.trim();
+    
+    // Create user message with video
+    const userMessage = {
+      id: `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      text: messageText || null,
+      sender: 'user',
+      timestamp: new Date(),
+      messageType: 'video',
+      hasVideo: true,
+      videoUri: selectedVideo.uri,
+      videoThumbnail: videoThumbnail,
+      videoDuration: selectedVideo.duration,
+    };
+
+    setMessages(prev => [...prev, userMessage]);
+    setInputText('');
+    clearSelectedVideo();
+
+    // Save user message
+    try {
+      await ChatHistoryManager.saveMessage(userId, userMessage);
+    } catch (error) {
+      console.error('Failed to save user message:', error);
+    }
+
+    // Process the video upload with attached message
+    await processVideoUpload(selectedVideo.uri, selectedVideo.duration, messageText);
+  };
+
   // Process video upload using real AWS integration
-  const processVideoUpload = async (videoUri, videoDuration) => {
+  const processVideoUpload = async (videoUri, videoDuration, message = '') => {
     let messageInterval;
     
     try {
@@ -362,7 +413,10 @@ const ChatScreen = ({ navigation, route }) => {
           ];
           const msgIndex = Math.floor(progress * uploadMessages.length);
           updateProcessingMessage(uploadMessages[Math.min(msgIndex, uploadMessages.length - 1)]);
-        }
+        },
+        message, // Pass the attached message to the video service
+        userId,  // Pass authenticated user ID
+        authHeaders // Pass authentication headers
       );
       
       
@@ -383,7 +437,10 @@ const ChatScreen = ({ navigation, route }) => {
           ];
           const msgIndex = Math.floor((progressInfo.progress || 0) * analysisMessages.length);
           updateProcessingMessage(analysisMessages[Math.min(msgIndex, analysisMessages.length - 1)]);
-        }
+        },
+        60,  // maxAttempts
+        5000,  // intervalMs
+        authHeaders
       );
       
       
@@ -459,8 +516,16 @@ const ChatScreen = ({ navigation, route }) => {
 
   // Send message with real AI integration
   const sendMessage = async () => {
-    if (!inputText.trim()) return;
+    // Must have text or video
+    if (!inputText.trim() && !selectedVideo) return;
 
+    // If we have a video, process it
+    if (selectedVideo) {
+      await sendVideoMessage();
+      return;
+    }
+
+    // Send text-only message
     const userMessage = {
       id: `user_${Date.now()}`,
       text: inputText.trim(),
@@ -482,14 +547,11 @@ const ChatScreen = ({ navigation, route }) => {
 
     // Real AI coaching response via production service
     try {
-      const conversationHistory = chatApiService.formatConversationHistory(messages);
-      const coachingContext = chatApiService.formatCoachingContext(conversationSummary, messages);
-      
       const result = await chatApiService.sendMessage(
         userMessage.text,
-        userId,
-        conversationHistory,
-        coachingContext
+        userId,  // Only send message and userId - backend handles thread continuity
+        authHeaders
+        // Remove: conversationHistory, coachingContext, jobId parameters
       );
       
       const coachResponse = {
@@ -579,24 +641,37 @@ const ChatScreen = ({ navigation, route }) => {
   // Option 3 input section with purple accents
   const renderInputSection = () => (
     <View style={styles.inputContainer}>
-      <TouchableOpacity style={styles.cameraButton} onPress={handleVideoUpload}>
-        <Ionicons name="camera" size={20} color="#805AD5" />
-      </TouchableOpacity>
-      <TextInput
-        style={styles.input}
-        placeholder="Ask your coach anything..."
-        value={inputText}
-        onChangeText={setInputText}
-        multiline
-        maxHeight={100}
-      />
-      <TouchableOpacity 
-        style={[styles.sendButton, inputText.trim() && !isLoading && styles.sendButtonActive]} 
-        onPress={sendMessage}
-        disabled={!inputText.trim() || isLoading}
-      >
-        <Ionicons name="send" size={18} color={inputText.trim() && !isLoading ? "white" : "#ccc"} />
-      </TouchableOpacity>
+      {/* Video attachment preview */}
+      {selectedVideo && videoThumbnail && (
+        <View style={styles.videoAttachmentContainer}>
+          <Image source={{ uri: videoThumbnail }} style={styles.videoThumbnail} />
+          <TouchableOpacity style={styles.removeVideoButton} onPress={clearSelectedVideo}>
+            <Ionicons name="close-circle" size={24} color="#FF4757" />
+          </TouchableOpacity>
+          <Text style={styles.videoDurationText}>{selectedVideo.duration.toFixed(1)}s</Text>
+        </View>
+      )}
+      
+      <View style={styles.inputRow}>
+        <TouchableOpacity style={styles.cameraButton} onPress={handleVideoAttachment}>
+          <Ionicons name="camera" size={20} color="#805AD5" />
+        </TouchableOpacity>
+        <TextInput
+          style={styles.input}
+          placeholder="Ask your coach anything..."
+          value={inputText}
+          onChangeText={setInputText}
+          multiline
+          maxHeight={100}
+        />
+        <TouchableOpacity 
+          style={[styles.sendButton, (inputText.trim() || selectedVideo) && !isLoading && styles.sendButtonActive]} 
+          onPress={sendMessage}
+          disabled={(!inputText.trim() && !selectedVideo) || isLoading}
+        >
+          <Ionicons name="send" size={18} color={(inputText.trim() || selectedVideo) && !isLoading ? "white" : "#ccc"} />
+        </TouchableOpacity>
+      </View>
     </View>
   );
 
@@ -749,12 +824,50 @@ const styles = StyleSheet.create({
   
   // Input area with purple accents
   inputContainer: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
+    flexDirection: 'column',
     padding: 16,
     borderTopWidth: 1,
     borderTopColor: '#E2E8F0',
     backgroundColor: '#FFFFFF',
+  },
+
+  // Video attachment preview
+  videoAttachmentContainer: {
+    position: 'relative',
+    marginBottom: 12,
+    alignSelf: 'flex-start',
+  },
+
+  videoThumbnail: {
+    width: 100,
+    height: 150,
+    borderRadius: 12,
+    backgroundColor: '#F0F0F0',
+  },
+
+  removeVideoButton: {
+    position: 'absolute',
+    top: -8,
+    right: -8,
+    backgroundColor: 'white',
+    borderRadius: 12,
+  },
+
+  videoDurationText: {
+    position: 'absolute',
+    bottom: 8,
+    right: 8,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    color: 'white',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
+    fontSize: 12,
+  },
+
+  inputRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
   },
   
   cameraButton: {

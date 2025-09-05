@@ -1,0 +1,60 @@
+{
+  "Records": [
+    {
+      "eventID": "1",
+      "eventName": "MODIFY",
+      "eventVersion": "1.1",
+      "eventSource": "aws:dynamodb",
+      "awsRegion": "us-east-1",
+      "dynamodb": {
+        "Keys": {
+          "analysis_id": {
+            "S": "1756610073316-8wr3a6u4h"
+          }
+        },
+        "NewImage": {
+          "analysis_id": {
+            "S": "1756610073316-8wr3a6u4h"
+          },
+          "status": {
+            "S": "COMPLETED"
+          },
+          "ai_analysis_completed": {
+            "BOOL": false
+          },
+          "analysis_results": {
+            "M": {
+              "frames": {
+                "L": [
+                  {
+                    "M": {
+                      "phase": {
+                        "S": "frame_000"
+                      },
+                      "url": {
+                        "S": "https://test.example.com/frame_000.jpg"
+                      }
+                    }
+                  }
+                ]
+              },
+              "video_duration": {
+                "N": "4.938"
+              },
+              "fps": {
+                "N": "29.97"
+              },
+              "frames_extracted": {
+                "N": "25"
+              }
+            }
+          }
+        },
+        "SequenceNumber": "111",
+        "SizeBytes": 26,
+        "StreamViewType": "NEW_AND_OLD_IMAGES"
+      },
+      "eventSourceARN": "arn:aws:dynamodb:us-east-1:458252603969:table/golf-coach-analyses/stream/2025-07-31T03:18:19.046"
+    }
+  ]
+}

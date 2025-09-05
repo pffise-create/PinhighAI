@@ -9,20 +9,26 @@ import {
   Alert,
   Dimensions,
   ActivityIndicator,
+  TextInput,
 } from 'react-native';
 import { Video } from 'expo-av';
 import * as ImagePicker from 'expo-image-picker';
 import { colors, typography, spacing, borderRadius, shadows } from '../utils/theme';
 import videoService from '../services/videoService';
+import { useAuth } from '../context/AuthContext';
 
 const { width } = Dimensions.get('window');
 
 const VideoRecordScreen = ({ navigation, route }) => {
+  const { user, getAuthHeaders } = useAuth();
+  const userId = user?.id || 'guest';
+  const authHeaders = getAuthHeaders();
   const [videoUri, setVideoUri] = useState(null);
   const [isUploading, setIsUploading] = useState(false);
   const [videoDuration, setVideoDuration] = useState(null);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [statusMessage, setStatusMessage] = useState('');
+  const [videoMessage, setVideoMessage] = useState('');
 
   useEffect(() => {
     if (route.params?.recordedVideo) {
@@ -83,7 +89,10 @@ const VideoRecordScreen = ({ navigation, route }) => {
         (progress) => {
           setUploadProgress(progress * 0.3); // Upload is 30% of total
           setStatusMessage(`Uploading: ${Math.round(progress)}%`);
-        }
+        },
+        videoMessage, // Pass the message to be attached to the video
+        userId,
+        authHeaders
       );
       
       console.log('✅ Upload complete, jobId:', uploadResult.jobId);
@@ -99,7 +108,10 @@ const VideoRecordScreen = ({ navigation, route }) => {
           const analysisProgress = 30 + (progressInfo.progress * 70);
           setUploadProgress(analysisProgress);
           setStatusMessage(progressInfo.message || 'Analyzing swing...');
-        }
+        },
+        60,  // maxAttempts
+        5000,  // intervalMs
+        authHeaders
       );
       
       console.log('✅ Analysis complete:', analysisResult);
@@ -162,6 +174,7 @@ const VideoRecordScreen = ({ navigation, route }) => {
     setVideoDuration(null);
     setUploadProgress(0);
     setStatusMessage('');
+    setVideoMessage('');
   };
 
   return (
@@ -202,6 +215,23 @@ const VideoRecordScreen = ({ navigation, route }) => {
             <Text style={styles.videoInfoText}>
               Duration: {videoDuration.toFixed(1)} seconds
             </Text>
+          </View>
+        )}
+
+        {/* Message Input */}
+        {videoUri && (
+          <View style={styles.messageContainer}>
+            <Text style={styles.messageLabel}>Add a message (optional):</Text>
+            <TextInput
+              style={styles.messageInput}
+              value={videoMessage}
+              onChangeText={setVideoMessage}
+              placeholder="e.g., 'Help me fix my slice' or 'Working on my backswing'"
+              placeholderTextColor={colors.textSecondary}
+              multiline
+              maxLength={200}
+              editable={!isUploading}
+            />
           </View>
         )}
 
@@ -350,6 +380,31 @@ const styles = StyleSheet.create({
     fontSize: typography.fontSizes.sm,
     color: colors.textSecondary,
     fontFamily: typography.fontFamily,
+  },
+  messageContainer: {
+    backgroundColor: colors.surface,
+    padding: spacing.base,
+    borderRadius: borderRadius.base,
+    marginBottom: spacing.lg,
+  },
+  messageLabel: {
+    fontSize: typography.fontSizes.sm,
+    fontWeight: typography.fontWeights.medium,
+    color: colors.primary,
+    marginBottom: spacing.sm,
+    fontFamily: typography.fontFamily,
+  },
+  messageInput: {
+    backgroundColor: colors.background,
+    borderWidth: 1,
+    borderColor: colors.textLight,
+    borderRadius: borderRadius.base,
+    padding: spacing.base,
+    fontSize: typography.fontSizes.base,
+    color: colors.text,
+    fontFamily: typography.fontFamily,
+    minHeight: 60,
+    textAlignVertical: 'top',
   },
   progressContainer: {
     marginBottom: spacing.lg,

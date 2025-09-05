@@ -127,8 +127,8 @@ export default function AppNavigator() {
     PerformanceOptimizer.initialize();
     
     // Preload critical data if user is authenticated
-    if (user?.email) {
-      PerformanceOptimizer.preloadCriticalData(user.email);
+    if (user?.id) {
+      PerformanceOptimizer.preloadCriticalData(user.id);
     }
   }, [user]);
 

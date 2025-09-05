@@ -1,0 +1,9 @@
+{
+  "httpMethod": "POST",
+  "body": "{\"message\":\"Hello! Can you help with my golf swing?\", \"userId\":\"test-user-123\"}",
+  "headers": {
+    "Content-Type": "application/json"
+  },
+  "pathParameters": null,
+  "queryStringParameters": null
+}

@@ -19,11 +19,11 @@ const HomeScreen = ({ navigation }) => {
   const [isOffline, setIsOffline] = useState(false);
 
   // Cache keys
-  const getCacheKey = (suffix) => `homescreen_${user?.email || 'guest'}_${suffix}`;
+  const getCacheKey = (suffix) => `homescreen_${user?.id || 'guest'}_${suffix}`;
 
   // Load cached data
   const loadCachedData = async () => {
-    if (!isAuthenticated || !user?.email) return null;
+    if (!isAuthenticated || !user?.id) return null;
     
     try {
       const [cachedOverview, cachedAnalyses] = await Promise.all([
@@ -52,7 +52,7 @@ const HomeScreen = ({ navigation }) => {
 
   // Save data to cache
   const saveCachedData = async (overview, analyses) => {
-    if (!isAuthenticated || !user?.email) return;
+    if (!isAuthenticated || !user?.id) return;
     
     try {
       await Promise.all([
@@ -82,7 +82,7 @@ const HomeScreen = ({ navigation }) => {
   // Load coaching data for authenticated users
   useEffect(() => {
     const loadCoachingData = async () => {
-      if (!isAuthenticated || !user?.email) {
+      if (!isAuthenticated || !user?.id) {
         // Guest user - show welcome flow
         setLoading(false);
         return;
@@ -171,7 +171,7 @@ const HomeScreen = ({ navigation }) => {
     };
     
     loadCoachingData();
-  }, [isAuthenticated, user?.email]);
+  }, [isAuthenticated, user?.id]);
 
   // Navigation to ChatScreen with context
   const handleContinueCoaching = (context) => {
