@@ -1,0 +1,1 @@
+{"statusCode": 200, "body": "{\"analysis_id\": \"1756876332784-jt1rozuk7\", \"status\": \"completed\", \"message\": \"Frame extraction successful! 11 frames extracted.\", \"frames_count\": 11, \"ai_trigger\": {\"success\": true, \"status_code\": 202, \"ai_function\": \"golf-ai-analysis-processor\"}}"}

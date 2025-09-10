@@ -1,0 +1,14 @@
+{
+    "Records": [
+        {
+            "s3": {
+                "bucket": {
+                    "name": "golf-coach-videos-1753203601"
+                },
+                "object": {
+                    "key": "golf-swings/guest/validation-test-1757229900000.mov"
+                }
+            }
+        }
+    ]
+}

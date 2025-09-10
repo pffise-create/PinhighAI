@@ -1,0 +1,7 @@
+{
+  "Variables": {
+    "COGNITO_USER_POOL_ID": "us-east-1_s9LDheoFF",
+    "COGNITO_REGION": "us-east-1",
+    "DYNAMODB_TABLE": "golf-coach-analyses"
+  }
+}

@@ -1,0 +1,14 @@
+{
+    "Records": [
+        {
+            "s3": {
+                "bucket": {
+                    "name": "golf-coach-videos-1753203601"
+                },
+                "object": {
+                    "key": "golf-swings/guest/handler-fix-test-1757250000000.mov"
+                }
+            }
+        }
+    ]
+}

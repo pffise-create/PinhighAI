@@ -1,0 +1,10 @@
+{
+  "Records": [
+    {
+      "s3": {
+        "bucket": {"name": "golf-coach-videos-1753203601"},
+        "object": {"key": "golf-swings/guest/1757223842080-5hbz85iij.mov"}
+      }
+    }
+  ]
+}

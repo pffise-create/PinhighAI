@@ -1,0 +1,14 @@
+{
+    "Records": [
+        {
+            "s3": {
+                "bucket": {
+                    "name": "golf-coach-videos-1753203601"
+                },
+                "object": {
+                    "key": "golf-swings/guest/full-pipeline-test-1757230000000.mov"
+                }
+            }
+        }
+    ]
+}

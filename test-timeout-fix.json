@@ -1,0 +1,14 @@
+{
+    "Records": [
+        {
+            "s3": {
+                "bucket": {
+                    "name": "golf-coach-videos-1753203601"
+                },
+                "object": {
+                    "key": "golf-swings/guest/timeout-fix-test-1757234000000.mov"
+                }
+            }
+        }
+    ]
+}
