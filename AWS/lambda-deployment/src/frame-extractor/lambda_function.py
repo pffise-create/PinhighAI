@@ -44,12 +44,16 @@ def lambda_handler(event, context):
         temp_video_path = download_video_from_s3(bucket_name, video_key)
         
         # Extract frames using FFmpeg (from layer)
-        extracted_frames = extract_frames_with_layer(temp_video_path, analysis_id)
+        extracted_frames, temp_dir = extract_frames_with_layer(temp_video_path, analysis_id)
         
-        if not extracted_frames:
+        # Check immediately after extraction
+        if not extracted_frames or len(extracted_frames) == 0:
             raise Exception("No frames were extracted from the video")
         
         print(f"Successfully extracted {len(extracted_frames)} frames")
+        
+        # Update status immediately after successful extraction
+        update_analysis_status(table, analysis_id, user_id, "PROCESSING", "Frames extracted successfully, uploading to S3...")
         
         # Upload frames to S3
         frame_analysis = upload_frames_to_s3(extracted_frames, bucket_name, analysis_id, user_id)
@@ -187,11 +191,13 @@ def extract_frames_with_layer(video_path, analysis_id):
             raise Exception(f"Failed to get video duration: {duration_result.stderr}")
         
         try:
-            video_duration = float(duration_result.stdout.strip())
-        except ValueError:
-            raise Exception(f"Invalid duration value: {duration_result.stdout.strip()}")
-        
-        print(f"Video duration: {video_duration:.2f} seconds")
+            duration_str = duration_result.stdout.strip()
+            video_duration = float(duration_str)
+            print(f"Video duration: {video_duration:.2f} seconds")
+        except (ValueError, TypeError):
+            # If duration parsing fails, estimate from frame count (4 fps = 0.25s intervals)
+            print(f"Warning: Could not parse duration '{duration_result.stdout.strip()}', will estimate from frames")
+            video_duration = None  # Will be calculated after frame extraction
         
         # Create temporary directory for frames
         temp_dir = tempfile.mkdtemp()
@@ -223,8 +229,8 @@ def extract_frames_with_layer(video_path, analysis_id):
             frame_path = os.path.join(temp_dir, filename)
             timestamp = i * 0.25  # 0.25 second intervals
             
-            # Stop if we've gone past the video duration
-            if timestamp > video_duration:
+            # Stop if we've gone past the video duration (only if duration is valid)
+            if video_duration and video_duration > 0 and timestamp > video_duration:
                 break
             
             frame_files.append({
@@ -236,12 +242,16 @@ def extract_frames_with_layer(video_path, analysis_id):
             })
         
         print(f"Processed {len(frame_files)} valid frames")
-        return frame_files
+        return frame_files, temp_dir
         
     except subprocess.TimeoutExpired:
         raise Exception("Frame extraction timed out")
     except Exception as e:
         print(f"Frame extraction error: {str(e)}")
+        # If frames were processed but exception occurred later, don't lose them
+        if 'frame_files' in locals() and len(frame_files) > 0:
+            print(f"Warning: Exception occurred but {len(frame_files)} frames were processed successfully")
+            return frame_files, temp_dir
         raise
 
 def upload_frames_to_s3(frame_files, bucket_name, analysis_id, user_id):
@@ -250,7 +260,7 @@ def upload_frames_to_s3(frame_files, bucket_name, analysis_id, user_id):
         print(f"Uploading {len(frame_files)} frames to S3...")
         
         frame_data = []
-        video_duration = 0
+        calculated_duration = 0
         
         for frame_info in frame_files:
             # Create S3 key
@@ -270,24 +280,20 @@ def upload_frames_to_s3(frame_files, bucket_name, analysis_id, user_id):
                 'frame_number': frame_info['frame_number']
             })
             
-            # Track maximum timestamp for video duration
-            video_duration = max(video_duration, frame_info['timestamp'])
+            # Track maximum timestamp for calculated duration
+            calculated_duration = max(calculated_duration, frame_info['timestamp'])
             
-            # Clean up local file
-            try:
-                os.remove(frame_info['path'])
-            except:
-                pass
+            # Don't clean up individual files here - finally block handles temp directory cleanup
         
-        # Add a bit to video duration since last frame isn't at the very end
-        video_duration += 0.25
+        # Add a bit to calculated duration since last frame isn't at the very end
+        calculated_duration += 0.25
         
         print(f"Successfully uploaded {len(frame_data)} frames")
         
         return {
             'frames': frame_data,
             'frames_extracted': len(frame_data),
-            'video_duration': video_duration,
+            'video_duration': calculated_duration,
             'fps': 4.0,  # 4 fps = 0.25 second intervals
             'swing_detected': True,
             'total_frames': len(frame_data)
