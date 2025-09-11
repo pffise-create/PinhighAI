@@ -58,6 +58,16 @@ def lambda_handler(event, context):
         # Upload frames to S3
         frame_analysis = upload_frames_to_s3(extracted_frames, bucket_name, analysis_id, user_id)
         
+        # DEBUG: Check if extracted_frames is still valid after upload
+        print(f"POST-UPLOAD DEBUG: extracted_frames type: {type(extracted_frames)}")
+        print(f"POST-UPLOAD DEBUG: extracted_frames length: {len(extracted_frames)}")
+        print(f"POST-UPLOAD DEBUG: frame_analysis: {frame_analysis}")
+        
+        # This is where the logic breaks - find out why
+        if not extracted_frames:
+            print("ERROR: extracted_frames became invalid after successful upload!")
+            raise Exception("Logic error: frames uploaded but list corrupted")
+        
         # Update DynamoDB with results
         update_analysis_status(
             table, analysis_id, user_id, "COMPLETED", 
@@ -134,125 +144,44 @@ def download_video_from_s3(bucket_name, video_key):
     return temp_video_path
 
 def extract_frames_with_layer(video_path, analysis_id):
-    """Extract frames every 0.25 seconds using FFmpeg from Lambda layer"""
-    try:
-        print("Starting frame extraction with FFmpeg layer...")
-        
-        # Try common FFmpeg layer paths
-        possible_ffmpeg_paths = [
-            '/opt/opt/bin/ffmpeg',       # Actual layer location
-            '/opt/bin/ffmpeg',           # Current expectation
-            '/opt/ffmpeg/bin/ffmpeg',    # Common layer structure  
-            '/opt/ffmpeg',               # Alternative
-            '/usr/bin/ffmpeg'            # System fallback
-        ]
-        
-        possible_ffprobe_paths = [
-            '/opt/opt/bin/ffprobe',      # Actual layer location
-            '/opt/bin/ffprobe',           # Current expectation
-            '/opt/ffmpeg/bin/ffprobe',    # Common layer structure  
-            '/opt/ffprobe',               # Alternative
-            '/usr/bin/ffprobe'            # System fallback
-        ]
-
-        ffmpeg_path = None
-        for path in possible_ffmpeg_paths:
-            if os.path.exists(path):
-                ffmpeg_path = path
-                break
-
-        if not ffmpeg_path:
-            raise Exception(f"FFmpeg not found. Checked paths: {possible_ffmpeg_paths}")
-            
-        ffprobe_path = None
-        for path in possible_ffprobe_paths:
-            if os.path.exists(path):
-                ffprobe_path = path
-                break
-
-        if not ffprobe_path:
-            raise Exception(f"FFprobe not found. Checked paths: {possible_ffprobe_paths}")
-            
-        print(f"Found FFmpeg at: {ffmpeg_path}")
-        print(f"Found FFprobe at: {ffprobe_path}")
-        
-        # Get video duration and info
-        duration_cmd = [
-            ffprobe_path, '-v', 'error', 
-            '-show_entries', 'format=duration',
-            '-of', 'csv=p=0', 
-            video_path
-        ]
-        
-        print(f"Getting video duration: {' '.join(duration_cmd)}")
-        duration_result = subprocess.run(duration_cmd, capture_output=True, text=True, timeout=30)
-        
-        if duration_result.returncode != 0:
-            raise Exception(f"Failed to get video duration: {duration_result.stderr}")
-        
-        try:
-            duration_str = duration_result.stdout.strip()
-            video_duration = float(duration_str)
-            print(f"Video duration: {video_duration:.2f} seconds")
-        except (ValueError, TypeError):
-            # If duration parsing fails, estimate from frame count (4 fps = 0.25s intervals)
-            print(f"Warning: Could not parse duration '{duration_result.stdout.strip()}', will estimate from frames")
-            video_duration = None  # Will be calculated after frame extraction
-        
-        # Create temporary directory for frames
-        temp_dir = tempfile.mkdtemp()
-        frame_pattern = os.path.join(temp_dir, f"{analysis_id}_frame_%03d.jpg")
-        
-        # Extract frames every 0.25 seconds (4 fps)
-        ffmpeg_cmd = [
-            ffmpeg_path, '-i', video_path,
-            '-vf', 'fps=4',  # 4 frames per second = 0.25 second intervals
-            '-q:v', '2',     # High quality (scale 1-31, lower is better)
-            '-y',            # Overwrite output files
-            frame_pattern
-        ]
-        
-        print(f"Extracting frames: {' '.join(ffmpeg_cmd[:6])}...")  # Don't log full path
-        result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=120)
-        
-        if result.returncode != 0:
-            print(f"FFmpeg stderr: {result.stderr}")
-            raise Exception(f"FFmpeg failed with code {result.returncode}: {result.stderr}")
-        
-        # Collect extracted frame files
-        frame_files = []
-        frame_filenames = sorted([f for f in os.listdir(temp_dir) if f.endswith('.jpg')])
-        
-        print(f"Found {len(frame_filenames)} frame files")
-        
-        for i, filename in enumerate(frame_filenames):
-            frame_path = os.path.join(temp_dir, filename)
-            timestamp = i * 0.25  # 0.25 second intervals
-            
-            # Stop if we've gone past the video duration (only if duration is valid)
-            if video_duration and video_duration > 0 and timestamp > video_duration:
-                break
-            
-            frame_files.append({
-                'path': frame_path,
-                'phase': f'frame_{i:03d}',
-                'timestamp': timestamp,
-                'description': f'Frame at {timestamp:.2f}s',
-                'frame_number': i
-            })
-        
-        print(f"Processed {len(frame_files)} valid frames")
-        return frame_files, temp_dir
-        
-    except subprocess.TimeoutExpired:
-        raise Exception("Frame extraction timed out")
-    except Exception as e:
-        print(f"Frame extraction error: {str(e)}")
-        # If frames were processed but exception occurred later, don't lose them
-        if 'frame_files' in locals() and len(frame_files) > 0:
-            print(f"Warning: Exception occurred but {len(frame_files)} frames were processed successfully")
-            return frame_files, temp_dir
-        raise
+    """Simple, clean frame extraction"""
+    # Create temp directory
+    temp_dir = tempfile.mkdtemp()
+    
+    # Find FFmpeg paths
+    ffmpeg_paths = ['/opt/opt/bin/ffmpeg', '/opt/bin/ffmpeg', '/opt/ffmpeg/bin/ffmpeg']
+    ffmpeg_path = next((path for path in ffmpeg_paths if os.path.exists(path)), None)
+    if not ffmpeg_path:
+        raise Exception(f"FFmpeg not found at: {ffmpeg_paths}")
+    
+    # Extract frames every 0.25 seconds (4 fps)
+    frame_pattern = os.path.join(temp_dir, f"{analysis_id}_frame_%03d.jpg")
+    ffmpeg_cmd = [
+        ffmpeg_path, '-i', video_path,
+        '-vf', 'fps=4',
+        '-q:v', '2',
+        '-y',
+        frame_pattern
+    ]
+    
+    result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=120)
+    if result.returncode != 0:
+        raise Exception(f"FFmpeg failed: {result.stderr}")
+    
+    # Collect frame files
+    frame_files = []
+    filenames = sorted([f for f in os.listdir(temp_dir) if f.endswith('.jpg')])
+    
+    for i, filename in enumerate(filenames):
+        frame_files.append({
+            'path': os.path.join(temp_dir, filename),
+            'phase': f'frame_{i:03d}',
+            'timestamp': i * 0.25,
+            'description': f'Frame at {i * 0.25:.2f}s',
+            'frame_number': i
+        })
+    
+    return frame_files, temp_dir
 
 def upload_frames_to_s3(frame_files, bucket_name, analysis_id, user_id):
     """Upload extracted frames to S3 and return analysis data"""
