@@ -134,13 +134,43 @@ def extract_frames_with_layer(video_path, analysis_id):
     try:
         print("Starting frame extraction with FFmpeg layer...")
         
-        # FFmpeg binaries are available at /opt/bin/ from the layer
-        ffmpeg_path = '/opt/bin/ffmpeg'
-        ffprobe_path = '/opt/bin/ffprobe'
+        # Try common FFmpeg layer paths
+        possible_ffmpeg_paths = [
+            '/opt/opt/bin/ffmpeg',       # Actual layer location
+            '/opt/bin/ffmpeg',           # Current expectation
+            '/opt/ffmpeg/bin/ffmpeg',    # Common layer structure  
+            '/opt/ffmpeg',               # Alternative
+            '/usr/bin/ffmpeg'            # System fallback
+        ]
         
-        # Check if FFmpeg exists
-        if not os.path.exists(ffmpeg_path):
-            raise Exception(f"FFmpeg not found at {ffmpeg_path}")
+        possible_ffprobe_paths = [
+            '/opt/opt/bin/ffprobe',      # Actual layer location
+            '/opt/bin/ffprobe',           # Current expectation
+            '/opt/ffmpeg/bin/ffprobe',    # Common layer structure  
+            '/opt/ffprobe',               # Alternative
+            '/usr/bin/ffprobe'            # System fallback
+        ]
+
+        ffmpeg_path = None
+        for path in possible_ffmpeg_paths:
+            if os.path.exists(path):
+                ffmpeg_path = path
+                break
+
+        if not ffmpeg_path:
+            raise Exception(f"FFmpeg not found. Checked paths: {possible_ffmpeg_paths}")
+            
+        ffprobe_path = None
+        for path in possible_ffprobe_paths:
+            if os.path.exists(path):
+                ffprobe_path = path
+                break
+
+        if not ffprobe_path:
+            raise Exception(f"FFprobe not found. Checked paths: {possible_ffprobe_paths}")
+            
+        print(f"Found FFmpeg at: {ffmpeg_path}")
+        print(f"Found FFprobe at: {ffprobe_path}")
         
         # Get video duration and info
         duration_cmd = [
