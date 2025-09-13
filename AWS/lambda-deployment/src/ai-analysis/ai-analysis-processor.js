@@ -569,49 +569,116 @@ exports.handler = async (event) => {
   });
   
   try {
-    // Handle direct invocation from frame extraction
-    if (event.analysis_id && event.user_id) {
-      console.log('Processing direct invocation from frame extractor');
-      await processSwingAnalysis({
-        analysis_id: event.analysis_id,
-        user_id: event.user_id,
-        status: event.status || 'COMPLETED'
-      });
+    // Handle SQS messages from frame extraction
+    if (event.Records && event.Records.length > 0) {
       
-      return {
-        statusCode: 200,
-        body: JSON.stringify({ message: 'AI analysis completed successfully' })
-      };
-    }
-    
-    // Handle DynamoDB stream records (legacy support)
-    if (event.Records) {
-      console.log('Processing DynamoDB stream records');
+      // Check if these are SQS records or DynamoDB stream records
+      const firstRecord = event.Records[0];
       
-      for (const record of event.Records) {
-        if (record.eventName === 'INSERT' || record.eventName === 'MODIFY') {
-          const swingData = record.dynamodb.NewImage;
-          const status = swingData.status?.S;
-          const aiCompleted = swingData.ai_analysis_completed?.BOOL;
-          
-          // Only process completed records that haven't had AI analysis yet
-          if (status === 'COMPLETED' && (aiCompleted === false || aiCompleted === null || aiCompleted === undefined)) {
-            await processSwingAnalysis(swingData);
+      if (firstRecord.eventSource === 'aws:sqs') {
+        console.log(`Processing ${event.Records.length} SQS messages for AI analysis`);
+        
+        const results = [];
+        
+        // Process each SQS message in the batch
+        for (const record of event.Records) {
+          try {
+            // Parse the SQS message body
+            const messageBody = JSON.parse(record.body);
+            
+            console.log('Processing SQS message:', {
+              messageId: record.messageId,
+              analysis_id: messageBody.analysis_id,
+              user_id: messageBody.user_id,
+              status: messageBody.status
+            });
+            
+            // Process the swing analysis
+            await processSwingAnalysis({
+              analysis_id: messageBody.analysis_id,
+              user_id: messageBody.user_id,
+              status: messageBody.status || 'COMPLETED'
+            });
+            
+            results.push({
+              messageId: record.messageId,
+              analysis_id: messageBody.analysis_id,
+              status: 'success'
+            });
+            
+            console.log(`Successfully processed AI analysis for: ${messageBody.analysis_id}`);
+            
+          } catch (recordError) {
+            console.error(`Error processing SQS record ${record.messageId}:`, recordError);
+            
+            // Try to extract analysis_id for error reporting
+            let analysis_id = 'unknown';
+            try {
+              const messageBody = JSON.parse(record.body);
+              analysis_id = messageBody.analysis_id || 'unknown';
+            } catch (parseError) {
+              console.error('Failed to parse message body for error reporting:', parseError);
+            }
+            
+            results.push({
+              messageId: record.messageId,
+              analysis_id: analysis_id,
+              status: 'error',
+              error: recordError.message
+            });
+            
+            // Continue processing other messages even if one fails
           }
         }
+        
+        return {
+          statusCode: 200,
+          body: JSON.stringify({ 
+            message: 'SQS batch processed',
+            processed_records: results.length,
+            results: results
+          })
+        };
       }
       
-      return {
-        statusCode: 200,
-        body: JSON.stringify({ message: 'Stream records processed' })
-      };
+      // Handle DynamoDB stream records (legacy support)
+      else if (firstRecord.eventSource === 'aws:dynamodb') {
+        console.log('Processing DynamoDB stream records (legacy mode)');
+        
+        for (const record of event.Records) {
+          if (record.eventName === 'INSERT' || record.eventName === 'MODIFY') {
+            const swingData = record.dynamodb.NewImage;
+            const status = swingData.status?.S;
+            const aiCompleted = swingData.ai_analysis_completed?.BOOL;
+            
+            // Only process completed records that haven't had AI analysis yet
+            if (status === 'COMPLETED' && (aiCompleted === false || aiCompleted === null || aiCompleted === undefined)) {
+              await processSwingAnalysis(swingData);
+            }
+          }
+        }
+        
+        return {
+          statusCode: 200,
+          body: JSON.stringify({ message: 'DynamoDB stream records processed' })
+        };
+      }
+      
+      // Unknown record type
+      else {
+        console.log('Unknown record type in event.Records:', firstRecord.eventSource);
+        return {
+          statusCode: 400,
+          body: JSON.stringify({ error: 'Unknown record type in event.Records' })
+        };
+      }
     }
     
-    // Unknown event type
-    console.log('Unknown event type received');
+    // No Records found - unknown event type
+    console.log('Unknown event type received - no Records found');
     return {
       statusCode: 400,
-      body: JSON.stringify({ error: 'Unknown event type' })
+      body: JSON.stringify({ error: 'Unknown event type - expected SQS or DynamoDB records' })
     };
     
   } catch (error) {

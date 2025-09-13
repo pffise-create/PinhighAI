@@ -1,11 +1,11 @@
 // Video Upload Handler - Focused Lambda for handling video upload requests
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand } = require('@aws-sdk/lib-dynamodb');
-const { LambdaClient, InvokeCommand } = require('@aws-sdk/client-lambda');
+const { SQSClient, SendMessageCommand } = require('@aws-sdk/client-sqs');
 
 // Initialize clients
 let dynamodb = null;
-let lambdaClient = null;
+let sqsClient = null;
 
 function getDynamoClient() {
   if (!dynamodb) {
@@ -15,11 +15,11 @@ function getDynamoClient() {
   return dynamodb;
 }
 
-function getLambdaClient() {
-  if (!lambdaClient) {
-    lambdaClient = new LambdaClient({});
+function getSQSClient() {
+  if (!sqsClient) {
+    sqsClient = new SQSClient({});
   }
-  return lambdaClient;
+  return sqsClient;
 }
 
 // Extract analysis ID from S3 key
@@ -160,7 +160,7 @@ async function startAnalysisWorkflow(analysisId, s3Key, bucketName, userId, user
     console.log(`Created NEW DynamoDB record for analysis ${analysisId}`);
     
     // Trigger frame extraction
-    await triggerFrameExtraction(analysisId, s3Key, bucketName, userId);
+    await sendToFrameExtractionQueue(analysisId, s3Key, bucketName, userId);
     
   } catch (error) {
     console.error('Error starting analysis workflow:', error);
@@ -169,33 +169,57 @@ async function startAnalysisWorkflow(analysisId, s3Key, bucketName, userId, user
   }
 }
 
-// Trigger frame extraction Lambda
-async function triggerFrameExtraction(analysisId, s3Key, bucketName, userId) {
+// Send message to frame extraction SQS queue
+async function sendToFrameExtractionQueue(analysisId, s3Key, bucketName, userId) {
   try {
-    console.log(`Triggering frame extraction for ${analysisId}`);
+    console.log(`Sending frame extraction message for ${analysisId}`);
     
-    const lambda = getLambdaClient();
+    const sqs = getSQSClient();
+    const queueUrl = process.env.FRAME_EXTRACTION_QUEUE_URL;
     
-    const invokeCommand = new InvokeCommand({
-      FunctionName: process.env.FRAME_EXTRACTOR_FUNCTION_NAME || 'golf-coach-frame-extractor-simple',
-      InvocationType: 'Event', // Async invocation
-      Payload: JSON.stringify({
-        s3_bucket: bucketName,
-        s3_key: s3Key,
-        analysis_id: analysisId,
-        user_id: userId
-      })
+    if (!queueUrl) {
+      throw new Error('FRAME_EXTRACTION_QUEUE_URL environment variable is not set');
+    }
+    
+    const messageBody = {
+      s3_bucket: bucketName,
+      s3_key: s3Key,
+      analysis_id: analysisId,
+      user_id: userId,
+      timestamp: new Date().toISOString(),
+      source: 'video-upload-handler'
+    };
+    
+    const sendCommand = new SendMessageCommand({
+      QueueUrl: queueUrl,
+      MessageBody: JSON.stringify(messageBody),
+      MessageAttributes: {
+        'analysis_id': {
+          DataType: 'String',
+          StringValue: analysisId
+        },
+        'user_id': {
+          DataType: 'String',
+          StringValue: userId
+        },
+        'source': {
+          DataType: 'String',
+          StringValue: 'video-upload-handler'
+        }
+      }
     });
     
-    await lambda.send(invokeCommand);
-    console.log(`Frame extraction triggered successfully for ${analysisId}`);
+    const result = await sqs.send(sendCommand);
+    console.log(`Frame extraction message sent successfully for ${analysisId}. MessageId: ${result.MessageId}`);
     
-    // Update status to indicate frame extraction started
-    await updateAnalysisStatus(analysisId, 'PROCESSING', 'Frame extraction started...');
+    // Update status to indicate frame extraction queued
+    await updateAnalysisStatus(analysisId, 'PROCESSING', 'Frame extraction queued for processing...');
+    
+    return result.MessageId;
     
   } catch (error) {
-    console.error(`Error triggering frame extraction for ${analysisId}:`, error);
-    await updateAnalysisStatus(analysisId, 'FAILED', `Frame extraction failed: ${error.message}`);
+    console.error(`Error sending frame extraction message for ${analysisId}:`, error);
+    await updateAnalysisStatus(analysisId, 'FAILED', `Frame extraction queueing failed: ${error.message}`);
     throw error;
   }
 }

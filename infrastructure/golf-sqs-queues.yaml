@@ -1,0 +1,307 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Golf Coach Pipeline SQS Queues with Dead Letter Queues and Lambda Permissions'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'golf-coach'
+    Description: 'Project name for resource naming'
+    
+  Environment:
+    Type: String
+    Default: 'prod'
+    AllowedValues: ['dev', 'staging', 'prod']
+    Description: 'Environment name'
+
+Resources:
+  # =============================================================================
+  # DEAD LETTER QUEUES (must be created first)
+  # =============================================================================
+  
+  FrameExtractionDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ProjectName}-frame-extraction-dlq-${Environment}'
+      MessageRetentionPeriod: 1209600  # 14 days in seconds
+      VisibilityTimeoutSeconds: 30
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: 'Frame extraction dead letter queue'
+
+  AIAnalysisDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ProjectName}-ai-analysis-dlq-${Environment}'
+      MessageRetentionPeriod: 1209600  # 14 days in seconds
+      VisibilityTimeoutSeconds: 30
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: 'AI analysis dead letter queue'
+
+  # =============================================================================
+  # MAIN SQS QUEUES
+  # =============================================================================
+
+  FrameExtractionQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ProjectName}-frame-extraction-queue-${Environment}'
+      MessageRetentionPeriod: 1209600  # 14 days in seconds
+      VisibilityTimeoutSeconds: 30
+      ReceiveMessageWaitTimeSeconds: 20  # Enable long polling
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt FrameExtractionDLQ.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: 'Frame extraction processing queue'
+
+  AIAnalysisQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ProjectName}-ai-analysis-queue-${Environment}'
+      MessageRetentionPeriod: 1209600  # 14 days in seconds
+      VisibilityTimeoutSeconds: 30
+      ReceiveMessageWaitTimeSeconds: 20  # Enable long polling
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt AIAnalysisDLQ.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: 'AI analysis processing queue'
+
+  # =============================================================================
+  # IAM POLICIES FOR LAMBDA FUNCTIONS
+  # =============================================================================
+
+  # Policy for sending messages to queues
+  SQSSendMessagePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub '${ProjectName}-sqs-send-policy-${Environment}'
+      Description: 'Policy allowing Lambda functions to send messages to Golf Coach SQS queues'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - sqs:SendMessage
+              - sqs:GetQueueAttributes
+              - sqs:GetQueueUrl
+            Resource:
+              - !GetAtt FrameExtractionQueue.Arn
+              - !GetAtt AIAnalysisQueue.Arn
+          - Effect: Allow
+            Action:
+              - sqs:ListQueues
+            Resource: '*'
+
+  # Policy for receiving messages from queues
+  SQSReceiveMessagePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub '${ProjectName}-sqs-receive-policy-${Environment}'
+      Description: 'Policy allowing Lambda functions to receive messages from Golf Coach SQS queues'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - sqs:ReceiveMessage
+              - sqs:DeleteMessage
+              - sqs:GetQueueAttributes
+              - sqs:GetQueueUrl
+              - sqs:ChangeMessageVisibility
+            Resource:
+              - !GetAtt FrameExtractionQueue.Arn
+              - !GetAtt AIAnalysisQueue.Arn
+              - !GetAtt FrameExtractionDLQ.Arn
+              - !GetAtt AIAnalysisDLQ.Arn
+          - Effect: Allow
+            Action:
+              - sqs:ListQueues
+            Resource: '*'
+
+  # =============================================================================
+  # LAMBDA FUNCTION ROLES (updates to existing roles)
+  # =============================================================================
+
+  # Role for video upload handler (sends to frame extraction queue)
+  VideoUploadHandlerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-video-upload-handler-role-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
+        - !Ref SQSSendMessagePolicy
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Role for frame extractor (receives from frame extraction queue, sends to AI queue)
+  FrameExtractorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-frame-extractor-role-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
+        - !Ref SQSSendMessagePolicy
+        - !Ref SQSReceiveMessagePolicy
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Role for AI analysis processor (receives from AI analysis queue)
+  AIAnalysisProcessorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-ai-analysis-processor-role-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
+        - arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
+        - !Ref SQSReceiveMessagePolicy
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  # =============================================================================
+  # LAMBDA EVENT SOURCE MAPPINGS (SQS Triggers)
+  # =============================================================================
+
+  # Note: These will need to be created after Lambda functions exist
+  # They are commented out for initial deployment
+  
+  # FrameExtractorEventSourceMapping:
+  #   Type: AWS::Lambda::EventSourceMapping
+  #   Properties:
+  #     EventSourceArn: !GetAtt FrameExtractionQueue.Arn
+  #     FunctionName: 'golf-frame-extractor-simple-with-ai'
+  #     BatchSize: 1
+  #     MaximumBatchingWindowInSeconds: 5
+  
+  # AIAnalysisEventSourceMapping:
+  #   Type: AWS::Lambda::EventSourceMapping
+  #   Properties:
+  #     EventSourceArn: !GetAtt AIAnalysisQueue.Arn
+  #     FunctionName: 'golf-ai-analysis-processor'
+  #     BatchSize: 1
+  #     MaximumBatchingWindowInSeconds: 5
+
+# =============================================================================
+# OUTPUTS
+# =============================================================================
+
+Outputs:
+  FrameExtractionQueueURL:
+    Description: 'URL of the Frame Extraction Queue'
+    Value: !Ref FrameExtractionQueue
+    Export:
+      Name: !Sub '${ProjectName}-frame-extraction-queue-url-${Environment}'
+
+  FrameExtractionQueueArn:
+    Description: 'ARN of the Frame Extraction Queue'
+    Value: !GetAtt FrameExtractionQueue.Arn
+    Export:
+      Name: !Sub '${ProjectName}-frame-extraction-queue-arn-${Environment}'
+
+  AIAnalysisQueueURL:
+    Description: 'URL of the AI Analysis Queue'
+    Value: !Ref AIAnalysisQueue
+    Export:
+      Name: !Sub '${ProjectName}-ai-analysis-queue-url-${Environment}'
+
+  AIAnalysisQueueArn:
+    Description: 'ARN of the AI Analysis Queue'
+    Value: !GetAtt AIAnalysisQueue.Arn
+    Export:
+      Name: !Sub '${ProjectName}-ai-analysis-queue-arn-${Environment}'
+
+  FrameExtractionDLQURL:
+    Description: 'URL of the Frame Extraction Dead Letter Queue'
+    Value: !Ref FrameExtractionDLQ
+    Export:
+      Name: !Sub '${ProjectName}-frame-extraction-dlq-url-${Environment}'
+
+  AIAnalysisDLQURL:
+    Description: 'URL of the AI Analysis Dead Letter Queue'
+    Value: !Ref AIAnalysisDLQ
+    Export:
+      Name: !Sub '${ProjectName}-ai-analysis-dlq-url-${Environment}'
+
+  SQSSendMessagePolicyArn:
+    Description: 'ARN of the SQS Send Message Policy'
+    Value: !Ref SQSSendMessagePolicy
+    Export:
+      Name: !Sub '${ProjectName}-sqs-send-policy-arn-${Environment}'
+
+  SQSReceiveMessagePolicyArn:
+    Description: 'ARN of the SQS Receive Message Policy'
+    Value: !Ref SQSReceiveMessagePolicy
+    Export:
+      Name: !Sub '${ProjectName}-sqs-receive-policy-arn-${Environment}'
+
+  VideoUploadHandlerRoleArn:
+    Description: 'ARN of the Video Upload Handler Role'
+    Value: !GetAtt VideoUploadHandlerRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-video-upload-role-arn-${Environment}'
+
+  FrameExtractorRoleArn:
+    Description: 'ARN of the Frame Extractor Role'
+    Value: !GetAtt FrameExtractorRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-frame-extractor-role-arn-${Environment}'
+
+  AIAnalysisProcessorRoleArn:
+    Description: 'ARN of the AI Analysis Processor Role'
+    Value: !GetAtt AIAnalysisProcessorRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-ai-analysis-role-arn-${Environment}'
