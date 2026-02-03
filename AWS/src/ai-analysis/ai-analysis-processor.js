@@ -2,11 +2,14 @@
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient, GetCommand, UpdateCommand, PutCommand } = require('@aws-sdk/lib-dynamodb');
 const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
+const { SecretsManagerClient, GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');
 const https = require('https');
-
+const swingProfileRepository = require('../data/swingProfileRepository');
 // Initialize clients
 let dynamodb = null;
 let s3Client = null;
+let secretsManager = null;
+let cachedOpenAIKey = null;
 
 function getDynamoClient() {
   if (!dynamodb) {
@@ -21,6 +24,33 @@ function getS3Client() {
     s3Client = new S3Client({});
   }
   return s3Client;
+}
+
+function getSecretsManagerClient() {
+  if (!secretsManager) {
+    secretsManager = new SecretsManagerClient({});
+  }
+  return secretsManager;
+}
+
+async function ensureOpenAIKey() {
+  if (cachedOpenAIKey) return cachedOpenAIKey;
+  if (process.env.OPENAI_API_KEY) {
+    cachedOpenAIKey = process.env.OPENAI_API_KEY;
+    return cachedOpenAIKey;
+  }
+  const secretId = process.env.OPENAI_SECRET_NAME || process.env.OPENAI_SECRET_ARN;
+  if (!secretId) {
+    throw new Error('OPENAI_API_KEY not configured. Set OPENAI_SECRET_NAME or OPENAI_SECRET_ARN.');
+  }
+  const sm = getSecretsManagerClient();
+  const resp = await sm.send(new GetSecretValueCommand({ SecretId: secretId }));
+  if (!resp.SecretString) {
+    throw new Error('OpenAI secret is empty');
+  }
+  cachedOpenAIKey = resp.SecretString;
+  process.env.OPENAI_API_KEY = resp.SecretString;
+  return cachedOpenAIKey;
 }
 
 // HTTP request helper for OpenAI API
@@ -505,6 +535,24 @@ async function processSwingAnalysis(swingData) {
           ':frames_skipped': aiResult.frames_skipped || 0
         }
       }));
+      if (userId) {
+        const analysisResults = fullSwingData.analysis_results
+          ? Object.fromEntries(Object.entries(fullSwingData.analysis_results).filter(([key]) => key !== 'frames'))
+          : null;
+
+        try {
+          await swingProfileRepository.upsertFromAnalysis({
+            userId,
+            analysisId,
+            aiAnalysis: aiResult,
+            analysisResults,
+            client: dynamodb,
+            timestamp: new Date(),
+          });
+        } catch (profileError) {
+          console.error(`Failed to update swing profile for ${userId}:`, profileError);
+        }
+      }
       
       console.log(`🎉 Analysis fully completed for: ${analysisId}`);
     } else {
@@ -569,6 +617,8 @@ exports.handler = async (event) => {
   });
   
   try {
+    await ensureOpenAIKey();
+    
     // Handle direct invocation from frame extraction
     if (event.analysis_id && event.user_id) {
       console.log('Processing direct invocation from frame extractor');
@@ -622,3 +672,4 @@ exports.handler = async (event) => {
     };
   }
 };
+

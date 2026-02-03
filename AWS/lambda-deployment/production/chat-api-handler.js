@@ -39,6 +39,48 @@ function makeHttpsRequest(options, data = null) {
   });
 }
 
+const CHAT_ASSISTANT_INSTRUCTIONS = `You are Pin High, an AI-powered golf coach and supportive golf buddy with Tour-level analysis. The golfer is typically an 8-25 handicapper. Keep the tone conversational, encouraging, and a little playful while staying deeply knowledgeable. Diagnose underlying fundamentals rather than just symptoms. Reference earlier swings, drills, and feedback whenever it helps the player feel you remember their journey. Explain what the body and club are doing and why, using plain language with precise golf terms when helpful. Offer tailored drills or feels, encourage iterative progress, and avoid deterministic absolutes--guide them toward self-discovery. Ask occasional pro-level engagement questions (for example about miss pattern, contact quality, or feels) to deepen the diagnosis and keep the session interactive.`;
+
+let cachedAssistantId = null;
+
+async function getOrCreateAssistant() {
+  if (process.env.GOLF_COACH_ASSISTANT_ID) {
+    return process.env.GOLF_COACH_ASSISTANT_ID;
+  }
+
+  if (cachedAssistantId) {
+    return cachedAssistantId;
+  }
+
+  try {
+    const assistantPayload = {
+      name: 'Pin High Swing Coach',
+      instructions: CHAT_ASSISTANT_INSTRUCTIONS,
+      model: 'gpt-4o-mini',
+      tools: []
+    };
+
+    const assistantResponse = await makeHttpsRequest({
+      hostname: 'api.openai.com',
+      path: '/v1/assistants',
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+        'OpenAI-Beta': 'assistants=v2'
+      }
+    }, JSON.stringify(assistantPayload));
+
+    const assistant = JSON.parse(assistantResponse);
+    cachedAssistantId = assistant.id;
+    console.log('Created new assistant for chat:', cachedAssistantId);
+    return cachedAssistantId;
+  } catch (error) {
+    console.error('Failed to create chat assistant:', error);
+    throw new Error('Unable to obtain assistant id. Set GOLF_COACH_ASSISTANT_ID env var or allow creation.');
+  }
+}
+
 // Extract user context from event with JWT validation
 async function extractUserContext(event) {
   console.log('EXTRACT USER CONTEXT: Starting JWT validation');
@@ -263,7 +305,8 @@ async function handleChatRequest(event, userContext) {
     }, JSON.stringify({
       assistant_id: assistantId,
       max_completion_tokens: 1500,
-      temperature: 0.7
+      temperature: 0.7,
+      instructions: CHAT_ASSISTANT_INSTRUCTIONS
     }));
     
     const run = JSON.parse(runResponse);

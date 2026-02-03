@@ -1,1 +1,0 @@
-{"statusCode":500,"headers":{"Content-Type":"application/json","Access-Control-Allow-Origin":"*"},"body":"{\"error\":\"Your swing analysis request is too complex. Please try uploading a shorter video or ask simpler questions.\"}"}

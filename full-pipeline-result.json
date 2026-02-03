@@ -1,1 +1,0 @@
-{"statusCode": 200, "body": "{\"analysis_id\": \"full-pipeline-test-1757230000000\", \"status\": \"completed\", \"message\": \"DEBUG: Frame extraction successful! 8 frames extracted.\", \"ffmpeg_path\": \"/opt/opt/bin/ffmpeg\", \"frames_count\": 8, \"ai_trigger\": {\"success\": true, \"status_code\": 202, \"ai_function\": \"golf-ai-analysis-processor\"}}"}

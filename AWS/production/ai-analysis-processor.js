@@ -2,11 +2,14 @@
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient, GetCommand, UpdateCommand, PutCommand } = require('@aws-sdk/lib-dynamodb');
 const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
+const { SecretsManagerClient, GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');
 const https = require('https');
 
 // Initialize clients
 let dynamodb = null;
 let s3Client = null;
+let secretsManager = null;
+let cachedOpenAIKey = null;
 
 function getDynamoClient() {
   if (!dynamodb) {
@@ -21,6 +24,33 @@ function getS3Client() {
     s3Client = new S3Client({});
   }
   return s3Client;
+}
+
+function getSecretsManagerClient() {
+  if (!secretsManager) {
+    secretsManager = new SecretsManagerClient({});
+  }
+  return secretsManager;
+}
+
+async function ensureOpenAIKey() {
+  if (cachedOpenAIKey) return cachedOpenAIKey;
+  if (process.env.OPENAI_API_KEY) {
+    cachedOpenAIKey = process.env.OPENAI_API_KEY;
+    return cachedOpenAIKey;
+  }
+  const secretId = process.env.OPENAI_SECRET_NAME || process.env.OPENAI_SECRET_ARN;
+  if (!secretId) {
+    throw new Error('OPENAI_API_KEY not configured. Set OPENAI_SECRET_NAME or OPENAI_SECRET_ARN.');
+  }
+  const sm = getSecretsManagerClient();
+  const resp = await sm.send(new GetSecretValueCommand({ SecretId: secretId }));
+  if (!resp.SecretString) {
+    throw new Error('OpenAI secret is empty');
+  }
+  cachedOpenAIKey = resp.SecretString;
+  process.env.OPENAI_API_KEY = resp.SecretString;
+  return cachedOpenAIKey;
 }
 
 // HTTP request helper for OpenAI API
@@ -117,7 +147,8 @@ async function getUserThread(userId) {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'OpenAI-Beta': 'assistants=v2'
       }
     }, JSON.stringify({}));
     
@@ -169,11 +200,17 @@ You can ask me questions about this analysis or request tips for improvement!`;
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'OpenAI-Beta': 'assistants=v2'
       }
     }, JSON.stringify({
       role: 'assistant',
-      content: analysisMessage
+      content: [
+        {
+          type: 'text',
+          text: analysisMessage
+        }
+      ]
     }));
     
     // Update thread metadata
@@ -266,31 +303,24 @@ async function analyzeSwingWithGPT5(frameData, swingData) {
       const messageContent = [
         {
           type: "text",
-          text: isFirstBatch 
-            ? `You are a PGA-certified golf instructor analyzing a golf swing sequence. This is batch ${batchIndex + 1} of ${batches.length} (frames ${batch[0].phase} to ${batch[batch.length-1].phase}).
+          text: isFirstBatch
+            ? `You are Pin High, an AI-powered golf coach and supportive golf buddy with Tour-level analysis. You're reviewing a golfer's swing from sequential image batches that together represent the full video. The player is roughly an 8-25 handicapper. Stay conversational, encouraging, and a little playful while diagnosing the underlying swing fundamentals instead of just the symptoms. Avoid referencing frames, images, batches, or stills in your response. Use plain language with precise golf terms when they clarify the point. Explain what the body and club are doing, why it matters, and set the player up with actionable next steps. Provide:
 
-${batches.length > 1 ? 'IMPORTANT: This is part of a multi-batch analysis. Focus on the swing elements visible in these specific frames. Your analysis will be combined with other batches.' : ''}
+1. Key strengths to reinforce
+2. Primary root-cause diagnosis (plain language, connect multiple issues)
+3. Priority corrections (ordered list with concise rationale)
+4. Practice plan (drills or feels tailored to this player)
 
-Please provide coaching feedback focusing on:
-
-1. **Setup & Address Position**: Grip, stance, posture, alignment
-2. **Takeaway & Backswing**: Club path, wrist hinge, shoulder turn, weight shift  
-3. **Transition & Downswing**: Sequence, plane, tempo
-4. **Impact Zone**: Club face, path, body position
-5. **Follow-Through**: Extension, balance, finish position
-
-Reference specific frame phases when discussing technique. Provide actionable improvement suggestions.`
-            : `Continue analyzing the golf swing sequence. This is batch ${batchIndex + 1} of ${batches.length} (frames ${batch[0].phase} to ${batch[batch.length-1].phase}).
-
-Focus on the swing elements visible in these frames and provide specific technical feedback. Reference frame phases when discussing technique.`
+Wrap up by reminding the player that progress is iterative and that you're in it together.`
+            : `Continue as Pin High analyzing the same swing video. Integrate what you see here with earlier batches so the player hears one cohesive story. Keep the conversational, encouraging, slightly playful tone, stay focused on root causes, and avoid mentioning frames, images, or batches. Highlight what the body and club are doing, why it matters, and set up actionable adjustments.`
         }
       ];
-      
-      // Add frames from this batch to the message
+
+      // Attach frames with internal-only labels to preserve order
       batch.forEach(frame => {
         messageContent.push({
-          type: "text", 
-          text: `Frame: ${frame.phase}`
+          type: "text",
+          text: `Internal reference only: ${frame.phase}`
         });
         messageContent.push({
           type: "image_url",
@@ -352,40 +382,58 @@ Focus on the swing elements visible in these frames and provide specific technic
       });
     }
     
-    // Combine all batch results
+    // Combine all batch results into a cohesive narrative
     console.log(`Combining results from ${batchResults.length} batches`);
-    let combinedAnalysis = '';
-    let totalTokens = 0;
-    
-    if (batchResults.length === 1) {
-      // Single batch - use analysis directly
-      combinedAnalysis = batchResults[0].analysis;
-      totalTokens = batchResults[0].tokensUsed;
-    } else {
-      // Multiple batches - create comprehensive summary
-      combinedAnalysis = `# Golf Swing Analysis - Complete Sequence\n\n`;
-      combinedAnalysis += `*Analysis based on ${base64Images.length} frames processed in ${batchResults.length} batches*\n\n`;
-      
-      batchResults.forEach((result, index) => {
-        combinedAnalysis += `## Swing Phase Analysis ${result.batchIndex} (Frames: ${result.frames.join(', ')})\n\n`;
-        combinedAnalysis += result.analysis;
-        combinedAnalysis += '\n\n---\n\n';
-        totalTokens += result.tokensUsed;
-      });
-      
-      // Add summary conclusion
-      combinedAnalysis += `## Overall Assessment\n\nBased on the complete ${base64Images.length}-frame sequence analysis, the key areas for improvement span the entire swing motion. Focus on the specific technical points highlighted in each phase above for comprehensive swing development.\n\n`;
+
+    const segmentText = batchResults
+      .map((result, index) => `Segment ${index + 1} analysis:\n${result.analysis}`)
+      .join('\n\n');
+
+    const consolidationRequest = {
+      model: "gpt-5",
+      messages: [
+        {
+          role: "system",
+          content: `You are Pin High, an AI-powered golf coach and supportive golf buddy with Tour-level analysis. Deliver a cohesive swing review that feels conversational, encouraging, and focused on root causes. Use plain language with precise golf terms when they help. Reinforce strengths, explain what the body and club are doing, outline prioritized corrections with rationale, share tailored drills, and remind the player that progress is iterative and you're alongside them.`
+        },
+        {
+          role: "user",
+          content: `You're Pin High continuing with the same golfer. Combine the insights below into a single, cohesive coaching report as if you watched the full swing end-to-end. Keep the tone conversational, encouraging, and a little playful while staying Tour-level insightful. Focus on root causes instead of just symptoms, and avoid mentioning batches, frames, or images. Structure the response with:\n\n- Opening encouragement (1 short paragraph)\n- Key strengths (bullet list, 2-3 items)\n- Primary root cause diagnosis (plain language, 2-3 sentences)\n- Priority corrections (ordered list, max 3 items, each with a short rationale)\n- Practice plan (1-2 drills or feels tied to the corrections)\n\nClose by reminding the player that progress is iterative and, if it feels natural, ask one short check-in question to keep the coaching dialogue going.\n\nSegment analyses:\n${segmentText}`
+        }
+      ],
+      max_completion_tokens: 1600
+    };
+
+    const consolidationResponse = await makeHttpsRequest({
+      hostname: 'api.openai.com',
+      path: '/v1/chat/completions',
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json'
+      }
+    }, JSON.stringify(consolidationRequest));
+
+    const consolidationBody = JSON.parse(consolidationResponse);
+    const finalAnalysis = consolidationBody.choices?.[0]?.message?.content;
+
+    if (!finalAnalysis) {
+      console.error('Consolidation response missing content:', consolidationBody);
+      throw new Error('Failed to build cohesive swing analysis');
     }
-    
-    console.log(`Combined analysis length: ${combinedAnalysis.length} characters`);
-    
-    // Automatically post combined analysis to user's assistant thread
-    await addAnalysisToUserThread(userId, combinedAnalysis, analysisId);
-    
+
+    const totalTokens = batchResults.reduce((sum, result) => sum + (result.tokensUsed || 0), 0) +
+      (consolidationBody.usage?.total_tokens || 0);
+
+    console.log(`Final consolidated analysis length: ${finalAnalysis.length} characters`);
+
+    // Automatically post consolidated analysis to user's assistant thread
+    await addAnalysisToUserThread(userId, finalAnalysis, analysisId);
+
     return {
       success: true,
-      response: combinedAnalysis,
-      coaching_response: combinedAnalysis,
+      response: finalAnalysis,
+      coaching_response: finalAnalysis,
       frames_analyzed: base64Images.length,
       frames_skipped: 0,
       fallback_triggered: false,
@@ -569,6 +617,8 @@ exports.handler = async (event) => {
   });
   
   try {
+    await ensureOpenAIKey();
+    
     // Handle direct invocation from frame extraction
     if (event.analysis_id && event.user_id) {
       console.log('Processing direct invocation from frame extractor');
@@ -584,6 +634,41 @@ exports.handler = async (event) => {
       };
     }
     
+    // Handle SQS events from frame extractor queue
+    if (event.Records && event.Records[0]?.eventSource === 'aws:sqs') {
+      console.log(`Processing ${event.Records.length} SQS messages for AI analysis`);
+
+      for (const record of event.Records) {
+        try {
+          const messageAttributes = record.messageAttributes || {};
+          const body = typeof record.body === 'string' ? JSON.parse(record.body) : (record.body || {});
+
+          const analysisId = body.analysis_id || messageAttributes.analysis_id?.stringValue;
+          const userId = body.user_id || messageAttributes.user_id?.stringValue;
+          const status = body.status || messageAttributes.status?.stringValue || 'COMPLETED';
+
+          if (!analysisId) {
+            console.warn('SQS message missing analysis_id, skipping:', record.messageId);
+            continue;
+          }
+
+          await processSwingAnalysis({
+            analysis_id: analysisId,
+            user_id: userId,
+            status: status
+          });
+        } catch (error) {
+          console.error('Error processing SQS message:', record.messageId, error);
+          throw error;
+        }
+      }
+
+      return {
+        statusCode: 200,
+        body: JSON.stringify({ message: 'SQS messages processed', processed: event.Records.length })
+      };
+    }
+
     // Handle DynamoDB stream records (legacy support)
     if (event.Records) {
       console.log('Processing DynamoDB stream records');

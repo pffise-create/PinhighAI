@@ -2,7 +2,7 @@
  * RecentAnalysisCard - Individual analysis preview
  * 
  * Displays swing analysis information with date, score, focus area,
- * and navigation to specific ResultsScreen for detailed review.
+ * and provides quick access back to chat for follow-up.
  */
 
 import React from 'react';
@@ -91,8 +91,8 @@ const RecentAnalysisCard = ({ analysis, onPress }) => {
         </View>
 
         <View style={styles.footer}>
-          <Text style={styles.actionHint}>Tap to review analysis</Text>
-          <Text style={styles.arrow}>→</Text>
+          <Text style={styles.actionHint}>Tap to discuss this analysis</Text>
+          <Text style={styles.arrow}>\u2192</Text>
         </View>
       </View>
 
@@ -230,3 +230,6 @@ const styles = StyleSheet.create({
 });
 
 export default RecentAnalysisCard;
+
+
+

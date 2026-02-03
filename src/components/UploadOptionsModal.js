@@ -1,195 +1,238 @@
-import React from 'react';
-import { 
-  View, 
-  Text, 
-  TouchableOpacity, 
-  Modal, 
-  StyleSheet,
-  Dimensions 
-} from 'react-native';
+﻿import React from 'react';
+import { Modal, StyleSheet, Text, TouchableOpacity, View, Dimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, typography, spacing, borderRadius, shadows } from '../utils/theme';
 
 const { height } = Dimensions.get('window');
 
-export default function UploadOptionsModal({ 
-  visible, 
-  onClose, 
-  onRecordVideo, 
-  onChooseFromGallery 
-}) {
-  return (
-    <Modal
-      visible={visible}
-      transparent={true}
-      animationType="slide"
-      onRequestClose={onClose}
-    >
-      <View style={styles.overlay}>
-        <View style={styles.modalContainer}>
-          <View style={styles.header}>
-            <Text style={styles.title}>Upload Swing Video</Text>
-            <TouchableOpacity 
-              style={styles.closeButton} 
-              onPress={onClose}
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-            >
-              <Ionicons name="close" size={24} color={colors.textSecondary} />
-            </TouchableOpacity>
-          </View>
-          
-          <Text style={styles.subtitle}>
-            Choose how you'd like to add your golf swing video for analysis
-          </Text>
+const OPTION_HEIGHT = 72;
 
-          <View style={styles.optionsContainer}>
-            <TouchableOpacity 
-              style={styles.optionButton}
-              onPress={onRecordVideo}
-              activeOpacity={0.8}
-            >
-              <View style={styles.optionIconContainer}>
-                <Ionicons name="videocam" size={32} color={colors.primary} />
-              </View>
-              <View style={styles.optionTextContainer}>
-                <Text style={styles.optionTitle}>Record Video</Text>
-                <Text style={styles.optionDescription}>
-                  Use your camera to record a new swing video
-                </Text>
-              </View>
-              <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
-            </TouchableOpacity>
+const OptionRow = ({ icon, iconColor, title, description, onPress }) => (
+  <TouchableOpacity
+    style={styles.optionRow}
+    onPress={onPress}
+    activeOpacity={0.85}
+  >
+    <View style={[styles.optionIcon, { backgroundColor: colors.backgroundMuted }] }>
+      <Ionicons name={icon} size={24} color={iconColor} />
+    </View>
+    <View style={styles.optionCopy}>
+      <Text style={styles.optionTitle}>{title}</Text>
+      <Text style={styles.optionDescription}>{description}</Text>
+    </View>
+    <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
+  </TouchableOpacity>
+);
 
-            <TouchableOpacity 
-              style={styles.optionButton}
-              onPress={onChooseFromGallery}
-              activeOpacity={0.8}
-            >
-              <View style={styles.optionIconContainer}>
-                <Ionicons name="images" size={32} color={colors.accent} />
-              </View>
-              <View style={styles.optionTextContainer}>
-                <Text style={styles.optionTitle}>Choose from Gallery</Text>
-                <Text style={styles.optionDescription}>
-                  Select an existing video from your photo library
-                </Text>
-              </View>
-              <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
-            </TouchableOpacity>
-          </View>
+const TipRow = ({ text }) => (
+  <View style={styles.tipRow}>
+    <View style={styles.tipDot} />
+    <Text style={styles.tipText}>{text}</Text>
+  </View>
+);
 
-          <View style={styles.tipsContainer}>
-            <Text style={styles.tipsTitle}>📹 Recording Tips:</Text>
-            <Text style={styles.tip}>• Record from the side (profile view)</Text>
-            <Text style={styles.tip}>• Include setup through follow-through</Text>
-            <Text style={styles.tip}>• Keep camera steady and at chest height</Text>
-            <Text style={styles.tip}>• Make sure lighting is good</Text>
+const UploadOptionsModal = ({
+  visible,
+  onClose,
+  onOpenStudio,
+  onRecordVideo,
+  onChooseFromGallery,
+}) => (
+  <Modal
+    visible={visible}
+    transparent
+    animationType="slide"
+    onRequestClose={onClose}
+  >
+    <View style={styles.overlay}>
+      <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={onClose} />
+      <View style={styles.sheet}>
+        <View style={styles.handle} />
+        <View style={styles.headerRow}>
+          <View style={styles.headerCopy}>
+            <Text style={styles.sheetTitle}>Upload swing video</Text>
+            <Text style={styles.sheetSubtitle}>
+              Choose how you want to share your latest swing with your coach.
+            </Text>
           </View>
+          <TouchableOpacity style={styles.closeButton} onPress={onClose}>
+            <Ionicons name="close" size={22} color={colors.textSecondary} />
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.optionsContainer}>
+          {onOpenStudio && (
+            <OptionRow
+              icon="walk"
+              iconColor={colors.brandFern}
+              title="Swing studio"
+              description="Jump into the guided upload flow with progress tracking."
+              onPress={() => {
+                onClose?.();
+                onOpenStudio();
+              }}
+            />
+          )}
+          <OptionRow
+            icon="videocam"
+            iconColor={colors.primary}
+            title="Record a new swing"
+            description="Launch the camera and capture a fresh swing clip."
+            onPress={() => {
+              onClose?.();
+              onRecordVideo();
+            }}
+          />
+          <OptionRow
+            icon="images"
+            iconColor={colors.coachAccent}
+            title="Choose from library"
+            description="Pick an existing video from your camera roll."
+            onPress={() => {
+              onClose?.();
+              onChooseFromGallery();
+            }}
+          />
+        </View>
+
+        <View style={styles.tipsCard}>
+          <Text style={styles.tipsTitle}>Quick recording tips</Text>
+          <TipRow text="Film from chest height and keep the full swing in frame." />
+          <TipRow text="Use good lighting so the club path stays clear." />
+          <TipRow text="Hold the finish for two beats to capture follow-through." />
         </View>
       </View>
-    </Modal>
-  );
-}
+    </View>
+  </Modal>
+);
 
 const styles = StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    backgroundColor: 'rgba(0,0,0,0.45)',
     justifyContent: 'flex-end',
   },
-  modalContainer: {
+  sheet: {
     backgroundColor: colors.surface,
     borderTopLeftRadius: borderRadius.xl,
     borderTopRightRadius: borderRadius.xl,
     paddingTop: spacing.lg,
     paddingHorizontal: spacing.lg,
-    paddingBottom: spacing.xl,
-    maxHeight: height * 0.8,
+    paddingBottom: spacing['2xl'],
+    maxHeight: height * 0.85,
+    borderWidth: 1,
+    borderColor: colors.border,
+    ...shadows.sm,
   },
-  header: {
+  handle: {
+    alignSelf: 'center',
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: colors.border,
+    marginBottom: spacing.lg,
+  },
+  headerRow: {
     flexDirection: 'row',
+    alignItems: 'flex-start',
     justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: spacing.sm,
   },
-  title: {
+  headerCopy: {
+    flex: 1,
+    paddingRight: spacing.base,
+  },
+  sheetTitle: {
     fontSize: typography.fontSizes['2xl'],
-    fontWeight: typography.fontWeights.semibold,
     color: colors.primary,
+    fontFamily: typography.fontFamilyHeading,
+  },
+  sheetSubtitle: {
+    marginTop: spacing.xs,
+    fontSize: typography.fontSizes.sm,
+    color: colors.textSecondary,
     fontFamily: typography.fontFamily,
+    lineHeight: typography.lineHeights.relaxed * typography.fontSizes.sm,
   },
   closeButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: colors.background,
-    justifyContent: 'center',
+    width: 36,
+    height: 36,
+    borderRadius: borderRadius.full,
+    backgroundColor: colors.backgroundMuted,
     alignItems: 'center',
-  },
-  subtitle: {
-    fontSize: typography.fontSizes.base,
-    color: colors.textSecondary,
-    lineHeight: 20,
-    fontFamily: typography.fontFamily,
-    marginBottom: spacing.xl,
+    justifyContent: 'center',
   },
   optionsContainer: {
-    marginBottom: spacing.xl,
+    marginTop: spacing['2xl'],
   },
-  optionButton: {
+  optionRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: spacing.lg,
-    backgroundColor: colors.background,
+    height: OPTION_HEIGHT,
     borderRadius: borderRadius.lg,
-    marginBottom: spacing.base,
-    ...shadows.sm,
-  },
-  optionIconContainer: {
-    width: 56,
-    height: 56,
+    borderWidth: 1,
+    borderColor: colors.border,
     backgroundColor: colors.surface,
-    borderRadius: 28,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: spacing.base,
-    ...shadows.sm,
+    paddingHorizontal: spacing.base,
+    marginBottom: spacing.sm,
+    ...shadows.xs,
   },
-  optionTextContainer: {
+  optionIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: borderRadius.full,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: spacing.base,
+  },
+  optionCopy: {
     flex: 1,
   },
   optionTitle: {
-    fontSize: typography.fontSizes.lg,
-    fontWeight: typography.fontWeights.medium,
+    fontSize: typography.fontSizes.base,
     color: colors.text,
-    fontFamily: typography.fontFamily,
-    marginBottom: spacing.xs,
+    fontFamily: typography.fontFamilyHeading,
   },
   optionDescription: {
+    marginTop: spacing.xs / 2,
     fontSize: typography.fontSizes.sm,
     color: colors.textSecondary,
     fontFamily: typography.fontFamily,
-    lineHeight: 18,
+    lineHeight: typography.lineHeights.relaxed * typography.fontSizes.sm,
   },
-  tipsContainer: {
-    backgroundColor: colors.background,
+  tipsCard: {
+    marginTop: spacing['2xl'],
+    backgroundColor: colors.backgroundMuted,
+    borderRadius: borderRadius.lg,
     padding: spacing.base,
-    borderRadius: borderRadius.base,
     borderLeftWidth: 4,
-    borderLeftColor: colors.accent,
+    borderLeftColor: colors.coachAccent,
   },
   tipsTitle: {
     fontSize: typography.fontSizes.base,
-    fontWeight: typography.fontWeights.medium,
     color: colors.primary,
-    fontFamily: typography.fontFamily,
+    fontFamily: typography.fontFamilyHeading,
     marginBottom: spacing.sm,
   },
-  tip: {
+  tipRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginBottom: spacing.xs,
+  },
+  tipDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: colors.coachAccent,
+    marginRight: spacing.sm,
+    marginTop: spacing.xs / 2,
+  },
+  tipText: {
+    flex: 1,
     fontSize: typography.fontSizes.sm,
     color: colors.textSecondary,
     fontFamily: typography.fontFamily,
-    marginBottom: spacing.xs,
-    lineHeight: 16,
+    lineHeight: typography.lineHeights.relaxed * typography.fontSizes.sm,
   },
 });
+
+export default UploadOptionsModal;

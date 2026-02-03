@@ -2,7 +2,7 @@
  * CoachingDashboard - Main dashboard container for HomeScreen
  * 
  * Displays coaching overview, session progress, recent analyses,
- * and navigation actions for authenticated users with coaching history.
+ * and provides quick access back to chat for authenticated users.
  */
 
 import React from 'react';
@@ -21,16 +21,9 @@ const CoachingDashboard = ({
 }) => {
   
   const handleNavigateToAnalysis = (analysis) => {
-    navigation.navigate('Results', {
-      jobId: analysis.analysisId,
-      analysisData: {
-        ai_analysis: {
-          coaching_response: `Reviewing your swing from ${analysis.date}...`,
-          confidence_score: analysis.overallScore * 10,
-          symptoms_detected: [],
-          practice_recommendations: []
-        }
-      }
+    navigation.navigate('Chat', {
+      focusAnalysisId: analysis.analysisId,
+      initialMessage: `Can we review the swing analysis from ${analysis.date}?`,
     });
   };
 
@@ -311,3 +304,5 @@ const styles = StyleSheet.create({
 });
 
 export default CoachingDashboard;
+
+

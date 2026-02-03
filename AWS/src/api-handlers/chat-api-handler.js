@@ -1,10 +1,15 @@
 // Chat API Handler - Focused Lambda for handling chat requests with user threading
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient, GetCommand, PutCommand } = require('@aws-sdk/lib-dynamodb');
+const { SecretsManagerClient, GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');
+const { executeChatLoop } = require('../chat/chatLoop');
 const https = require('https');
 
 // Initialize clients
 let dynamodb = null;
+let secretsManager = null;
+let cachedOpenAIKey = null;
+const CHAT_LOOP_ENABLED = process.env.CHAT_LOOP_ENABLED === 'true';
 
 function getDynamoClient() {
   if (!dynamodb) {
@@ -12,6 +17,33 @@ function getDynamoClient() {
     dynamodb = DynamoDBDocumentClient.from(client);
   }
   return dynamodb;
+}
+
+function getSecretsManagerClient() {
+  if (!secretsManager) {
+    secretsManager = new SecretsManagerClient({});
+  }
+  return secretsManager;
+}
+
+async function ensureOpenAIKey() {
+  if (cachedOpenAIKey) return cachedOpenAIKey;
+  if (process.env.OPENAI_API_KEY) {
+    cachedOpenAIKey = process.env.OPENAI_API_KEY;
+    return cachedOpenAIKey;
+  }
+  const secretId = process.env.OPENAI_SECRET_NAME || process.env.OPENAI_SECRET_ARN;
+  if (!secretId) {
+    throw new Error('OPENAI_API_KEY not configured. Set OPENAI_SECRET_NAME or OPENAI_SECRET_ARN.');
+  }
+  const sm = getSecretsManagerClient();
+  const resp = await sm.send(new GetSecretValueCommand({ SecretId: secretId }));
+  if (!resp.SecretString) {
+    throw new Error('OpenAI secret is empty');
+  }
+  cachedOpenAIKey = resp.SecretString;
+  process.env.OPENAI_API_KEY = resp.SecretString;
+  return cachedOpenAIKey;
 }
 
 // HTTP request helper function
@@ -166,7 +198,109 @@ async function storeUserThread(userId, threadData) {
 }
 
 // Handle chat request with user threading
+async function handleChatLoopRequest(event, userContext) {
+  let body;
+  try {
+    body = typeof event.body === 'string' ? JSON.parse(event.body) : (event.body || {});
+  } catch (error) {
+    throw new Error('Invalid JSON body');
+  }
+
+  const message = typeof body.message === 'string' ? body.message.trim() : '';
+  if (!message) {
+    return {
+      statusCode: 400,
+      headers: {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*'
+      },
+      body: JSON.stringify({
+        error: 'Message is required',
+        success: false,
+        timestamp: new Date().toISOString()
+      })
+    };
+  }
+
+  const userId = userContext.userId;
+  const dynamodbClient = getDynamoClient();
+  const logger = {
+    debug: (...args) => console.debug('CHAT_LOOP_DEBUG', ...args),
+    warn: (...args) => console.warn('CHAT_LOOP_WARN', ...args),
+    error: (...args) => console.error('CHAT_LOOP_ERROR', ...args)
+  };
+
+  const requestOpenAi = async (payload) => callChatCompletions(payload);
+  const result = await executeChatLoop({
+    userId,
+    userMessage: message,
+    dynamoClient: dynamodbClient,
+    requestOpenAi,
+    logger
+  });
+
+  return {
+    statusCode: 200,
+    headers: {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*'
+    },
+    body: JSON.stringify({
+      response: result.reply,
+      message: result.reply,
+      success: true,
+      timestamp: new Date().toISOString()
+    })
+  };
+}
+async function callChatCompletions(payload) {
+  if (!process.env.OPENAI_API_KEY) {
+    throw new Error('OPENAI_API_KEY is not configured');
+  }
+
+  const requestBody = JSON.stringify(payload);
+  const responseBody = await makeHttpsRequest({
+    hostname: 'api.openai.com',
+    path: '/v1/chat/completions',
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer ' + process.env.OPENAI_API_KEY,
+      'Content-Type': 'application/json'
+    }
+  }, requestBody);
+
+  try {
+    return JSON.parse(responseBody);
+  } catch (error) {
+    throw new Error('Failed to parse OpenAI chat response: ' + error.message);
+  }
+}
+
+
 async function handleChatRequest(event, userContext) {
+  if (CHAT_LOOP_ENABLED) {
+    try {
+      return await handleChatLoopRequest(event, userContext);
+    } catch (loopError) {
+      console.error('CHAT LOOP ERROR:', loopError);
+      const fallbackMessage = "I'm working through a small glitch. Please try your question again in a moment.";
+      return {
+        statusCode: 200,
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*'
+        },
+        body: JSON.stringify({
+          response: fallbackMessage,
+          message: fallbackMessage,
+          success: true,
+          fallback: true,
+          timestamp: new Date().toISOString()
+        })
+      };
+    }
+  }
+
   try {
     console.log('Starting user thread chat continuation...');
     
@@ -373,6 +507,8 @@ exports.handler = async (event) => {
   });
   
   try {
+    await ensureOpenAIKey();
+    
     // Extract user context from the request
     const userContext = await extractUserContext(event);
     console.log('USER CONTEXT:', userContext);

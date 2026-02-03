@@ -1,10 +1,13 @@
 // Chat API Handler - Focused Lambda for handling chat requests with user threading
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient, GetCommand, PutCommand } = require('@aws-sdk/lib-dynamodb');
+const { SecretsManagerClient, GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');
 const https = require('https');
 
 // Initialize clients
 let dynamodb = null;
+let secretsManager = null;
+let cachedOpenAIKey = null;
 
 function getDynamoClient() {
   if (!dynamodb) {
@@ -12,6 +15,33 @@ function getDynamoClient() {
     dynamodb = DynamoDBDocumentClient.from(client);
   }
   return dynamodb;
+}
+
+function getSecretsManagerClient() {
+  if (!secretsManager) {
+    secretsManager = new SecretsManagerClient({});
+  }
+  return secretsManager;
+}
+
+async function ensureOpenAIKey() {
+  if (cachedOpenAIKey) return cachedOpenAIKey;
+  if (process.env.OPENAI_API_KEY) {
+    cachedOpenAIKey = process.env.OPENAI_API_KEY;
+    return cachedOpenAIKey;
+  }
+  const secretId = process.env.OPENAI_SECRET_NAME || process.env.OPENAI_SECRET_ARN;
+  if (!secretId) {
+    throw new Error('OPENAI_API_KEY not configured. Set OPENAI_SECRET_NAME or OPENAI_SECRET_ARN.');
+  }
+  const sm = getSecretsManagerClient();
+  const resp = await sm.send(new GetSecretValueCommand({ SecretId: secretId }));
+  if (!resp.SecretString) {
+    throw new Error('OpenAI secret is empty');
+  }
+  cachedOpenAIKey = resp.SecretString;
+  process.env.OPENAI_API_KEY = resp.SecretString; // keep downstream code unchanged
+  return cachedOpenAIKey;
 }
 
 // HTTP request helper function
@@ -37,6 +67,48 @@ function makeHttpsRequest(options, data = null) {
     
     req.end();
   });
+}
+
+const CHAT_ASSISTANT_INSTRUCTIONS = `You are Pin High, an AI-powered golf coach and supportive golf buddy with Tour-level analysis. The golfer is typically an 8-25 handicapper. Keep the tone conversational, encouraging, and a little playful while staying deeply knowledgeable. Diagnose underlying fundamentals rather than just symptoms. Reference earlier swings, drills, and feedback whenever it helps the player feel you remember their journey. Explain what the body and club are doing and why, using plain language with precise golf terms when helpful. Offer tailored drills or feels, encourage iterative progress, and avoid deterministic absolutes--guide them toward self-discovery. Ask occasional pro-level engagement questions (for example about miss pattern, contact quality, or feels) to deepen the diagnosis and keep the session interactive.`;
+
+let cachedAssistantId = null;
+
+async function getOrCreateAssistant() {
+  if (process.env.GOLF_COACH_ASSISTANT_ID) {
+    return process.env.GOLF_COACH_ASSISTANT_ID;
+  }
+
+  if (cachedAssistantId) {
+    return cachedAssistantId;
+  }
+
+  try {
+    const assistantPayload = {
+      name: 'Pin High Swing Coach',
+      instructions: CHAT_ASSISTANT_INSTRUCTIONS,
+      model: 'gpt-4o-mini',
+      tools: []
+    };
+
+    const assistantResponse = await makeHttpsRequest({
+      hostname: 'api.openai.com',
+      path: '/v1/assistants',
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+        'OpenAI-Beta': 'assistants=v2'
+      }
+    }, JSON.stringify(assistantPayload));
+
+    const assistant = JSON.parse(assistantResponse);
+    cachedAssistantId = assistant.id;
+    console.log('Created new assistant for chat:', cachedAssistantId);
+    return cachedAssistantId;
+  } catch (error) {
+    console.error('Failed to create chat assistant:', error);
+    throw new Error('Unable to obtain assistant id. Set GOLF_COACH_ASSISTANT_ID env var or allow creation.');
+  }
 }
 
 // Extract user context from event with JWT validation
@@ -263,7 +335,8 @@ async function handleChatRequest(event, userContext) {
     }, JSON.stringify({
       assistant_id: assistantId,
       max_completion_tokens: 1500,
-      temperature: 0.7
+      temperature: 0.7,
+      instructions: CHAT_ASSISTANT_INSTRUCTIONS
     }));
     
     const run = JSON.parse(runResponse);
@@ -373,6 +446,8 @@ exports.handler = async (event) => {
   });
   
   try {
+    await ensureOpenAIKey();
+    
     // Extract user context from the request
     const userContext = await extractUserContext(event);
     console.log('USER CONTEXT:', userContext);

@@ -2,6 +2,7 @@
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient, GetCommand, PutCommand } = require('@aws-sdk/lib-dynamodb');
 const https = require('https');
+const crypto = require('crypto');
 
 // Initialize clients
 let dynamodb = null;
@@ -15,11 +16,15 @@ function getDynamoClient() {
 }
 
 // HTTP request helper function
-function makeHttpsRequest(options, data = null) {
+const DEFAULT_HTTPS_TIMEOUT_MS = parseInt(process.env.HTTP_REQUEST_TIMEOUT_MS || '15000', 10);
+
+function makeHttpsRequest(options, data = null, timeoutMs = DEFAULT_HTTPS_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
-    const req = https.request(options, (res) => {
+    const requestOptions = { ...options };
+    const req = https.request(requestOptions, (res) => {
       let body = '';
-      res.on('data', (chunk) => body += chunk);
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { body += chunk; });
       res.on('end', () => {
         if (res.statusCode >= 200 && res.statusCode < 300) {
           resolve(body);
@@ -28,86 +33,223 @@ function makeHttpsRequest(options, data = null) {
         }
       });
     });
-    
+
     req.on('error', reject);
-    
+    req.setTimeout(timeoutMs, () => {
+      const host = requestOptions.hostname || requestOptions.host || 'unknown-host';
+      const path = requestOptions.path || '';
+      req.destroy(new Error(`Request to ${host}${path} timed out after ${timeoutMs}ms`));
+    });
+
     if (data) {
       req.write(data);
     }
-    
+
     req.end();
   });
+}
+const JWKS_CACHE_TTL_MS = 1000 * 60 * 60 * 6;
+let cachedJwks = null;
+let cachedJwksExpiresAt = 0;
+
+function decodeJwtSegment(segment, label) {
+  try {
+    return JSON.parse(Buffer.from(segment, 'base64url').toString('utf8'));
+  } catch (error) {
+    throw new Error(`Invalid ${label} segment`);
+  }
+}
+
+async function fetchJsonWithRequest(url, timeoutMs = DEFAULT_HTTPS_TIMEOUT_MS) {
+  const parsed = new URL(url);
+  const responseBody = await makeHttpsRequest({
+    hostname: parsed.hostname,
+    path: `${parsed.pathname}${parsed.search}`,
+    method: 'GET',
+    headers: { 'Accept': 'application/json' }
+  }, null, timeoutMs);
+
+  try {
+    return JSON.parse(responseBody);
+  } catch (error) {
+    throw new Error(`Failed to parse JSON from ${url}: ${error.message}`);
+  }
+}
+
+async function getJwks() {
+  const now = Date.now();
+  if (cachedJwks && cachedJwksExpiresAt > now) {
+    return cachedJwks;
+  }
+
+  const region = process.env.COGNITO_REGION;
+  const userPoolId = process.env.COGNITO_USER_POOL_ID;
+  if (!region || !userPoolId) {
+    throw new Error('Cognito configuration missing. Set COGNITO_REGION and COGNITO_USER_POOL_ID.');
+  }
+
+  const jwksUrl = `https://cognito-idp.${region}.amazonaws.com/${userPoolId}/.well-known/jwks.json`;
+  const jwks = await fetchJsonWithRequest(jwksUrl, Math.min(DEFAULT_HTTPS_TIMEOUT_MS, 5000));
+
+  cachedJwks = jwks;
+  cachedJwksExpiresAt = now + JWKS_CACHE_TTL_MS;
+  return jwks;
+}
+
+async function verifyAndDecodeJwt(token) {
+  const parts = token.split('.');
+  if (parts.length !== 3) {
+    throw new Error('Invalid JWT format');
+  }
+
+  const header = decodeJwtSegment(parts[0], 'header');
+  const payload = decodeJwtSegment(parts[1], 'payload');
+
+  if (header.alg !== 'RS256') {
+    throw new Error(`Unsupported JWT algorithm: ${header.alg}`);
+  }
+
+  const jwks = await getJwks();
+  const matchingKey = jwks.keys?.find((key) => key.kid === header.kid);
+  if (!matchingKey) {
+    throw new Error('Unable to find matching signing key for token');
+  }
+
+  let publicKey;
+  try {
+    publicKey = crypto.createPublicKey({ key: matchingKey, format: 'jwk' });
+  } catch (error) {
+    throw new Error(`Failed to construct public key: ${error.message}`);
+  }
+
+  const verifier = crypto.createVerify('RSA-SHA256');
+  verifier.update(`${parts[0]}.${parts[1]}`);
+  verifier.end();
+
+  const signature = Buffer.from(parts[2], 'base64url');
+  if (!verifier.verify(publicKey, signature)) {
+    throw new Error('Invalid JWT signature');
+  }
+
+  const region = process.env.COGNITO_REGION;
+  const userPoolId = process.env.COGNITO_USER_POOL_ID;
+  const issuer = `https://cognito-idp.${region}.amazonaws.com/${userPoolId}`;
+  if (payload.iss !== issuer) {
+    throw new Error('Token issuer mismatch');
+  }
+
+  const expectedClientId = process.env.COGNITO_APP_CLIENT_ID;
+  if (expectedClientId && payload.aud !== expectedClientId && payload.client_id !== expectedClientId) {
+    throw new Error('Token not issued for expected client');
+  }
+
+  if (!payload.exp || payload.exp * 1000 < Date.now()) {
+    throw new Error('Token has expired');
+  }
+
+  return payload;
+}
+
+function buildUserContextFromPayload(payload) {
+  return {
+    isAuthenticated: true,
+    userId: payload.sub,
+    email: payload.email || payload.username || payload['cognito:username'] || null,
+    name: payload.name || payload.email || payload.username || payload['cognito:username'] || 'Authenticated User',
+    username: payload.username || payload['cognito:username'] || payload.email || payload.sub,
+    userType: 'authenticated'
+  };
+}
+
+const CHAT_ASSISTANT_INSTRUCTIONS = `You are Pin High, an AI-powered golf coach and supportive golf buddy with Tour-level analysis. The golfer is typically an 8-25 handicapper. Keep the tone conversational, encouraging, and a little playful while staying deeply knowledgeable. Diagnose underlying fundamentals rather than just symptoms. Reference earlier swings, drills, and feedback whenever it helps the player feel you remember their journey. Explain what the body and club are doing and why, using plain language with precise golf terms when helpful. Offer tailored drills or feels, encourage iterative progress, and avoid deterministic absolutes--guide them toward self-discovery. Ask occasional pro-level engagement questions (for example about miss pattern, contact quality, or feels) to deepen the diagnosis and keep the session interactive.`;
+
+let cachedAssistantId = null;
+
+async function getOrCreateAssistant() {
+  if (process.env.GOLF_COACH_ASSISTANT_ID) {
+    return process.env.GOLF_COACH_ASSISTANT_ID;
+  }
+
+  if (cachedAssistantId) {
+    return cachedAssistantId;
+  }
+
+  try {
+    const assistantPayload = {
+      name: 'Pin High Swing Coach',
+      instructions: CHAT_ASSISTANT_INSTRUCTIONS,
+      model: 'gpt-4o-mini',
+      tools: []
+    };
+
+    const assistantResponse = await makeHttpsRequest({
+      hostname: 'api.openai.com',
+      path: '/v1/assistants',
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+        'OpenAI-Beta': 'assistants=v2'
+      }
+    }, JSON.stringify(assistantPayload));
+
+    const assistant = JSON.parse(assistantResponse);
+    cachedAssistantId = assistant.id;
+    console.log('Created new assistant for chat:', cachedAssistantId);
+    return cachedAssistantId;
+  } catch (error) {
+    console.error('Failed to create chat assistant:', error);
+    throw new Error('Unable to obtain assistant id. Set GOLF_COACH_ASSISTANT_ID env var or allow creation.');
+  }
+}
+
+function getGuestContext() {
+  return {
+    isAuthenticated: false,
+    userId: 'guest-user',
+    email: null,
+    name: 'Guest User',
+    userType: 'guest'
+  };
 }
 
 // Extract user context from event with JWT validation
 async function extractUserContext(event) {
   console.log('EXTRACT USER CONTEXT: Starting JWT validation');
-  
+
+  const guestContext = getGuestContext();
+
   try {
-    // Check for Authorization header
     const authHeader = event.headers?.Authorization || event.headers?.authorization;
-    
+
     if (authHeader && authHeader.startsWith('Bearer ')) {
-      const token = authHeader.substring(7); // Remove 'Bearer ' prefix
-      console.log('AUTH HEADER: Found JWT token, validating...');
-      
+      const token = authHeader.substring(7);
+      console.log('AUTH HEADER: Found JWT token, verifying...');
+
       try {
-        // Decode JWT token (basic parsing without verification for now)
-        const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
-        
-        console.log('JWT PAYLOAD: Extracted user info from token');
-        
-        // Extract user information from Cognito JWT
-        const authenticatedContext = {
-          isAuthenticated: true,
-          userId: payload.sub, // Cognito user ID (consistent across all tokens)
-          email: payload.email || null,
-          name: payload.name || payload.email || payload.username || 'Authenticated User',
-          username: payload.username || payload['cognito:username'],
-          userType: 'authenticated'
-        };
-        
+        const payload = await verifyAndDecodeJwt(token);
+        const authenticatedContext = buildUserContextFromPayload(payload);
+
         console.log('USER CONTEXT: Returning authenticated context:', {
-          ...authenticatedContext,
-          userId: authenticatedContext.userId // Show userId for debugging
+          userId: authenticatedContext.userId,
+          email: authenticatedContext.email,
+          userType: authenticatedContext.userType
         });
-        
+
         return authenticatedContext;
-        
       } catch (jwtError) {
-        console.error('JWT PARSING ERROR:', jwtError.message);
-        // Fall through to guest mode
+        console.error('JWT VERIFICATION ERROR:', jwtError.message);
       }
     } else {
       console.log('AUTH HEADER: No Bearer token found');
     }
-    
-    // Fall back to guest user context
-    console.log('USER CONTEXT: Falling back to guest mode');
-    const guestContext = {
-      isAuthenticated: false,
-      userId: 'guest-user', // Use consistent guest ID
-      email: null,
-      name: 'Guest User',
-      userType: 'guest'
-    };
-    
-    return guestContext;
-    
   } catch (error) {
     console.error('ERROR extracting user context:', error);
-    
-    // Always return valid context, even on error
-    return {
-      isAuthenticated: false,
-      userId: 'guest-user', // Consistent fallback
-      email: null,
-      name: 'Guest User',
-      userType: 'guest'
-    };
   }
-}
 
+  console.log('USER CONTEXT: Falling back to guest mode');
+  return guestContext;
+}
 // Get user thread data from DynamoDB
 async function getUserThread(userId) {
   try {
@@ -263,7 +405,8 @@ async function handleChatRequest(event, userContext) {
     }, JSON.stringify({
       assistant_id: assistantId,
       max_completion_tokens: 1500,
-      temperature: 0.7
+      temperature: 0.7,
+      instructions: CHAT_ASSISTANT_INSTRUCTIONS
     }));
     
     const run = JSON.parse(runResponse);
@@ -410,3 +553,12 @@ exports.handler = async (event) => {
     };
   }
 };
+
+
+
+
+
+
+
+
+

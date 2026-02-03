@@ -1,2 +1,0 @@
-
- ERROR  Google Sign-In error: [AuthUserPoolException: Auth UserPool not configured.]

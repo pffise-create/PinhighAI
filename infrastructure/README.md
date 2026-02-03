@@ -229,3 +229,37 @@ aws cloudwatch get-metric-statistics \
   --period 300 \
   --statistics Average
 ```
+
+## DynamoDB Index Utilities
+
+The `golf-coach-analyses` table uses the `user-timestamp-index` (HASH `user_id`, RANGE `created_at`) so we can pull a player's recent swings quickly. Verify the index exists before deploying chat-loop changes:
+
+```powershell
+aws dynamodb describe-table `
+  --table-name golf-coach-analyses `
+  --region us-east-1 `
+  --query "Table.GlobalSecondaryIndexes[].{Name:IndexName,Status:IndexStatus}"
+```
+
+If the index is missing in a new environment, create it with:
+
+```powershell
+aws dynamodb update-table `
+  --table-name golf-coach-analyses `
+  --region us-east-1 `
+  --attribute-definitions AttributeName=user_id,AttributeType=S AttributeName=created_at,AttributeType=S `
+  --global-secondary-index-updates '[{"Create":{"IndexName":"user-timestamp-index","KeySchema":[{"AttributeName":"user_id","KeyType":"HASH"},{"AttributeName":"created_at","KeyType":"RANGE"}],"Projection":{"ProjectionType":"ALL"}}}]'
+```
+
+No backfill is required because prior data was test-only.
+
+### Swing Profile Table Deployment
+
+Use the `golf-dynamo-tables.yaml` template to provision the persistent swing profile store that the chat loop now reads from.
+
+```bash
+cd infrastructure
+./deploy-swing-profile-table.sh -e dev   # or staging/prod
+```
+
+The script validates the template, creates or updates the `golf-coach-swing-profiles-<env>` table, and prints the resulting table name/ARN. Ensure the AWS CLI profile you use has permission to manage DynamoDB resources.

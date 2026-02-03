@@ -197,10 +197,10 @@ You can ask me questions about this analysis or request tips for improvement!`;
   }
 }
 
-// Main AI analysis function using OpenAI GPT-5
-async function analyzeSwingWithGPT5(frameData, swingData) {
+// Main AI analysis function using OpenAI GPT-4o
+async function analyzeSwingWithVisionModel(frameData, swingData) {
   try {
-    console.log('Starting analyzeSwingWithGPT5 function with OpenAI GPT-5');
+    console.log('Starting analyzeSwingWithVisionModel function with OpenAI GPT-4o');
 
     // Extract userId from swingData
     const analysisId = swingData.analysis_id;
@@ -219,7 +219,7 @@ async function analyzeSwingWithGPT5(frameData, swingData) {
       throw new Error('No valid frame URLs found for analysis');
     }
     
-    console.log(`Converting ${allFrames.length} frames to base64 for GPT-5 analysis`);
+    console.log(`Converting ${allFrames.length} frames to base64 for GPT-4o analysis`);
     
     // Download and convert all frames to base64
     const base64Images = [];
@@ -241,27 +241,22 @@ async function analyzeSwingWithGPT5(frameData, swingData) {
       throw new Error('No frame images could be converted');
     }
     
-    console.log(`Successfully prepared ${base64Images.length} frames for GPT-5 analysis`);
+    console.log(`Successfully prepared ${base64Images.length} frames for GPT-4o analysis`);
     
-    // GPT-5 has a 10-image limit, so we need to batch the frames
+    // GPT-4o has a 10-image limit, so we need to batch the frames
     const batchSize = 10;
     const batches = [];
     for (let i = 0; i < base64Images.length; i += batchSize) {
       batches.push(base64Images.slice(i, i + batchSize));
     }
     
-    console.log(`Splitting ${base64Images.length} frames into ${batches.length} batches for GPT-5`);
+    console.log(`Splitting ${base64Images.length} frames into ${batches.length} batches for GPT-4o`);
     
-    const batchResults = [];
-    
-    // Process each batch
-    for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
-      const batch = batches[batchIndex];
+    const batchTasks = batches.map((batch, batchIndex) => (async () => {
       const isFirstBatch = batchIndex === 0;
-      const isLastBatch = batchIndex === batches.length - 1;
-      
+
       console.log(`Processing batch ${batchIndex + 1}/${batches.length} with ${batch.length} frames`);
-      
+
       // Build the message content for this batch
       const messageContent = [
         {
@@ -300,22 +295,21 @@ Focus on the swing elements visible in these frames and provide specific technic
         });
       });
 
-      console.log(`Sending batch ${batchIndex + 1} with ${batch.length} frames to GPT-5 for analysis`);
+      console.log(`Sending batch ${batchIndex + 1} with ${batch.length} frames to gpt-4o for analysis`);
 
       // Prepare OpenAI API request for this batch
       const openaiRequest = {
-        model: "gpt-5", // GPT-5 with vision
+        model: "gpt-4o",
         messages: [
           {
             role: "user",
             content: messageContent
           }
         ],
-        max_completion_tokens: 2000,
-        reasoning_effort: "low" // Required for GPT-5
+        max_completion_tokens: 2000
       };
       
-      console.log(`Sending GPT-5 request for batch ${batchIndex + 1}:`, JSON.stringify(openaiRequest, null, 2));
+      console.log(`Sending gpt-4o request for batch ${batchIndex + 1}:`, JSON.stringify(openaiRequest, null, 2));
 
       const response = await makeHttpsRequest({
         hostname: 'api.openai.com',
@@ -329,29 +323,31 @@ Focus on the swing elements visible in these frames and provide specific technic
       
       const responseBody = JSON.parse(response);
       
-      console.log(`GPT-5 response received for batch ${batchIndex + 1}:`, JSON.stringify(responseBody, null, 2));
+      console.log(`gpt-4o response received for batch ${batchIndex + 1}:`, JSON.stringify(responseBody, null, 2));
     
       if (!responseBody.choices || !responseBody.choices[0] || !responseBody.choices[0].message) {
         console.error(`Invalid response structure for batch ${batchIndex + 1}:`, responseBody);
-        throw new Error(`Invalid response from OpenAI GPT-5 API for batch ${batchIndex + 1}`);
+        throw new Error(`Invalid response from OpenAI gpt-4o API for batch ${batchIndex + 1}`);
       }
 
       const batchAnalysis = responseBody.choices[0].message.content;
       
       if (!batchAnalysis) {
         console.error(`Empty analysis content for batch ${batchIndex + 1}:`, responseBody.choices[0].message);
-        throw new Error(`GPT-5 returned empty analysis content for batch ${batchIndex + 1}`);
+        throw new Error(`gpt-4o returned empty analysis content for batch ${batchIndex + 1}`);
       }
       
       console.log(`Batch ${batchIndex + 1} analysis length: ${batchAnalysis.length} characters`);
-      batchResults.push({
+      return {
         batchIndex: batchIndex + 1,
         frames: batch.map(f => f.phase),
         analysis: batchAnalysis,
         tokensUsed: responseBody.usage?.total_tokens || 0
-      });
-    }
-    
+      };
+    })());
+
+    const batchResults = (await Promise.all(batchTasks)).sort((a, b) => a.batchIndex - b.batchIndex);
+
     // Combine all batch results
     console.log(`Combining results from ${batchResults.length} batches`);
     let combinedAnalysis = '';
@@ -396,7 +392,7 @@ Focus on the swing elements visible in these frames and provide specific technic
     };
     
   } catch (error) {
-    console.error('Error in analyzeSwingWithClaude:', error);
+    console.error('Error in analyzeSwingWithVisionModel:', error);
     throw error;
   }
 }
@@ -474,7 +470,7 @@ async function processSwingAnalysis(swingData) {
     await updateAnalysisStatus(analysisId, 'AI_PROCESSING', 'AI analysis in progress...');
     
     // Call AI analysis function
-    const aiResult = await analyzeSwingWithGPT5(convertedFrameData, fullSwingData);
+    const aiResult = await analyzeSwingWithVisionModel(convertedFrameData, fullSwingData);
     
     if (aiResult && aiResult.response) {
       console.log(`AI analysis completed successfully for: ${analysisId}`);

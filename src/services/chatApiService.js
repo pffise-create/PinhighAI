@@ -1,5 +1,11 @@
 // chatApiService.js - Production chat API integration
-const API_BASE_URL = 'https://t7y64hqkq0.execute-api.us-east-1.amazonaws.com/prod';
+const DEFAULT_BASE_URL = 'https://t7y64hqkq0.execute-api.us-east-1.amazonaws.com/prod';
+const resolveBaseUrl = (value) => {
+  const base = value || DEFAULT_BASE_URL;
+  return base.endsWith('/') ? base.slice(0, -1) : base;
+};
+const API_BASE_URL = resolveBaseUrl(process.env.EXPO_PUBLIC_API_URL);
+const CHAT_PATH = process.env.EXPO_PUBLIC_CHAT_PATH || '/api/chat';
 
 class ChatApiService {
   constructor() {
@@ -7,33 +13,47 @@ class ChatApiService {
     this.timeoutMs = 15000; // 15 second timeout
   }
 
+  buildChatUrl(pathOverride) {
+    const path = pathOverride || CHAT_PATH;
+    if (!path) {
+      return API_BASE_URL;
+    }
+    if (path.startsWith('http')) {
+      return path;
+    }
+    if (path.startsWith('/')) {
+      return `${API_BASE_URL}${path}`;
+    }
+    return `${API_BASE_URL}/${path}`;
+  }
+
   // Send message to AI coach with simplified user thread payload
   async sendMessage(message, userId, authHeaders = {}) {
     let attempts = 0;
-    
+
     while (attempts <= this.maxRetries) {
       try {
-        console.log(`💬 Sending message to coach API (attempt ${attempts + 1}/${this.maxRetries + 1})`);
-        console.log('💬 Simplified request payload:', {
+        console.log(`Sending message to coach API (attempt ${attempts + 1}/${this.maxRetries + 1})`);
+        console.log('Request payload:', {
           message: message.trim(),
           userId: userId
         });
-        
+
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
 
         const requestPayload = {
           message: message.trim(),
-          userId: userId  // Always include userId for thread continuity
-          // Remove: jobId, conversationHistory, swingContext - backend handles this now
+          userId: userId
         };
 
         const headers = {
           'Content-Type': 'application/json',
           ...authHeaders
         };
-        
-        const response = await fetch(`${API_BASE_URL}/api/chat`, {
+
+        const chatUrl = this.buildChatUrl();
+        const response = await fetch(chatUrl, {
           method: 'POST',
           headers: headers,
           body: JSON.stringify(requestPayload),
@@ -42,34 +62,41 @@ class ChatApiService {
 
         clearTimeout(timeoutId);
 
+        if (response.status === 401 || response.status === 403) {
+          throw new Error('AUTHENTICATION_REQUIRED');
+        }
+
         if (!response.ok) {
           const errorText = await response.text();
           throw new Error(`API Error ${response.status}: ${errorText}`);
         }
 
         const data = await response.json();
-        
-        console.log('✅ Coach API response received');
-        
+
+        console.log('Coach API response received');
+
         return {
           success: true,
-          response: data.response, // Pure AI response - no fallback text
+          response: data.response || data.message,
+          message: data.message || data.response,
           tokensUsed: data.tokensUsed || 0,
           timestamp: data.timestamp || new Date().toISOString()
         };
 
       } catch (error) {
         attempts++;
-        console.error(`❌ Chat API attempt ${attempts} failed:`, error.message);
-        console.error('Full error:', error);
-        console.error('Request was:', {
-          url: `${API_BASE_URL}/api/chat`,
-          message: message,
-          userId: userId
-        });
+        if (error?.message === 'AUTHENTICATION_REQUIRED') {
+          throw error;
+        }
 
-        // If this was the last attempt, return fallback
+        console.error(`Chat API attempt ${attempts} failed:`, error.message);
+
+        // If this was the last attempt, throw error or return fallback
         if (attempts > this.maxRetries) {
+          // Check if it's an auth error
+          if (error.message.includes('401') || error.message.includes('403')) {
+            throw new Error('AUTHENTICATION_REQUIRED');
+          }
           return this.getFallbackResponse(message, error);
         }
 
@@ -81,7 +108,7 @@ class ChatApiService {
 
   // Provide honest fallback responses
   getFallbackResponse(userMessage, error) {
-    console.log('🔄 Providing fallback coaching response');
+    console.log('Providing fallback coaching response');
     
     const message = userMessage.toLowerCase();
     let fallbackText;
@@ -108,7 +135,7 @@ class ChatApiService {
   // Test API connectivity
   async testConnection(authHeaders = {}) {
     try {
-      console.log('🔍 Testing chat API connection...');
+      console.log('Testing chat API connection...');
       
       const headers = {
         'Content-Type': 'application/json',
@@ -116,7 +143,8 @@ class ChatApiService {
         ...authHeaders
       };
       
-      const response = await fetch(`${API_BASE_URL}/api/chat`, {
+      const chatUrl = this.buildChatUrl();
+      const response = await fetch(chatUrl, {
         method: 'POST',
         headers: headers,
         body: JSON.stringify({
@@ -128,15 +156,15 @@ class ChatApiService {
       });
 
       if (response.ok) {
-        console.log('✅ Chat API is responding');
+        console.log('Chat API is responding');
         return true;
       } else {
-        console.warn('⚠️ Chat API returned non-200 status:', response.status);
+        console.warn('Chat API returned non-200 status:', response.status);
         return false;
       }
       
     } catch (error) {
-      console.error('❌ Chat API connection test failed:', error.message);
+      console.error('Chat API connection test failed:', error.message);
       return false;
     }
   }
@@ -145,3 +173,6 @@ class ChatApiService {
 
 // Export singleton instance
 export default new ChatApiService();
+
+
+

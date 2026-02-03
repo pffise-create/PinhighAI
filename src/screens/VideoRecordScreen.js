@@ -1,4 +1,4 @@
-// VideoRecordScreen.js - Updated to poll for real analysis results
+// VideoRecordScreen.js - Updated with video trimming support
 import React, { useState, useEffect } from 'react';
 import {
   View,
@@ -10,12 +10,14 @@ import {
   Dimensions,
   ActivityIndicator,
   TextInput,
+  Modal,
 } from 'react-native';
 import { Video } from 'expo-av';
 import * as ImagePicker from 'expo-image-picker';
 import { colors, typography, spacing, borderRadius, shadows } from '../utils/theme';
 import videoService from '../services/videoService';
 import { useAuth } from '../context/AuthContext';
+import VideoTrimmer from '../components/VideoTrimmer';
 
 const { width } = Dimensions.get('window');
 
@@ -30,11 +32,26 @@ const VideoRecordScreen = ({ navigation, route }) => {
   const [statusMessage, setStatusMessage] = useState('');
   const [videoMessage, setVideoMessage] = useState('');
 
+  // Trim state
+  const [showTrimmer, setShowTrimmer] = useState(false);
+  const [trimData, setTrimData] = useState(null); // { startTime, endTime, duration }
+  const [rawVideoUri, setRawVideoUri] = useState(null); // Original untrimmed video URI
+  const [rawVideoDuration, setRawVideoDuration] = useState(null);
+
   useEffect(() => {
     if (route.params?.recordedVideo) {
       const { uri, duration } = route.params.recordedVideo;
-      setVideoUri(uri);
-      setVideoDuration(duration);
+      // For recorded videos, show trimmer if duration > 5 seconds
+      if (duration > 5) {
+        setRawVideoUri(uri);
+        setRawVideoDuration(duration);
+        setShowTrimmer(true);
+      } else {
+        // Short video, no trimming needed
+        setVideoUri(uri);
+        setVideoDuration(duration);
+        setTrimData(null);
+      }
       navigation.setParams({ recordedVideo: null });
     }
   }, [route.params?.recordedVideo]);
@@ -46,28 +63,57 @@ const VideoRecordScreen = ({ navigation, route }) => {
   const handleSelectVideo = async () => {
     try {
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      
+
       if (status !== 'granted') {
         Alert.alert('Permission denied', 'Media library access is required');
         return;
       }
 
+      // Note: allowsEditing doesn't work for video trimming on RN/Expo
+      // We use our custom VideoTrimmer component instead
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Videos,
-        allowsEditing: true,
+        allowsEditing: false, // Disabled - we use custom trimmer
         quality: 1,
-        videoMaxDuration: 120,
+        videoMaxDuration: 120, // Allow up to 2 min selection, user will trim
       });
 
       if (!result.canceled && result.assets && result.assets.length > 0) {
         const video = result.assets[0];
-        setVideoUri(video.uri);
-        setVideoDuration(video.duration ? video.duration / 1000 : null);
+        const durationSeconds = video.duration ? video.duration / 1000 : null;
+
+        if (durationSeconds && durationSeconds > 5) {
+          // Show trimmer for videos longer than 5 seconds
+          setRawVideoUri(video.uri);
+          setRawVideoDuration(durationSeconds);
+          setShowTrimmer(true);
+        } else if (durationSeconds && durationSeconds < 2) {
+          Alert.alert('Video Too Short', 'Please select a video at least 2 seconds long.');
+        } else {
+          // Video is already 5 seconds or less, no trimming needed
+          setVideoUri(video.uri);
+          setVideoDuration(durationSeconds);
+          setTrimData(null);
+        }
       }
     } catch (error) {
       console.error('Error picking video:', error);
       Alert.alert('Error', 'Failed to select video from gallery.');
     }
+  };
+
+  const handleTrimComplete = (trimResult) => {
+    console.log('Trim complete:', trimResult);
+    setTrimData(trimResult);
+    setVideoUri(rawVideoUri);
+    setVideoDuration(trimResult.duration);
+    setShowTrimmer(false);
+  };
+
+  const handleTrimCancel = () => {
+    setShowTrimmer(false);
+    setRawVideoUri(null);
+    setRawVideoDuration(null);
   };
 
   const handleUploadVideo = async () => {
@@ -79,28 +125,29 @@ const VideoRecordScreen = ({ navigation, route }) => {
     setIsUploading(true);
     setUploadProgress(0);
     setStatusMessage('Starting upload...');
-    
+
     try {
-      // Step 1: Upload video and trigger analysis
+      // Step 1: Upload video and trigger analysis with trim data
       setStatusMessage('Uploading video to cloud...');
       const uploadResult = await videoService.uploadAndAnalyze(
-        videoUri, 
+        videoUri,
         videoDuration,
         (progress) => {
           setUploadProgress(progress * 0.3); // Upload is 30% of total
           setStatusMessage(`Uploading: ${Math.round(progress)}%`);
         },
-        videoMessage, // Pass the message to be attached to the video
+        videoMessage,
         userId,
-        authHeaders
+        authHeaders,
+        trimData // Pass trim data to service
       );
-      
-      console.log('✅ Upload complete, jobId:', uploadResult.jobId);
-      
+
+      console.log('Upload complete, jobId:', uploadResult.jobId);
+
       // Step 2: Poll for analysis completion
       setStatusMessage('Processing video with AI coach...');
       setUploadProgress(30);
-      
+
       const analysisResult = await videoService.waitForAnalysisComplete(
         uploadResult.jobId,
         (progressInfo) => {
@@ -113,19 +160,20 @@ const VideoRecordScreen = ({ navigation, route }) => {
         5000,  // intervalMs
         authHeaders
       );
-      
-      console.log('✅ Analysis complete:', analysisResult);
+
+      console.log('Analysis complete:', analysisResult);
       setIsUploading(false);
-      
+
       // Step 3: Navigate based on analysis result
       if (analysisResult.status === 'completed' && analysisResult.analysis) {
         // Parse the AI analysis
-        const aiData = typeof analysisResult.analysis === 'string' 
-          ? JSON.parse(analysisResult.analysis) 
+        const aiData = typeof analysisResult.analysis === 'string'
+          ? JSON.parse(analysisResult.analysis)
           : analysisResult.analysis;
-        
-        // Navigate to ResultsScreen with jobId
-        navigation.navigate('Results', { 
+
+        // Navigate to Chat with analysis results
+        navigation.navigate('Chat', {
+          analysisComplete: true,
           jobId: uploadResult.jobId,
           analysisData: {
             jobId: uploadResult.jobId,
@@ -141,13 +189,13 @@ const VideoRecordScreen = ({ navigation, route }) => {
       } else {
         throw new Error('Analysis did not complete successfully');
       }
-      
+
     } catch (error) {
-      console.error('❌ Upload/Analysis failed:', error);
+      console.error('Upload/Analysis failed:', error);
       setIsUploading(false);
       setUploadProgress(0);
       setStatusMessage('');
-      
+
       // More specific error messages
       let errorMessage = 'Unknown error occurred';
       if (error.message.includes('timeout')) {
@@ -157,9 +205,9 @@ const VideoRecordScreen = ({ navigation, route }) => {
       } else {
         errorMessage = error.message;
       }
-      
+
       Alert.alert(
-        'Upload Failed', 
+        'Upload Failed',
         errorMessage,
         [
           { text: 'Try Again', onPress: () => handleUploadVideo() },
@@ -175,7 +223,24 @@ const VideoRecordScreen = ({ navigation, route }) => {
     setUploadProgress(0);
     setStatusMessage('');
     setVideoMessage('');
+    setTrimData(null);
+    setRawVideoUri(null);
+    setRawVideoDuration(null);
   };
+
+  // Render the trimmer modal
+  if (showTrimmer && rawVideoUri && rawVideoDuration) {
+    return (
+      <Modal visible={true} animationType="slide">
+        <VideoTrimmer
+          videoUri={rawVideoUri}
+          videoDuration={rawVideoDuration}
+          onTrimComplete={handleTrimComplete}
+          onCancel={handleTrimCancel}
+        />
+      </Modal>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container}>
@@ -199,8 +264,15 @@ const VideoRecordScreen = ({ navigation, route }) => {
               onPress={clearVideo}
               disabled={isUploading}
             >
-              <Text style={styles.clearButtonText}>✕</Text>
+              <Text style={styles.clearButtonText}>X</Text>
             </TouchableOpacity>
+            {trimData && (
+              <View style={styles.trimBadge}>
+                <Text style={styles.trimBadgeText}>
+                  Trimmed: {trimData.startTime.toFixed(1)}s - {trimData.endTime.toFixed(1)}s
+                </Text>
+              </View>
+            )}
           </View>
         ) : (
           <View style={styles.placeholderContainer}>
@@ -213,7 +285,11 @@ const VideoRecordScreen = ({ navigation, route }) => {
         {videoUri && videoDuration !== null && (
           <View style={styles.videoInfoContainer}>
             <Text style={styles.videoInfoText}>
-              Duration: {videoDuration.toFixed(1)} seconds
+              {trimData ? (
+                `Clip duration: ${trimData.duration.toFixed(1)} seconds`
+              ) : (
+                `Duration: ${videoDuration.toFixed(1)} seconds`
+              )}
             </Text>
           </View>
         )}
@@ -239,11 +315,11 @@ const VideoRecordScreen = ({ navigation, route }) => {
         {isUploading && (
           <View style={styles.progressContainer}>
             <View style={styles.progressBar}>
-              <View 
+              <View
                 style={[
-                  styles.progressFill, 
+                  styles.progressFill,
                   { width: `${uploadProgress}%` }
-                ]} 
+                ]}
               />
             </View>
             <Text style={styles.progressText}>
@@ -291,10 +367,10 @@ const VideoRecordScreen = ({ navigation, route }) => {
 
         <View style={styles.tipsContainer}>
           <Text style={styles.tipsTitle}>Recording Tips:</Text>
-          <Text style={styles.tipText}>• Film from side angle (profile view)</Text>
-          <Text style={styles.tipText}>• Keep entire swing in frame</Text>
-          <Text style={styles.tipText}>• Record 30-60 seconds</Text>
-          <Text style={styles.tipText}>• Analysis takes 30-60 seconds</Text>
+          <Text style={styles.tipText}>- Film from side angle (profile view)</Text>
+          <Text style={styles.tipText}>- Keep entire swing in frame</Text>
+          <Text style={styles.tipText}>- Trim to a 5-second clip for best results</Text>
+          <Text style={styles.tipText}>- Analysis takes 30-60 seconds</Text>
         </View>
       </View>
     </SafeAreaView>
@@ -352,6 +428,21 @@ const styles = StyleSheet.create({
     color: colors.background,
     fontSize: typography.fontSizes.base,
     fontWeight: typography.fontWeights.bold,
+  },
+  trimBadge: {
+    position: 'absolute',
+    bottom: spacing.sm,
+    left: spacing.sm,
+    backgroundColor: colors.accent,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    borderRadius: borderRadius.sm,
+  },
+  trimBadgeText: {
+    color: colors.background,
+    fontSize: typography.fontSizes.xs,
+    fontWeight: typography.fontWeights.medium,
+    fontFamily: typography.fontFamily,
   },
   placeholderContainer: {
     height: 300,

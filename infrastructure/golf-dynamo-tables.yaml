@@ -1,0 +1,45 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Golf Coach DynamoDB tables for persistent golfer state'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'golf-coach'
+    Description: 'Project name for resource naming'
+
+  Environment:
+    Type: String
+    Default: 'prod'
+    AllowedValues: ['dev', 'staging', 'prod']
+    Description: 'Environment name'
+
+Resources:
+  SwingProfileTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-swing-profiles-${Environment}'
+      AttributeDefinitions:
+        - AttributeName: user_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: user_id
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: 'Persistent golfer swing profiles'
+
+Outputs:
+  SwingProfileTableName:
+    Description: 'Name of the swing profile table'
+    Value: !Ref SwingProfileTable
+
+  SwingProfileTableArn:
+    Description: 'ARN of the swing profile table'
+    Value: !GetAtt SwingProfileTable.Arn

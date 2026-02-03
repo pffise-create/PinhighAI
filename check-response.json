@@ -1,7 +1,0 @@
-{
-  "TableName": "golf-coach-analyses",
-  "Key": {
-    "analysis_id": {"S": "1756190249287-moljsd8oh"}
-  },
-  "ProjectionExpression": "ai_analysis.coaching_response"
-}

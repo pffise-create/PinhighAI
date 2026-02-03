@@ -1,3 +1,6 @@
+// IMPORTANT: Polyfill must be imported first for AWS Amplify crypto operations
+import 'react-native-get-random-values';
+
 import { registerRootComponent } from 'expo';
 
 import App from './App';

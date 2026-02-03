@@ -1,0 +1,90 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "CloudFormationMinimal",
+            "Effect": "Allow",
+            "Action": [
+                "cloudformation:ValidateTemplate",
+                "cloudformation:CreateStack",
+                "cloudformation:UpdateStack",
+                "cloudformation:DescribeStacks",
+                "cloudformation:DescribeStackEvents",
+                "cloudformation:DescribeStackResources",
+                "cloudformation:GetTemplate"
+            ],
+            "Resource": [
+                "arn:aws:cloudformation:us-east-1:458252603969:stack/golf-coach-sqs-infrastructure/*"
+            ]
+        },
+        {
+            "Sid": "SQSMinimal",
+            "Effect": "Allow",
+            "Action": [
+                "sqs:CreateQueue",
+                "sqs:DeleteQueue",
+                "sqs:GetQueueAttributes",
+                "sqs:SetQueueAttributes",
+                "sqs:ListQueues",
+                "sqs:SendMessage",
+                "sqs:ReceiveMessage",
+                "sqs:DeleteMessage",
+                "sqs:PurgeQueue"
+            ],
+            "Resource": [
+                "arn:aws:sqs:us-east-1:458252603969:golf-coach-*"
+            ]
+        },
+        {
+            "Sid": "LambdaEventSourceMapping",
+            "Effect": "Allow",
+            "Action": [
+                "lambda:CreateEventSourceMapping",
+                "lambda:DeleteEventSourceMapping",
+                "lambda:GetEventSourceMapping",
+                "lambda:ListEventSourceMappings",
+                "lambda:UpdateEventSourceMapping",
+                "lambda:UpdateFunctionConfiguration",
+                "lambda:GetFunctionConfiguration"
+            ],
+            "Resource": [
+                "arn:aws:lambda:us-east-1:458252603969:function:golf-*",
+                "arn:aws:lambda:us-east-1:458252603969:event-source-mapping:*"
+            ]
+        },
+        {
+            "Sid": "IAMMinimal",
+            "Effect": "Allow",
+            "Action": [
+                "iam:CreateRole",
+                "iam:DeleteRole",
+                "iam:GetRole",
+                "iam:AttachRolePolicy",
+                "iam:DetachRolePolicy",
+                "iam:PassRole",
+                "iam:PutRolePolicy",
+                "iam:DeleteRolePolicy"
+            ],
+            "Resource": [
+                "arn:aws:iam::458252603969:role/golf-coach-*"
+            ]
+        },
+        {
+            "Sid": "CloudWatchMinimal",
+            "Effect": "Allow",
+            "Action": [
+                "cloudwatch:PutDashboard",
+                "cloudwatch:GetDashboard",
+                "cloudwatch:DeleteDashboard",
+                "cloudwatch:PutMetricAlarm",
+                "cloudwatch:DescribeAlarms",
+                "cloudwatch:GetMetricStatistics",
+                "logs:DescribeLogGroups",
+                "logs:DescribeLogStreams",
+                "logs:FilterLogEvents",
+                "logs:TailLogs"
+            ],
+            "Resource": "*"
+        }
+    ]
+}

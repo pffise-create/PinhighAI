@@ -1,1 +1,0 @@
-{"httpMethod":"POST","path":"/api/analysis/process-pending","body":"{\"trigger\":\"manual\"}"}

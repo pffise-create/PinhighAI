@@ -1,8 +1,0 @@
-{
-  "httpMethod": "POST",
-  "path": "/api/analysis",
-  "headers": {
-    "Content-Type": "application/json"
-  },
-  "body": "{\"s3Key\": \"test-video.mp4\", \"bucketName\": \"test-bucket\"}"
-}

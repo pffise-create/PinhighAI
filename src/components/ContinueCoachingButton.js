@@ -1,7 +1,7 @@
 /**
  * ContinueCoachingButton - Navigation to main chat with context
  * 
- * Provides seamless transition from ResultsScreen to ChatScreen
+ * Provides seamless transition back into the main coaching chat
  * while preserving coaching context and conversation state.
  */
 

@@ -1,1 +1,0 @@
-{"Records":[{"eventName":"MODIFY","dynamodb":{"NewImage":{"analysis_id":{"S":"1755721069538-3il6nxp03"},"status":{"S":"COMPLETED"},"user_id":{"S":"mobile-user"},"ai_analysis_completed":{"BOOL":false}}}}]}

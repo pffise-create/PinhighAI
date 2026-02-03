@@ -1,5 +1,11 @@
-// ChatScreen.js - ChatGPT-style golf coaching interface
-import React, { useState, useRef, useEffect } from 'react';
+// ChatScreen.js - Modern golf chat experience
+import React, {
+  useState,
+  useRef,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+} from 'react';
 import {
   View,
   Text,
@@ -12,899 +18,875 @@ import {
   Platform,
   ActivityIndicator,
   Alert,
-  Image,
+  Image
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../context/AuthContext';
 import ChatHistoryManager from '../services/chatHistoryManager';
-import videoService from '../services/videoService';
 import chatApiService from '../services/chatApiService';
+import videoService from '../services/videoService';
 import * as ImagePicker from 'expo-image-picker';
-import { Video } from 'expo-av';
 import * as VideoThumbnails from 'expo-video-thumbnails';
+import { Audio } from 'expo-av';
 import Markdown from 'react-native-markdown-display';
-import { colors, typography, spacing, borderRadius } from '../utils/theme';
+import { colors, typography, spacing } from '../utils/theme';
+
+const TYPING_PHRASES = [
+  'Checking the wind...',
+  'Fixing divots...',
+  'Reading the green...',
+  'Picking the right club...',
+  'Visualizing the shot...'
+];
+
+const UPLOAD_STATUS_MESSAGES = [
+  'Teeing up your swing...',
+  'Grooving tempo...',
+  'Tracing swing plane...',
+  'Studying impact...',
+  'Prepping insights...'
+];
+
+const SCROLL_THRESHOLD = 96;
+const MAX_VIDEO_LENGTH_SECONDS = 5;
+
+const markdownStyles = {
+  body: {
+    fontSize: typography.fontSizes.base,
+    color: colors.text,
+    lineHeight: typography.lineHeights.relaxed * typography.fontSizes.base,
+    fontFamily: typography.fontFamily,
+  },
+  heading1: {
+    fontSize: typography.fontSizes['2xl'],
+    fontWeight: typography.fontWeights.bold,
+    color: colors.primary,
+    marginBottom: spacing.sm,
+    marginTop: spacing.base,
+  },
+  heading2: {
+    fontSize: typography.fontSizes.xl,
+    fontWeight: typography.fontWeights.semibold,
+    color: colors.primary,
+    marginBottom: spacing.xs,
+    marginTop: spacing.sm,
+  },
+  heading3: {
+    fontSize: typography.fontSizes.lg,
+    fontWeight: typography.fontWeights.semibold,
+    color: colors.coachAccent,
+    marginBottom: spacing.xs,
+    marginTop: spacing.sm,
+  },
+  paragraph: {
+    marginBottom: spacing.sm,
+  },
+  strong: {
+    fontWeight: typography.fontWeights.bold,
+    color: colors.coachAccent,
+  },
+  bullet_list: {
+    marginBottom: spacing.sm,
+  },
+  list_item: {
+    marginBottom: spacing.xs,
+  },
+};
+
+const createMessage = ({
+  id,
+  sender,
+  text,
+  type = 'text',
+  createdAt = new Date(),
+  videoThumbnail,
+  videoDuration,
+}) => ({
+  id: id || `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+  sender,
+  text,
+  type,
+  createdAt,
+  videoThumbnail,
+  videoDuration,
+});
+
+
+const normalizeStoredMessages = (storedMessages = []) => (
+  storedMessages
+    .filter(Boolean)
+    .map((msg) =>
+      createMessage({
+        id: msg.id,
+        sender: msg.sender === 'coach' ? 'coach' : 'user',
+        text: msg.text,
+        type: msg.messageType || msg.type || 'text',
+        createdAt: msg.timestamp ? new Date(msg.timestamp) : new Date(),
+        videoThumbnail: msg.videoThumbnail,
+        videoDuration: msg.videoDuration,
+      })
+    )
+    .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
+);
+
+const mergeMessageLists = (current = [], incoming = []) => {
+  if (!incoming.length) {
+    return current;
+  }
+  if (!current.length) {
+    return incoming;
+  }
+  const map = new Map();
+  [...current, ...incoming].forEach((msg) => {
+    if (!msg || !msg.id) {
+      return;
+    }
+    map.set(msg.id, msg);
+  });
+  const withoutIds = [...current, ...incoming].filter((msg) => !msg?.id);
+  const merged = Array.from(map.values()).sort(
+    (a, b) => new Date(a.createdAt) - new Date(b.createdAt)
+  );
+  return withoutIds.length ? [...merged, ...withoutIds] : merged;
+};
 
 const ChatScreen = ({ navigation, route }) => {
   const { user, isAuthenticated, getAuthHeaders } = useAuth();
-  // ChatGPT-style simple state
+  const userId = user?.id || 'guest';
+
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const [conversationSummary, setConversationSummary] = useState(null);
-  const [isInitialized, setIsInitialized] = useState(false);
+  const [isSending, setIsSending] = useState(false);
+  const [typingPhrase, setTypingPhrase] = useState(null);
   const [isProcessingVideo, setIsProcessingVideo] = useState(false);
   const [processingMessage, setProcessingMessage] = useState('');
   const [selectedVideo, setSelectedVideo] = useState(null);
   const [videoThumbnail, setVideoThumbnail] = useState(null);
-  const [showAttachmentOptions, setShowAttachmentOptions] = useState(false);
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+
+  const typingIntervalRef = useRef(null);
   const flatListRef = useRef(null);
-  
-  const userId = user?.id || 'guest';
-  const authHeaders = getAuthHeaders();
-
-  // Markdown styles to match golf coaching app theme
-  const markdownStyles = {
-    // Basic text styling
-    body: {
-      fontSize: typography.fontSizes.base,
-      color: colors.text,
-      lineHeight: typography.lineHeights.relaxed * typography.fontSizes.base,
-      fontFamily: typography.fontFamily,
-    },
-    // Headers
-    heading1: {
-      fontSize: typography.fontSizes['2xl'],
-      fontWeight: typography.fontWeights.bold,
-      color: colors.primary,
-      marginBottom: spacing.sm,
-      marginTop: spacing.base,
-    },
-    heading2: {
-      fontSize: typography.fontSizes.xl,
-      fontWeight: typography.fontWeights.semibold,
-      color: colors.primary,
-      marginBottom: spacing.xs,
-      marginTop: spacing.sm,
-    },
-    heading3: {
-      fontSize: typography.fontSizes.lg,
-      fontWeight: typography.fontWeights.semibold,
-      color: colors.coachAccent,
-      marginBottom: spacing.xs,
-      marginTop: spacing.sm,
-    },
-    // Text formatting
-    strong: {
-      fontWeight: typography.fontWeights.bold,
-      color: colors.coachAccent,
-    },
-    em: {
-      fontStyle: 'italic',
-      color: colors.primary,
-    },
-    // Lists
-    bullet_list: {
-      marginBottom: spacing.sm,
-    },
-    ordered_list: {
-      marginBottom: spacing.sm,
-    },
-    list_item: {
-      marginBottom: spacing.xs,
-      flexDirection: 'row',
-      alignItems: 'flex-start',
-    },
-    bullet_list_icon: {
-      color: colors.coachAccent,
-      fontSize: typography.fontSizes.base,
-      marginRight: spacing.xs,
-      marginTop: 2,
-    },
-    // Paragraphs
-    paragraph: {
-      marginBottom: spacing.sm,
-      fontSize: typography.fontSizes.base,
-      lineHeight: typography.lineHeights.relaxed * typography.fontSizes.base,
-    },
-  };
-
-  // Enhanced markdown renderer for coach messages
-  const renderMarkdownText = (text) => {
-    if (!text) return null;
-    
-    return (
-      <Markdown style={markdownStyles}>
-        {text}
-      </Markdown>
-    );
-  };
+  const initialScrollHandled = useRef(false);
+  const prevMessageCountRef = useRef(0);
+  const isNearBottomRef = useRef(true);
+  const hasHydratedRef = useRef(false);
 
   useEffect(() => {
-    if (!isInitialized) {
-      initializePrimaryChat();
-    }
-    // ChatGPT-style: No processing state to clear
-  }, [isAuthenticated, userId]); // Removed isInitialized from dependencies
+    initialScrollHandled.current = false;
+  }, [userId]);
 
-  // Handle video recorded from camera
   useEffect(() => {
-    if (route.params?.recordedVideo && !isProcessingVideo) {
-      const { uri, duration } = route.params.recordedVideo;
-      navigation.setParams({ recordedVideo: null }); // Clear the param
-      setIsProcessingVideo(true);
-      handleCameraVideo(uri, duration);
-    }
-  }, [route.params?.recordedVideo, isProcessingVideo]);
+    let isMounted = true;
+    hasHydratedRef.current = false;
 
-  // Handle camera video with thumbnail
-  const handleCameraVideo = async (videoUri, videoDuration) => {
-    try {
-      // Generate thumbnail for the video
-      const thumbnailUri = await generateVideoThumbnail(videoUri);
-      
-      // Add user message with video thumbnail first
-      const userMessage = {
-        id: `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        text: null,
-        sender: 'user',
-        timestamp: new Date(),
-        messageType: 'video',
-        hasVideo: true,
-        videoUri: videoUri,
-        videoThumbnail: thumbnailUri,
-      };
-      
-      setMessages(prev => [...prev, userMessage]);
-      await ChatHistoryManager.saveMessage(userId, userMessage);
-      
-      // Then process the video
-      await processVideoUpload(videoUri, videoDuration);
-    } catch (error) {
-      Alert.alert('Error', 'Failed to process camera video');
-    }
-  };
-
-  // Initialize chat as primary interface
-  const initializePrimaryChat = async () => {
-    try {
-      // Load conversation history silently - no loading UI
-      const conversation = await ChatHistoryManager.loadConversation(userId);
-      const summary = await ChatHistoryManager.getConversationSummary(userId);
-      
-      setConversationSummary(summary);
-
-      // Convert stored messages to display format
-      const displayMessages = conversation.messages.map(msg => ({
-        id: msg.id,
-        text: msg.text,
-        sender: msg.sender,
-        timestamp: new Date(msg.timestamp),
-        messageType: msg.messageType,
-        videoReference: msg.videoReference,
-      }));
-
-      // Filter out any existing welcome/onboarding messages and stuck processing messages for clean UI
-      const cleanMessages = displayMessages.filter(
-        msg => msg.messageType !== 'onboarding' && 
-               msg.messageType !== 'contextual_welcome' &&
-               msg.messageType !== 'video_processing' &&
-               msg.messageType !== 'processing' && // Remove any saved processing messages
-               !(msg.text && msg.text.includes("Hi! I'm your AI golf coach"))
-      );
-      // Check for duplicate IDs before setting
-      const messageIds = cleanMessages.map(m => m.id);
-      const duplicateIds = messageIds.filter((id, index) => messageIds.indexOf(id) !== index);
-      if (duplicateIds.length > 0) {
-        console.error('🔥 DUPLICATE IDs in loaded messages:', duplicateIds);
-        console.error('🔥 Full messages:', cleanMessages);
+    const hydrate = async () => {
+      try {
+        const history = await ChatHistoryManager.loadConversation(userId);
+        if (!isMounted) {
+          return;
+        }
+        const normalized = normalizeStoredMessages(history?.messages || []);
+        setMessages((prev) => mergeMessageLists(prev, normalized));
+        hasHydratedRef.current = true;
+      } catch (error) {
+        console.warn('Failed to load chat history:', error);
       }
-      
-      console.log('✅ Setting', cleanMessages.length, 'clean messages');
-      setMessages(cleanMessages);
-      setIsInitialized(true);
-      
-      // ChatGPT-style: No processing state to clear
+    };
 
-      // ChatGPT-style: No onboarding - just clean chat
+    hydrate();
 
+    return () => {
+      isMounted = false;
+    };
+  }, [userId]);
+
+  useEffect(() => {
+    const recordedVideo = route.params?.recordedVideo;
+    if (recordedVideo) {
+      navigation.setParams({ recordedVideo: null });
+      handleVideoSelected(recordedVideo);
+    }
+  }, [route.params?.recordedVideo, navigation]);
+
+  useEffect(() => () => stopTypingIndicator(), []);
+
+  useLayoutEffect(() => {
+    const listRef = flatListRef.current;
+    if (!listRef) {
+      prevMessageCountRef.current = messages.length;
+      return;
+    }
+
+    if (!messages.length) {
+      prevMessageCountRef.current = 0;
+      return;
+    }
+
+    const prevCount = prevMessageCountRef.current;
+    const isInitialScroll = !initialScrollHandled.current;
+    const hasNewMessage = messages.length > prevCount;
+
+    prevMessageCountRef.current = messages.length;
+
+    const shouldAutoScroll = isInitialScroll || (hasNewMessage && isNearBottomRef.current);
+    if (!shouldAutoScroll) {
+      return;
+    }
+
+    try {
+      listRef.scrollToEnd?.({ animated: false });
+      initialScrollHandled.current = true;
+    } catch (scrollError) {
+      console.warn('Auto-scroll failed:', scrollError?.message);
+    }
+  }, [messages]);
+
+  const scrollToBottom = () => {
+    flatListRef.current?.scrollToEnd({ animated: true });
+    isNearBottomRef.current = true;
+    setShowScrollToBottom(false);
+  };
+
+  const handleScroll = (event) => {
+    try {
+      const { contentOffset, layoutMeasurement, contentSize } = event.nativeEvent || {};
+      if (!contentOffset || !layoutMeasurement || !contentSize) {
+        return;
+      }
+      const distanceFromBottom = contentSize.height - (contentOffset.y + layoutMeasurement.height);
+      const nearBottom = distanceFromBottom <= SCROLL_THRESHOLD;
+      isNearBottomRef.current = nearBottom;
+      setShowScrollToBottom(!nearBottom);
     } catch (error) {
-      console.error('Failed to initialize chat:', error);
-      // Fallback to clean UI
-      setMessages([]);
-      setIsInitialized(true);
-    } finally {
-      // ChatGPT-style: No loading state to clear
+      isNearBottomRef.current = true;
+      setShowScrollToBottom(false);
     }
   };
 
+  const randomGolfPhrase = () => TYPING_PHRASES[Math.floor(Math.random() * TYPING_PHRASES.length)];
 
-  // ChatGPT-style: No celebration logic needed
+  const startTypingIndicator = () => {
+    if (typingIntervalRef.current) {
+      return;
+    }
+    setTypingPhrase(randomGolfPhrase());
+    typingIntervalRef.current = setInterval(() => {
+      setTypingPhrase(randomGolfPhrase());
+    }, 3500);
+  };
 
-  // Handle video upload - show options for camera or gallery
-  const handleVideoAttachment = () => {
-    Alert.alert(
-      'Add Video',
-      'Choose how to add your swing video',
-      [
-        { text: 'Camera', onPress: recordVideo },
-        { text: 'Photo & Video Library', onPress: selectFromLibrary },
-        { text: 'Cancel', style: 'cancel' }
-      ]
+  const stopTypingIndicator = () => {
+    if (typingIntervalRef.current) {
+      clearInterval(typingIntervalRef.current);
+      typingIntervalRef.current = null;
+    }
+    setTypingPhrase(null);
+  };
+
+  const appendMessage = (message, persist = true) => {
+    setMessages((prev) => [...prev, message]);
+    if (persist) {
+      ChatHistoryManager.saveMessage(userId, {
+        id: message.id,
+        text: message.text,
+        sender: message.sender === 'coach' ? 'coach' : 'user',
+        timestamp: message.createdAt?.toISOString?.() || new Date().toISOString(),
+        messageType: message.type,
+        videoThumbnail: message.videoThumbnail,
+        videoDuration: message.videoDuration,
+      }).catch((err) => console.warn('Failed to persist message', err));
+    }
+  };
+
+  const handleAuthRequired = async () => {
+    Alert.alert('Sign in required', 'Please sign in to continue chatting with your coach.');
+    appendMessage(
+      createMessage({
+        sender: 'coach',
+        text: 'Please sign in to continue the conversation.',
+        type: 'auth_required',
+      }),
+      false
     );
   };
 
-  const recordVideo = () => {
-    navigation.navigate('Camera', { 
-      returnTo: 'Chat',
-      onVideoRecorded: handleVideoSelected 
-    });
+  const sendTextMessage = async () => {
+    const trimmed = inputText.trim();
+    if (!trimmed || isSending) {
+      return;
+    }
+
+    const userMessage = createMessage({ sender: 'user', text: trimmed });
+    appendMessage(userMessage);
+    setInputText('');
+    setIsSending(true);
+    startTypingIndicator();
+
+    try {
+      const headers = await getAuthHeaders();
+      const result = await chatApiService.sendMessage(trimmed, userId, headers);
+      stopTypingIndicator();
+      const coachMessage = createMessage({
+        sender: 'coach',
+        text: result.response || 'I had trouble processing that. Please try again.',
+        type: result.fallback ? 'fallback' : 'response',
+      });
+      appendMessage(coachMessage);
+    } catch (error) {
+      stopTypingIndicator();
+      if (error?.message === 'AUTHENTICATION_REQUIRED') {
+        await handleAuthRequired();
+      } else {
+        console.error('Chat send failed:', error);
+        appendMessage(
+          createMessage({
+            sender: 'coach',
+            text: "I\'m having trouble connecting right now. Please try again soon.",
+            type: 'error',
+          }),
+          false
+        );
+      }
+    } finally {
+      setIsSending(false);
+    }
   };
 
-  // Generate video thumbnail
-  const generateVideoThumbnail = async (videoUri) => {
-    try {
-      const { uri } = await VideoThumbnails.getThumbnailAsync(videoUri, {
-        time: 1000, // 1 second into the video
-        quality: 0.7,
-        // Create vertical thumbnail for better chat display
-        headers: {
-          'Content-Type': 'image/jpeg',
-        },
-      });
-      return uri;
-    } catch (error) {
-      console.error('Failed to generate thumbnail:', error);
-      return null;
-    }
+  const handleAttachmentPress = () => {
+    Alert.alert('Add swing', 'Choose how to share your swing', [
+      { text: 'Camera', onPress: () => navigation.navigate('Camera', { returnTo: 'Chat' }) },
+      { text: 'Photo Library', onPress: selectFromLibrary },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
   };
 
   const selectFromLibrary = async () => {
     try {
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      
       if (status !== 'granted') {
-        Alert.alert('Permission denied', 'Photo & Video Library access is required');
+        Alert.alert('Permission needed', 'Photo library access is required to upload swings.');
         return;
       }
-      
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ['videos'],
-        allowsEditing: true,  // Enable video trimming
-        quality: 0.8,
-        videoMaxDuration: 120,
+        mediaTypes: ImagePicker.MediaTypeOptions.Videos,
         allowsMultipleSelection: false,
-        videoExportPreset: ImagePicker.VideoExportPreset.MediumQuality,
+        quality: 0.8,
       });
-
-      if (!result.canceled && result.assets && result.assets.length > 0) {
-        const video = result.assets[0];
-        await handleVideoSelected(video);
-      }
-    } catch (error) {
-      console.error('Failed to select video:', error);
-      Alert.alert('Error', 'Failed to select video from Photo & Video Library');
-    }
-  };
-
-  // Handle video selection (from camera or library)
-  const handleVideoSelected = async (video) => {
-    try {
-      // Check video duration limit (5 seconds)
-      const durationInSeconds = video.duration ? video.duration / 1000 : 0;
-      if (durationInSeconds > 5) {
-        Alert.alert(
-          'Video Length Limit', 
-          `Please select a video 5 seconds or shorter (${durationInSeconds.toFixed(1)}s selected).`
-        );
+      if (result.canceled || !result.assets?.length) {
         return;
       }
-      
-      // Generate thumbnail for preview
-      const thumbnailUri = await generateVideoThumbnail(video.uri);
-      
-      // Set video for attachment
-      setSelectedVideo({
-        uri: video.uri,
-        duration: durationInSeconds,
-        width: video.width,
-        height: video.height
-      });
-      setVideoThumbnail(thumbnailUri);
-      
+      handleVideoSelected(result.assets[0]);
     } catch (error) {
-      console.error('Failed to process selected video:', error);
-      Alert.alert('Error', 'Failed to process selected video');
+      console.error('Video selection failed:', error);
+      Alert.alert('Error', 'Unable to select that video. Please try another clip.');
     }
   };
 
-  // Clear selected video
+  const handleVideoSelected = async (video) => {
+    let actualDurationSeconds = 0;
+
+    try {
+      // Load the actual video file to get real duration (metadata can be stale)
+      console.log('Loading video file to check actual duration...');
+      const { sound } = await Audio.Sound.createAsync(
+        { uri: video.uri },
+        { shouldPlay: false }
+      );
+
+      const status = await sound.getStatusAsync();
+
+      if (status.isLoaded && status.durationMillis) {
+        actualDurationSeconds = status.durationMillis / 1000;
+        console.log(`Actual video duration: ${actualDurationSeconds.toFixed(2)}s`);
+      } else {
+        // Fallback to metadata
+        actualDurationSeconds = video.duration ? video.duration / 1000 : 0;
+        console.log(`Using metadata duration: ${actualDurationSeconds.toFixed(2)}s`);
+      }
+
+      await sound.unloadAsync(); // Clean up
+
+    } catch (error) {
+      console.warn('Could not load video for duration check, using metadata:', error);
+      actualDurationSeconds = video.duration ? video.duration / 1000 : 0;
+    }
+
+    if (actualDurationSeconds > MAX_VIDEO_LENGTH_SECONDS) {
+      Alert.alert(
+        'Video Too Long',
+        `This video is ${actualDurationSeconds.toFixed(1)} seconds. Please trim it to ${MAX_VIDEO_LENGTH_SECONDS} seconds or less.\n\nHow to trim:\n1. Open your Photos app\n2. Select the video\n3. Tap "Edit"\n4. Use the trim handles to shorten it\n5. Save and return here to upload`,
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+
+    try {
+      const thumbnail = await VideoThumbnails.getThumbnailAsync(video.uri, {
+        time: 1000,
+        quality: 0.7,
+      });
+      setSelectedVideo({ uri: video.uri, duration: actualDurationSeconds });
+      setVideoThumbnail(thumbnail.uri);
+    } catch (error) {
+      console.error('Thumbnail generation failed:', error);
+      setSelectedVideo({ uri: video.uri, duration: actualDurationSeconds });
+      setVideoThumbnail(null);
+    }
+  };
+
   const clearSelectedVideo = () => {
     setSelectedVideo(null);
     setVideoThumbnail(null);
   };
 
-  // Send message with video attachment
   const sendVideoMessage = async () => {
-    const messageText = inputText.trim();
-    
-    // Create user message with video
-    const userMessage = {
-      id: `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-      text: messageText || null,
-      sender: 'user',
-      timestamp: new Date(),
-      messageType: 'video',
-      hasVideo: true,
-      videoUri: selectedVideo.uri,
-      videoThumbnail: videoThumbnail,
-      videoDuration: selectedVideo.duration,
-    };
-
-    setMessages(prev => [...prev, userMessage]);
-    setInputText('');
-    clearSelectedVideo();
-
-    // Save user message
-    try {
-      await ChatHistoryManager.saveMessage(userId, userMessage);
-    } catch (error) {
-      console.error('Failed to save user message:', error);
+    if (!selectedVideo) {
+      return;
     }
-
-    // Process the video upload with attached message
-    await processVideoUpload(selectedVideo.uri, selectedVideo.duration, messageText);
+    appendMessage(
+      createMessage({
+        sender: 'user',
+        text: inputText.trim() || undefined,
+        type: 'video',
+        videoThumbnail,
+        videoDuration: selectedVideo.duration,
+      })
+    );
+    setInputText('');
+    const videoUri = selectedVideo.uri;
+    const videoDuration = selectedVideo.duration;
+    clearSelectedVideo();
+    await processVideoUpload(videoUri, videoDuration);
   };
 
-  // Process video upload using real AWS integration
-  const processVideoUpload = async (videoUri, videoDuration, message = '') => {
-    let messageInterval;
-    
-    try {
-      const videoId = `chat_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-      
-      // Start processing with initial message
-      setIsProcessingVideo(true);
-      setProcessingMessage('Addressing the ball...');
-      
-      // Golf-themed processing messages
-      const golfMessages = [
-        'Addressing the ball...',
-        'Taking a practice swing...',
-        'Checking the wind...',
-        'Reading the lie...',
-        'Aligning the shot...',
-        'Measuring yardage...',
-        'Selecting the right club...',
-        'Checking grip pressure...',
-        'Finding the target line...',
-        'Taking dead aim...',
-        'Analyzing swing plane...',
-        'Studying tempo...',
-        'Reviewing impact position...',
-        'Calculating ball flight...',
-        'Replacing divots...'
-      ];
-      
-      let messageIndex = 0;
-      
-      // Update processing message function
-      const updateProcessingMessage = (newText) => {
-        setProcessingMessage(newText);
-      };
-      
-      // Start message cycling
-      messageInterval = setInterval(() => {
-        messageIndex = (messageIndex + 1) % golfMessages.length;
-        updateProcessingMessage(golfMessages[messageIndex]);
-      }, 2000); // Change every 2 seconds
+  const processVideoUpload = async (videoUri, videoDuration) => {
+    setIsProcessingVideo(true);
+    setProcessingMessage('Teeing up your swing...');
+    startTypingIndicator();
 
-      // Step 1: Upload video and trigger analysis
+    let headers;
+    try {
+      headers = await getAuthHeaders();
+    } catch (error) {
+      setIsProcessingVideo(false);
+      stopTypingIndicator();
+      if (error?.message === 'AUTHENTICATION_REQUIRED') {
+        await handleAuthRequired();
+      }
+      return;
+    }
+
+    try {
       const uploadResult = await videoService.uploadAndAnalyze(
-        videoUri, 
+        videoUri,
         videoDuration,
         (progress) => {
-          // Update to upload-specific messages
-          const uploadMessages = [
-            'Teeing up your swing...',
-            'Loading into the cart...',
-            'Driving to the range...',
-            'Setting up on the tee box...'
-          ];
-          const msgIndex = Math.floor(progress * uploadMessages.length);
-          updateProcessingMessage(uploadMessages[Math.min(msgIndex, uploadMessages.length - 1)]);
+          const index = Math.min(UPLOAD_STATUS_MESSAGES.length - 1, Math.floor(progress * UPLOAD_STATUS_MESSAGES.length));
+          setProcessingMessage(UPLOAD_STATUS_MESSAGES[index]);
         },
-        message, // Pass the attached message to the video service
-        userId,  // Pass authenticated user ID
-        authHeaders // Pass authentication headers
+        '',
+        userId,
+        headers
       );
-      
-      
-      // Step 2: Poll for analysis completion
-      
+
       const analysisResult = await videoService.waitForAnalysisComplete(
         uploadResult.jobId,
         (progressInfo) => {
-          // Update to analysis-specific messages
-          const analysisMessages = [
-            'Reviewing your setup...',
-            'Analyzing swing plane...',
-            'Studying impact position...',
-            'Calculating ball flight...',
-            'Checking follow-through...',
-            'Finding improvement areas...',
-            'Preparing coaching tips...'
-          ];
-          const msgIndex = Math.floor((progressInfo.progress || 0) * analysisMessages.length);
-          updateProcessingMessage(analysisMessages[Math.min(msgIndex, analysisMessages.length - 1)]);
+          const index = Math.min(UPLOAD_STATUS_MESSAGES.length - 1, Math.floor((progressInfo.progress || 0) * UPLOAD_STATUS_MESSAGES.length));
+          setProcessingMessage(UPLOAD_STATUS_MESSAGES[index]);
         },
-        60,  // maxAttempts
-        5000,  // intervalMs
-        authHeaders
+        60,
+        5000,
+        headers,
       );
-      
-      
-      // Step 3: Process analysis results
-      if (analysisResult.status === 'completed' && analysisResult.analysis) {
-        // Parse the AI analysis
-        const aiData = typeof analysisResult.analysis === 'string' 
-          ? JSON.parse(analysisResult.analysis) 
-          : analysisResult.analysis;
-        
-        const isFirstAnalysis = conversationSummary?.analysisCount === 0;
-        // ChatGPT-style: Simple AI response message 
-        const analysisMessage = {
-          id: `analysis_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-          sender: 'assistant', // ChatGPT-style sender
-          text: aiData.coaching_response || 'I had trouble analyzing that swing. Please try uploading another video.',
-          timestamp: new Date(),
-          messageType: 'response',
-          isProcessing: false,
-        };
-        
-        // Clear the message interval and add analysis message
-        clearInterval(messageInterval);
-        setProcessingMessage('');
-        
-        setMessages(prev => [...prev, analysisMessage]);
-        
-        await ChatHistoryManager.saveMessage(userId, analysisMessage);
-        
-        // Update conversation summary
-        if (conversationSummary) {
-          setConversationSummary({
-            ...conversationSummary,
-            analysisCount: conversationSummary.analysisCount + 1,
-            hasVideoUploads: true,
-          });
-        }
-        
-        setIsProcessingVideo(false);
-        setProcessingMessage(''); // Clear processing message
-      } else {
-        throw new Error('Analysis did not complete successfully');
-      }
 
-    } catch (error) {
-      console.error('❌ Video processing failed:', error);
-      
-      // Clear any running intervals
-      if (messageInterval) clearInterval(messageInterval);
-      
-      // Clear processing and show error message
+      stopTypingIndicator();
+      setIsProcessingVideo(false);
       setProcessingMessage('');
-      
-      const errorMessage = {
-        id: `error_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        text: 'Sorry, there was an issue processing your video. Please try again.',
-        sender: 'assistant',
-        timestamp: new Date(),
-        messageType: 'error',
-      };
-      
-      setMessages(prev => [...prev, errorMessage]);
-      
-      await ChatHistoryManager.saveMessage(userId, errorMessage);
-    } finally {
-      setIsProcessingVideo(false); // Reset processing flag
-      setProcessingMessage(''); // Clear processing message
+
+      const aiResponse = analysisResult?.coaching_response || analysisResult?.analysis?.coaching_response;
+      if (aiResponse) {
+        appendMessage(
+          createMessage({
+            sender: 'coach',
+            text: aiResponse,
+            type: 'analysis',
+          })
+        );
+      } else {
+        appendMessage(
+          createMessage({
+            sender: 'coach',
+            text: 'Your swing has been processed, but I was unable to retrieve the analysis details. Please try again shortly.',
+            type: 'error',
+          })
+        );
+      }
+    } catch (error) {
+      console.error('Video processing failed:', error);
+      stopTypingIndicator();
+      setIsProcessingVideo(false);
+      setProcessingMessage('');
+      appendMessage(
+        createMessage({
+          sender: 'coach',
+          text: 'Sorry, there was an issue analyzing that swing. Please try another upload.',
+          type: 'error',
+        })
+      );
     }
   };
 
-
-
-
-  // Send message with real AI integration
-  const sendMessage = async () => {
-    // Must have text or video
-    if (!inputText.trim() && !selectedVideo) return;
-
-    // If we have a video, process it
+  const handleSend = async () => {
     if (selectedVideo) {
       await sendVideoMessage();
       return;
     }
-
-    // Send text-only message
-    const userMessage = {
-      id: `user_${Date.now()}`,
-      text: inputText.trim(),
-      sender: 'user',
-      timestamp: new Date(),
-      messageType: 'text',
-    };
-
-    setMessages(prev => [...prev, userMessage]);
-    setInputText('');
-    setIsLoading(true);
-
-    // Save user message
-    try {
-      await ChatHistoryManager.saveMessage(userId, userMessage);
-    } catch (error) {
-      console.error('Failed to save user message:', error);
-    }
-
-    // Real AI coaching response via production service
-    try {
-      const result = await chatApiService.sendMessage(
-        userMessage.text,
-        userId,  // Only send message and userId - backend handles thread continuity
-        authHeaders
-        // Remove: conversationHistory, coachingContext, jobId parameters
-      );
-      
-      const coachResponse = {
-        id: `coach_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        text: result.response || 'I had trouble processing your message. Please try again.',
-        sender: 'coach',
-        timestamp: new Date(),
-        messageType: result.fallback ? 'fallback' : 'response',
-        tokensUsed: result.tokensUsed,
-        apiSuccess: result.success
-      };
-
-      setMessages(prev => [...prev, coachResponse]);
-      await ChatHistoryManager.saveMessage(userId, coachResponse);
-      
-    } catch (error) {
-      console.error('❌ Unexpected error in chat service:', error);
-      
-      // Honest fallback - don't promise what we can't deliver
-      const fallbackResponse = {
-        id: `coach_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        text: 'I\'m having trouble connecting right now. Please try again in a few minutes.',
-        sender: 'coach',
-        timestamp: new Date(),
-        messageType: 'connection_error',
-      };
-
-      setMessages(prev => [...prev, fallbackResponse]);
-      await ChatHistoryManager.saveMessage(userId, fallbackResponse);
-    } finally {
-      setIsLoading(false);
-    }
+    await sendTextMessage();
   };
 
-
-  // ChatGPT-style: No onboarding actions needed
-
-  // Render message component
-  // Option 3 header with status indicator
-  const renderHeader = () => (
-    <View style={styles.header}>
-      <Text style={styles.title}>Your Coach</Text>
-      <View style={styles.statusIndicator} />
-    </View>
+  const renderCoachContent = (text) => (
+    <Markdown style={markdownStyles}>{text || ''}</Markdown>
   );
 
-  // Option 3 message rendering with coaching design
   const renderMessage = ({ item }) => {
+    if (item.type === 'status') {
+      return (
+        <View style={styles.statusMessageRow}>
+          <ActivityIndicator size="small" color={colors.primary} />
+          <Text style={styles.statusMessageText}>{item.text}</Text>
+        </View>
+      );
+    }
+
     if (item.sender === 'user') {
       return (
-        <View style={styles.userMessageContainer}>
-          {item.hasVideo && (
-            <TouchableOpacity style={styles.videoThumbnail}>
-              <Image source={{ uri: item.videoThumbnail }} style={styles.thumbnailImage} />
-              <View style={styles.playOverlay}>
-                <Ionicons name="play" size={20} color="white" />
-              </View>
-            </TouchableOpacity>
+        <View style={styles.userMessageWrapper}>
+          {item.videoThumbnail && (
+            <Image source={{ uri: item.videoThumbnail }} style={styles.videoPreview} />
           )}
-          {item.text && (
-            <View style={styles.userMessageBubble}>
-              <Text style={styles.userText}>{item.text}</Text>
+          {item.text ? (
+            <View style={styles.userMessageCard}>
+              <Text style={styles.userMessageText}>{item.text}</Text>
             </View>
-          )}
+          ) : null}
+          <Text style={styles.timestampText}>{formatTimestamp(item.createdAt)}</Text>
         </View>
       );
     }
-    
-    // Assistant message (coach) - simple loading state
-    if (item.isLoading) {
-      return (
-        <View style={styles.coachMessageContainer}>
-          <Text style={styles.coachText}>Analyzing your swing...</Text>
-        </View>
-      );
-    }
-    
-    // Coach message with Option 3 design
+
     return (
-      <View style={styles.coachMessageContainer}>
-        {renderMarkdownText(item.text)}
+      <View style={styles.coachMessageWrapper}>
+        <View style={styles.coachMessageCard}>
+          {renderCoachContent(item.text)}
+        </View>
+        <Text style={styles.timestampText}>{formatTimestamp(item.createdAt)}</Text>
       </View>
     );
   };
 
-
-  // Option 3 input section with purple accents
-  const renderInputSection = () => (
-    <View style={styles.inputContainer}>
-      {/* Video attachment preview */}
-      {selectedVideo && videoThumbnail && (
-        <View style={styles.videoAttachmentContainer}>
-          <Image source={{ uri: videoThumbnail }} style={styles.videoThumbnail} />
-          <TouchableOpacity style={styles.removeVideoButton} onPress={clearSelectedVideo}>
-            <Ionicons name="close-circle" size={24} color="#FF4757" />
-          </TouchableOpacity>
-          <Text style={styles.videoDurationText}>{selectedVideo.duration.toFixed(1)}s</Text>
+  const ListFooterComponent = useMemo(() => (
+    <>
+      {typingPhrase && (
+        <View style={styles.typingIndicator}>
+          <ActivityIndicator size="small" color={colors.coachAccent} />
+          <Text style={styles.typingText}>{typingPhrase}</Text>
         </View>
       )}
-      
-      <View style={styles.inputRow}>
-        <TouchableOpacity style={styles.cameraButton} onPress={handleVideoAttachment}>
-          <Ionicons name="camera" size={20} color="#805AD5" />
-        </TouchableOpacity>
-        <TextInput
-          style={styles.input}
-          placeholder="Ask your coach anything..."
-          value={inputText}
-          onChangeText={setInputText}
-          multiline
-          maxHeight={100}
-        />
-        <TouchableOpacity 
-          style={[styles.sendButton, (inputText.trim() || selectedVideo) && !isLoading && styles.sendButtonActive]} 
-          onPress={sendMessage}
-          disabled={(!inputText.trim() && !selectedVideo) || isLoading}
-        >
-          <Ionicons name="send" size={18} color={(inputText.trim() || selectedVideo) && !isLoading ? "white" : "#ccc"} />
-        </TouchableOpacity>
-      </View>
-    </View>
-  );
+      {isProcessingVideo && processingMessage ? (
+        <View style={styles.typingIndicator}>
+          <ActivityIndicator size="small" color={colors.primary} />
+          <Text style={styles.typingText}>{processingMessage}</Text>
+        </View>
+      ) : null}
+      <View style={{ height: 24 }} />
+    </>
+  ), [typingPhrase, isProcessingVideo, processingMessage]);
 
   return (
     <SafeAreaView style={styles.container}>
-      {renderHeader()}
-
-      <KeyboardAvoidingView 
-        style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      >
-        {/* Upload Options Modal */}
-        {/* UploadOptionsModal removed - ChatGPT style uses direct camera button */}
-
-        {/* First Analysis Celebration */}
-        {/* FirstAnalysisCelebration removed - ChatGPT style is celebration-free */}
-
-        {/* ChatGPT-style: No progressive onboarding */}
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <View style={styles.header}>
+          <View>
+            <Text style={styles.headerTitle}>Your Coach</Text>
+            <Text style={styles.headerSubtitle}>Ask anything about your swing</Text>
+          </View>
+          <View style={styles.headerActions}>
+            <TouchableOpacity style={styles.headerButton} onPress={handleAttachmentPress}>
+              <Ionicons name="camera" size={22} color={colors.primary} />
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.headerButton} onPress={() => navigation.navigate('SettingsModal')}>
+              <Ionicons name="settings-outline" size={22} color={colors.text} />
+            </TouchableOpacity>
+          </View>
+        </View>
 
         <FlatList
           ref={flatListRef}
           data={messages}
+          keyExtractor={(item) => item.id}
           renderItem={renderMessage}
-          keyExtractor={item => item.id}
           style={styles.messagesList}
-          onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
+          contentContainerStyle={styles.messagesListContent}
+          keyboardShouldPersistTaps="handled"
+          onScroll={handleScroll}
+          scrollEventThrottle={16}
           showsVerticalScrollIndicator={false}
+          ListFooterComponent={ListFooterComponent}
         />
-        
-        {isLoading && (
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
-            <ActivityIndicator size="small" color="#000" />
-            <Text style={{ fontSize: 14, color: '#666', fontStyle: 'italic', marginLeft: 8 }}>Coach is thinking...</Text>
-          </View>
+
+        {showScrollToBottom && (
+          <TouchableOpacity style={styles.scrollToBottomButton} onPress={scrollToBottom}>
+            <Ionicons name="chevron-down" size={20} color="#fff" />
+          </TouchableOpacity>
         )}
-        
-        {isProcessingVideo && processingMessage && (
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
-            <ActivityIndicator size="small" color="#805AD5" />
-            <Text style={{ fontSize: 14, color: '#666', fontStyle: 'italic', marginLeft: 8 }}>{processingMessage}</Text>
+
+        <View style={styles.inputContainer}>
+          {selectedVideo && (
+            <View style={styles.videoSelectedRow}>
+              {videoThumbnail ? (
+                <Image source={{ uri: videoThumbnail }} style={styles.videoSelectedThumb} />
+              ) : (
+                <View style={[styles.videoSelectedThumb, styles.videoFallback]}>
+                  <Ionicons name="videocam" size={20} color="#fff" />
+                </View>
+              )}
+              <View style={styles.videoMeta}>
+                <Text style={styles.videoMetaTitle}>Swing clip ready</Text>
+                <Text style={styles.videoMetaSubtitle}>{selectedVideo.duration.toFixed(1)}s</Text>
+              </View>
+              <TouchableOpacity onPress={clearSelectedVideo}>
+                <Ionicons name="close-circle" size={22} color={colors.error || '#FF6B6B'} />
+              </TouchableOpacity>
+            </View>
+          )}
+
+          <View style={styles.composerRow}>
+            <TouchableOpacity style={styles.composerButton} onPress={handleAttachmentPress}>
+              <Ionicons name="attach" size={20} color={colors.coachAccent} />
+            </TouchableOpacity>
+            <TextInput
+              style={styles.input}
+              value={inputText}
+              placeholder={selectedVideo ? 'Add a note for your coach...' : 'Ask your coach anything...'}
+              placeholderTextColor="#8F9BA8"
+              onChangeText={setInputText}
+              multiline
+            />
+            <TouchableOpacity
+              style={[styles.sendButton, (!!inputText.trim() || selectedVideo) && styles.sendButtonActive]}
+              onPress={handleSend}
+              disabled={(!inputText.trim() && !selectedVideo) || isSending}
+            >
+              {isSending ? (
+                <ActivityIndicator color="#fff" size="small" />
+              ) : (
+                <Ionicons name="arrow-up" size={18} color={(!!inputText.trim() || selectedVideo) ? '#fff' : '#A0AEC0'} />
+              )}
+            </TouchableOpacity>
           </View>
-        )}
-        
-        {renderInputSection()}
+        </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
 };
 
-// Option 3 AI Coach Companion styling
+const formatTimestamp = (date) => {
+  try {
+    return new Date(date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  } catch (error) {
+    return '';
+  }
+};
+
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F7FAFC', // Light blue-gray background
+    backgroundColor: '#F7FAFC',
   },
-  
   header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#E2E8F0',
-    backgroundColor: '#FFFFFF',
-  },
-  
-  title: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#1B4332', // Primary green
-  },
-  
-  statusIndicator: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: '#805AD5', // Purple accent
-  },
-  
-  messagesList: {
-    flex: 1,
-    paddingHorizontal: 16,
-    paddingTop: 8,
-  },
-  
-  // User messages (right-aligned, green background)
-  userMessageContainer: {
-    alignSelf: 'flex-end',
-    maxWidth: '85%',
-    marginBottom: 16,
-    marginTop: 8,
-  },
-  
-  userMessageBubble: {
-    backgroundColor: '#1B4332', // Primary green
     paddingHorizontal: 20,
     paddingVertical: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  headerTitle: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#1B4332',
+  },
+  headerSubtitle: {
+    color: '#4A5568',
+    marginTop: 4,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  headerButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#E6FFFA',
+    marginLeft: 10,
+  },
+  messagesList: {
+    flex: 1,
+  },
+  messagesListContent: {
+    paddingHorizontal: 16,
+  },
+  userMessageWrapper: {
+    marginBottom: 18,
+    alignSelf: 'flex-end',
+    maxWidth: '90%',
+  },
+  userMessageCard: {
+    backgroundColor: '#1B4332',
+    padding: 16,
     borderRadius: 16,
   },
-  
-  userText: {
-    fontSize: 17,
-    color: '#FFFFFF',
-    lineHeight: 24,
+  userMessageText: {
+    color: '#fff',
+    fontSize: 16,
+    lineHeight: 22,
   },
-  
-  // Coach messages (full width like Claude/ChatGPT - no container)
-  coachMessageContainer: {
-    width: '100%',
-    marginBottom: 12,
-    marginTop: 4,
-    paddingHorizontal: 8,
-    paddingVertical: 8,
+  coachMessageWrapper: {
+    marginBottom: 18,
+    alignSelf: 'stretch',
   },
-  
-  coachText: {
-    fontSize: 17,
-    color: '#2D3748', // Dark gray text
-    lineHeight: 24,
-  },
-  
-  // Video thumbnail in user messages
-  videoThumbnail: {
-    width: 200,
-    height: 112,
-    borderRadius: 12,
-    overflow: 'hidden',
-    marginBottom: 12,
-    position: 'relative',
-  },
-  
-  thumbnailImage: {
-    width: '100%',
-    height: '100%',
-    backgroundColor: '#F0F0F0',
-  },
-  
-  playOverlay: {
-    position: 'absolute',
-    top: '50%',
-    left: '50%',
-    transform: [{ translateX: -15 }, { translateY: -15 }],
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  
-  // Input area with purple accents
-  inputContainer: {
-    flexDirection: 'column',
+  coachMessageCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
     padding: 16,
+    shadowColor: '#000',
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 1,
+  },
+  timestampText: {
+    marginTop: 6,
+    fontSize: 12,
+    color: '#A0AEC0',
+  },
+  typingIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  typingText: {
+    marginLeft: 8,
+    color: '#4A5568',
+    fontStyle: 'italic',
+  },
+  statusMessageRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  statusMessageText: {
+    marginLeft: 8,
+    color: '#4A5568',
+  },
+  inputContainer: {
     borderTopWidth: 1,
     borderTopColor: '#E2E8F0',
+    padding: 16,
     backgroundColor: '#FFFFFF',
   },
-
-  // Video attachment preview
-  videoAttachmentContainer: {
-    position: 'relative',
-    marginBottom: 12,
-    alignSelf: 'flex-start',
-  },
-
-  videoThumbnail: {
-    width: 100,
-    height: 150,
-    borderRadius: 12,
-    backgroundColor: '#F0F0F0',
-  },
-
-  removeVideoButton: {
-    position: 'absolute',
-    top: -8,
-    right: -8,
-    backgroundColor: 'white',
-    borderRadius: 12,
-  },
-
-  videoDurationText: {
-    position: 'absolute',
-    bottom: 8,
-    right: 8,
-    backgroundColor: 'rgba(0,0,0,0.7)',
-    color: 'white',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 8,
-    fontSize: 12,
-  },
-
-  inputRow: {
+  composerRow: {
     flexDirection: 'row',
-    alignItems: 'flex-end',
-  },
-  
-  cameraButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(128, 90, 213, 0.2)', // Purple with 20% opacity
-    justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 12,
   },
-  
   input: {
     flex: 1,
-    fontSize: 16,
-    paddingVertical: 12,
+    minHeight: 48,
+    maxHeight: 140,
     paddingHorizontal: 16,
-    borderWidth: 2,
-    borderColor: '#E2E8F0',
+    paddingVertical: 12,
     borderRadius: 24,
-    maxHeight: 100,
-    color: '#2D3748',
+    backgroundColor: '#EDF2F7',
+    marginHorizontal: 12,
+    color: colors.text,
   },
-  
-  sendButton: {
+  composerButton: {
     width: 40,
     height: 40,
     borderRadius: 20,
+    backgroundColor: '#E9D8FD',
     justifyContent: 'center',
     alignItems: 'center',
-    marginLeft: 12,
-    backgroundColor: 'transparent',
   },
-  
+  sendButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#E2E8F0',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   sendButtonActive: {
-    backgroundColor: '#805AD5', // Purple accent
+    backgroundColor: '#805AD5',
+  },
+  videoSelectedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  videoSelectedThumb: {
+    width: 56,
+    height: 56,
+    borderRadius: 12,
+    marginRight: 12,
+  },
+  videoFallback: {
+    backgroundColor: '#4A5568',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  videoMeta: {
+    flex: 1,
+  },
+  videoMetaTitle: {
+    fontWeight: '600',
+    color: '#2D3748',
+  },
+  videoMetaSubtitle: {
+    color: '#718096',
+  },
+  videoPreview: {
+    width: '100%',
+    height: 180,
+    borderRadius: 16,
+    marginBottom: 8,
+  },
+  scrollToBottomButton: {
+    position: 'absolute',
+    right: 24,
+    bottom: 140,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOpacity: 0.2,
+    shadowRadius: 6,
+    elevation: 4,
   },
 });
 
 export default ChatScreen;
+
+
+
+
+
+
+
+
+

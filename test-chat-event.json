@@ -1,9 +1,0 @@
-{
-  "httpMethod": "POST",
-  "body": "{\"message\":\"Hello, test message\"}",
-  "headers": {
-    "Content-Type": "application/json"
-  },
-  "pathParameters": null,
-  "queryStringParameters": null
-}
