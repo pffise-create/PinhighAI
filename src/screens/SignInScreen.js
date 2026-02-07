@@ -156,10 +156,6 @@ const SignInScreen = ({ navigation }) => {
     return () => clearInterval(imageTimer);
   }, [imagesPreloaded, currentOpacity, nextOpacity, scaleAnim, translateXAnim, translateYAnim]);
 
-  const handleContinueAsGuest = () => {
-    navigation.replace('Chat');
-  };
-
   const exchangeCodeForTokens = async (authorizationCode) => {
     try {
       const cognitoDomain = 'golf-coach-auth-1755756500.auth.us-east-1.amazoncognito.com';
@@ -335,21 +331,6 @@ const SignInScreen = ({ navigation }) => {
               )}
             </TouchableOpacity>
 
-            <View style={styles.divider}>
-              <View style={styles.dividerLine} />
-              <Text style={styles.dividerLabel}>or</Text>
-              <View style={styles.dividerLine} />
-            </View>
-
-            <TouchableOpacity
-              style={styles.secondaryButton}
-              onPress={handleContinueAsGuest}
-              activeOpacity={0.85}
-              disabled={isLoading}
-            >
-              <Text style={styles.secondaryButtonLabel}>Continue as guest</Text>
-            </TouchableOpacity>
-
             <View style={styles.badge}>
               <Text style={styles.badgeText}>Precision Golf Coaching</Text>
             </View>
@@ -461,20 +442,6 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     marginLeft: 8,
   },
-  secondaryButton: {
-    height: 52,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.5)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  secondaryButtonLabel: {
-    color: colors.textInverse,
-    fontSize: 16,
-    fontWeight: '500',
-  },
   buttonDisabled: {
     opacity: 0.7,
   },
@@ -490,25 +457,6 @@ const styles = StyleSheet.create({
     color: colors.brandForest,
     fontWeight: '700',
     fontSize: 14,
-  },
-  divider: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginVertical: 24,
-    gap: 16,
-  },
-  dividerLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.4)',
-  },
-  dividerLabel: {
-    color: 'rgba(255, 255, 255, 0.9)',
-    fontSize: 14,
-    fontWeight: '500',
-    textShadowColor: 'rgba(255, 255, 255, 0.8)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 2,
   },
   badge: {
     marginTop: 24,

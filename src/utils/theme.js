@@ -2,28 +2,36 @@
 
 export const colors = {
   // Brand Colors
-  brandForest: '#1E3A2A',
+  brandForest: '#1E3A2A', // primary
   brandFern: '#3C8D5A',
-  brandGold: '#C9A654',
+  brandGold: '#C9A654', // accent, use sparingly
 
-  // Surface Colors
-  surfaceBase: '#F7F4ED',
+  // Surface Colors (cool, clean neutrals)
+  surfaceBase: '#F7F8F5', // primary background
   surfaceElevated: '#FFFFFF',
-  surfaceMuted: '#EFE9DC',
+  surfaceMuted: '#EEF0EC', // inputs / alt rows
 
   // Text Colors
   textPrimary: '#1F2933',
-  textSecondary: '#52606D',
+  textSecondary: '#5A6673',
   textInverse: '#FFFFFF',
 
   // Border Colors
-  borderSubtle: '#E4E0D3',
-  borderStrong: '#C8C0AC',
+  borderSubtle: '#DADFD8',
+  borderStrong: '#C5CCC4',
 
   // Status Colors
   statusSuccess: '#2E7D32',
   statusWarning: '#D97706',
   statusError: '#C53030',
+
+  // Skeleton / Loading shimmer
+  skeletonBase: '#E8EBE6',
+  skeletonHighlight: '#F2F4F0',
+
+  // Video overlay
+  overlayLight: 'rgba(0, 0, 0, 0.25)',
+  overlayMedium: 'rgba(0, 0, 0, 0.5)',
 
   // Utility
   white: '#FFFFFF',
@@ -35,18 +43,18 @@ export const colors = {
   primaryDark: '#15281E',
   coachAccent: '#C9A654',
   coachAccentLight: '#E3C98A',
-  coachBackground: '#F5F0E3',
+  coachBackground: '#F7F8F5',
   accent: '#C9A654',
-  background: '#F7F4ED',
-  backgroundMuted: '#EFE9DC',
+  background: '#F7F8F5',
+  backgroundMuted: '#EEF0EC',
   surface: '#FFFFFF',
   text: '#1F2933',
-  textLight: '#52606D',
+  textLight: '#5A6673',
   success: '#2E7D32',
   warning: '#D97706',
   error: '#C53030',
-  border: '#E4E0D3',
-  borderLight: '#F1EBDE',
+  border: '#DADFD8',
+  borderLight: '#E6EAE4',
   overlayDark: 'rgba(0, 0, 0, 0.35)',
 };
 

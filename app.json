@@ -13,14 +13,16 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.pinhighai.golfcoach"
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "package": "com.pinhighai.golfcoach"
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -28,7 +30,9 @@
     "plugins": [
       "expo-video",
       "expo-secure-store",
-      "expo-web-browser"
+      "expo-web-browser",
+      "expo-dev-client",
+      "react-native-video-trim"
     ]
   }
 }
