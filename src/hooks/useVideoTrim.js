@@ -1,6 +1,6 @@
 // useVideoTrim.js - Hook wrapping react-native-video-trim native editor
 // Shows the native iOS/Android trim UI, enforces maxDuration, returns trimmed URI.
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { isValidVideo, showEditor } from 'react-native-video-trim';
 import { NativeEventEmitter, NativeModules } from 'react-native';
 
@@ -11,9 +11,10 @@ const useVideoTrim = () => {
   const [trimmedUri, setTrimmedUri] = useState(null);
   const [error, setError] = useState(null);
 
-  // Resolve/reject refs for the Promise returned by trimVideo
-  const resolveRef = { current: null };
-  const rejectRef = { current: null };
+  // Stable refs that survive re-renders — holds the Promise resolve/reject
+  // for the current trimVideo() call so native event callbacks can settle it.
+  const resolveRef = useRef(null);
+  const rejectRef = useRef(null);
 
   useEffect(() => {
     // Subscribe to native trim events

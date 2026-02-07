@@ -40,12 +40,13 @@ import { colors, spacing } from '../utils/theme';
 const SCROLL_THRESHOLD = 96;
 
 // ─── Message Factory ────────────────────────────────────────────────────────
-const createMessage = ({ id, sender, text, type = 'text', createdAt, videoThumbnail, videoDuration }) => ({
+const createMessage = ({ id, sender, text, type = 'text', createdAt, videoUri, videoThumbnail, videoDuration }) => ({
   id: id || `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
   sender,
   text,
   type,
   createdAt: createdAt || new Date(),
+  videoUri,
   videoThumbnail,
   videoDuration,
 });
@@ -62,6 +63,7 @@ const normalizeStoredMessages = (stored = []) =>
         text: msg.text,
         type: msg.messageType || msg.type || 'text',
         createdAt: msg.timestamp ? new Date(msg.timestamp) : new Date(),
+        videoUri: msg.videoUri,
         videoThumbnail: msg.videoThumbnail,
         videoDuration: msg.videoDuration,
       })
@@ -84,7 +86,10 @@ const mergeMessageLists = (current = [], incoming = []) => {
 // ─── ChatScreen Component ───────────────────────────────────────────────────
 const ChatScreen = ({ navigation }) => {
   const { user, getAuthHeaders } = useAuth();
-  const userId = user.id;
+  const userId = user?.id;
+
+  // Auth is required — AppNavigator gates this, but guard against race conditions
+  if (!userId) return null;
 
   // Core state
   const [messages, setMessages] = useState([]);
@@ -117,45 +122,46 @@ const ChatScreen = ({ navigation }) => {
 
         // Welcome message: if first-time user, auto-send init to get AI greeting
         if (history?.userProfile?.isFirstTime && normalized.length === 0) {
-          sendWelcomeMessage();
+          await sendWelcome(mounted);
         }
       } catch (error) {
         console.warn('Failed to load chat history:', error);
       }
     };
 
+    // Inline welcome sender — checks mounted flag to avoid state updates after unmount
+    const sendWelcome = async (isMounted) => {
+      setIsSending(true);
+      try {
+        const headers = await getAuthHeaders();
+        const result = await chatApiService.sendMessage(
+          'Hello! I just joined PinHigh AI. Please introduce yourself as my golf coach.',
+          userId,
+          headers,
+        );
+        if (!isMounted) return;
+        appendMessage(
+          createMessage({
+            sender: 'coach',
+            text: result.response || "Welcome to PinHigh AI! I'm your personal golf coach. Upload a swing video or ask me anything about your game.",
+          })
+        );
+      } catch {
+        if (!isMounted) return;
+        appendMessage(
+          createMessage({
+            sender: 'coach',
+            text: "Welcome to PinHigh AI! I'm your personal golf coach. Upload a swing video or ask me anything about improving your game.",
+          })
+        );
+      } finally {
+        if (isMounted) setIsSending(false);
+      }
+    };
+
     hydrate();
     return () => { mounted = false; };
   }, [userId]);
-
-  // ─── Welcome Message Flow ──────────────────────────────────────────────
-  // Silently sends an init message to /api/chat to get the AI's greeting.
-  const sendWelcomeMessage = async () => {
-    setIsSending(true);
-    try {
-      const headers = await getAuthHeaders();
-      const result = await chatApiService.sendMessage(
-        'Hello! I just joined PinHigh AI. Please introduce yourself as my golf coach.',
-        userId,
-        headers,
-      );
-      const welcomeMsg = createMessage({
-        sender: 'coach',
-        text: result.response || "Welcome to PinHigh AI! I'm your personal golf coach. Upload a swing video or ask me anything about your game.",
-      });
-      appendMessage(welcomeMsg);
-    } catch {
-      // Fallback welcome if API is unreachable
-      appendMessage(
-        createMessage({
-          sender: 'coach',
-          text: "Welcome to PinHigh AI! I'm your personal golf coach. Upload a swing video or ask me anything about improving your game.",
-        })
-      );
-    } finally {
-      setIsSending(false);
-    }
-  };
 
   // ─── Scroll Management (Inverted FlatList) ─────────────────────────────
   // In an inverted list: visual bottom = offset 0
@@ -191,6 +197,7 @@ const ChatScreen = ({ navigation }) => {
         sender: message.sender,
         timestamp: message.createdAt?.toISOString?.() || new Date().toISOString(),
         messageType: message.type,
+        videoUri: message.videoUri,
         videoThumbnail: message.videoThumbnail,
         videoDuration: message.videoDuration,
       }).catch((err) => console.warn('Failed to persist message', err));
@@ -302,17 +309,21 @@ const ChatScreen = ({ navigation }) => {
   const sendVideoMessage = useCallback(async () => {
     if (!selectedVideo) return;
 
+    // Capture values before clearing state to avoid stale closure reads
+    const videoUri = selectedVideo.uri;
+    const videoDuration = selectedVideo.duration;
+
     appendMessage(
       createMessage({
         sender: 'user',
         text: inputText.trim() || undefined,
         type: 'video',
+        videoUri,
         videoThumbnail,
-        videoDuration: selectedVideo.duration,
+        videoDuration,
       })
     );
     setInputText('');
-    const videoUri = selectedVideo.uri;
     clearSelectedVideo();
 
     // Process upload + analysis pipeline
@@ -324,7 +335,7 @@ const ChatScreen = ({ navigation }) => {
 
       const uploadResult = await videoService.uploadAndAnalyze(
         videoUri,
-        selectedVideo.duration,
+        videoDuration,
         (progress) => setProcessingMessage(progress.message),
         userId,
         headers,
@@ -472,9 +483,9 @@ const styles = StyleSheet.create({
     position: 'absolute',
     right: spacing.xl,
     bottom: spacing['4xl'],
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: colors.primary,
     justifyContent: 'center',
     alignItems: 'center',

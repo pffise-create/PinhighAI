@@ -58,8 +58,9 @@ class ChatApiService {
       // Propagate auth errors directly
       if (error?.message === 'AUTHENTICATION_REQUIRED') throw error;
 
-      // Re-check for auth status codes embedded in error text
-      if (error.message?.includes('401') || error.message?.includes('403')) {
+      // Re-check for auth status codes embedded in error text (word-boundary match
+      // to avoid false positives like "Error 4016")
+      if (/\bAPI Error (401|403)\b/.test(error.message)) {
         throw new Error('AUTHENTICATION_REQUIRED');
       }
 
