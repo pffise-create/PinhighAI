@@ -1,0 +1,1 @@
+{"Variables":{"OPENAI_SECRET_NAME":"golf/openai/api-key","GOLF_COACH_ASSISTANT_ID":"asst_RWaBGkkmYf7Q7POKguRHhJ80","USER_THREADS_TABLE":"golf-user-threads","CHAT_LOOP_MAX_TOOL_RUNS":"2","SWING_PROFILE_TABLE":"golf-coach-swing-profiles-dev","CHAT_LOOP_ENABLED":"true","CHAT_LOOP_MODEL":"gpt-4o-mini","CHAT_LOOP_TOOL_TIMEOUT_MS":"3000","HTTP_REQUEST_TIMEOUT_MS":"8000"}}

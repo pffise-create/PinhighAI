@@ -1,0 +1,1 @@
+{"Records":[{"messageId":"smoke-msg","eventSource":"aws:sqs","body":"{\"analysis_id\":\"nonexistent-smoke\",\"user_id\":\"guest-user\",\"status\":\"COMPLETED\"}"}]}
