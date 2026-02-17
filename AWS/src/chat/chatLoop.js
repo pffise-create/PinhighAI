@@ -3,7 +3,7 @@ const chatRepository = require('../data/chatRepository');
 const swingProfileRepository = require('../data/swingProfileRepository');
 const { SYSTEM_PROMPT, buildDeveloperContext } = require('../prompts/coachingSystemPrompt');
 const CHAT_MODEL = process.env.CHAT_LOOP_MODEL || 'gpt-4o-mini';
-const MAX_TOOL_ITERATIONS = parseInt(process.env.CHAT_LOOP_MAX_TOOL_RUNS || '4', 10);
+const MAX_TOOL_ITERATIONS = parseInt(process.env.CHAT_LOOP_MAX_TOOL_RUNS || '2', 10);
 const TOOL_TIMEOUT_MS = parseInt(process.env.CHAT_LOOP_TOOL_TIMEOUT_MS || '8000', 10);
 
 const TOOL_DEFINITIONS = [
@@ -125,7 +125,11 @@ async function executeToolCall(toolCall, { userId, dynamoClient, logger }) {
         return { comparison };
       }
       case 'get_user_swing_profile': {
-        return { status: 'not_available', message: 'Swing profile storage not yet implemented.' };
+        const profile = await swingProfileRepository.getProfile({ userId: effectiveUserId, client: dynamoClient });
+        if (!profile) {
+          return { status: 'not_found', profile: null };
+        }
+        return { status: 'ok', profile };
       }
       default:
         safeLog.warn('Unsupported tool requested:', name);
@@ -148,6 +152,7 @@ async function runChatCompletionLoop({ messages, userId, dynamoClient, requestOp
       messages: conversation,
       tools: TOOL_DEFINITIONS,
       temperature: 0.6,
+      max_completion_tokens: 450,
     };
 
     const response = await requestOpenAi(payload);

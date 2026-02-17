@@ -2,12 +2,15 @@
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient, GetCommand, PutCommand } = require('@aws-sdk/lib-dynamodb');
 const { SecretsManagerClient, GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');
+const { executeChatLoop } = require('../chat/chatLoop');
 const https = require('https');
 
 // Initialize clients
 let dynamodb = null;
 let secretsManager = null;
 let cachedOpenAIKey = null;
+const CHAT_LOOP_ENABLED = process.env.CHAT_LOOP_ENABLED === 'true';
+const HTTP_REQUEST_TIMEOUT_MS = parseInt(process.env.HTTP_REQUEST_TIMEOUT_MS || '8000', 10);
 
 function getDynamoClient() {
   if (!dynamodb) {
@@ -40,7 +43,7 @@ async function ensureOpenAIKey() {
     throw new Error('OpenAI secret is empty');
   }
   cachedOpenAIKey = resp.SecretString;
-  process.env.OPENAI_API_KEY = resp.SecretString; // keep downstream code unchanged
+  process.env.OPENAI_API_KEY = resp.SecretString;
   return cachedOpenAIKey;
 }
 
@@ -60,6 +63,9 @@ function makeHttpsRequest(options, data = null) {
     });
     
     req.on('error', reject);
+    req.setTimeout(HTTP_REQUEST_TIMEOUT_MS, () => {
+      req.destroy(new Error(`Request to ${options.hostname}${options.path} timed out after ${HTTP_REQUEST_TIMEOUT_MS}ms`));
+    });
     
     if (data) {
       req.write(data);
@@ -67,48 +73,6 @@ function makeHttpsRequest(options, data = null) {
     
     req.end();
   });
-}
-
-const CHAT_ASSISTANT_INSTRUCTIONS = `You are Pin High, an AI-powered golf coach and supportive golf buddy with Tour-level analysis. The golfer is typically an 8-25 handicapper. Keep the tone conversational, encouraging, and a little playful while staying deeply knowledgeable. Diagnose underlying fundamentals rather than just symptoms. Reference earlier swings, drills, and feedback whenever it helps the player feel you remember their journey. Explain what the body and club are doing and why, using plain language with precise golf terms when helpful. Offer tailored drills or feels, encourage iterative progress, and avoid deterministic absolutes--guide them toward self-discovery. Ask occasional pro-level engagement questions (for example about miss pattern, contact quality, or feels) to deepen the diagnosis and keep the session interactive.`;
-
-let cachedAssistantId = null;
-
-async function getOrCreateAssistant() {
-  if (process.env.GOLF_COACH_ASSISTANT_ID) {
-    return process.env.GOLF_COACH_ASSISTANT_ID;
-  }
-
-  if (cachedAssistantId) {
-    return cachedAssistantId;
-  }
-
-  try {
-    const assistantPayload = {
-      name: 'Pin High Swing Coach',
-      instructions: CHAT_ASSISTANT_INSTRUCTIONS,
-      model: 'gpt-4o-mini',
-      tools: []
-    };
-
-    const assistantResponse = await makeHttpsRequest({
-      hostname: 'api.openai.com',
-      path: '/v1/assistants',
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json',
-        'OpenAI-Beta': 'assistants=v2'
-      }
-    }, JSON.stringify(assistantPayload));
-
-    const assistant = JSON.parse(assistantResponse);
-    cachedAssistantId = assistant.id;
-    console.log('Created new assistant for chat:', cachedAssistantId);
-    return cachedAssistantId;
-  } catch (error) {
-    console.error('Failed to create chat assistant:', error);
-    throw new Error('Unable to obtain assistant id. Set GOLF_COACH_ASSISTANT_ID env var or allow creation.');
-  }
 }
 
 // Extract user context from event with JWT validation
@@ -238,7 +202,109 @@ async function storeUserThread(userId, threadData) {
 }
 
 // Handle chat request with user threading
+async function handleChatLoopRequest(event, userContext) {
+  let body;
+  try {
+    body = typeof event.body === 'string' ? JSON.parse(event.body) : (event.body || {});
+  } catch (error) {
+    throw new Error('Invalid JSON body');
+  }
+
+  const message = typeof body.message === 'string' ? body.message.trim() : '';
+  if (!message) {
+    return {
+      statusCode: 400,
+      headers: {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*'
+      },
+      body: JSON.stringify({
+        error: 'Message is required',
+        success: false,
+        timestamp: new Date().toISOString()
+      })
+    };
+  }
+
+  const userId = userContext.userId;
+  const dynamodbClient = getDynamoClient();
+  const logger = {
+    debug: (...args) => console.debug('CHAT_LOOP_DEBUG', ...args),
+    warn: (...args) => console.warn('CHAT_LOOP_WARN', ...args),
+    error: (...args) => console.error('CHAT_LOOP_ERROR', ...args)
+  };
+
+  const requestOpenAi = async (payload) => callChatCompletions(payload);
+  const result = await executeChatLoop({
+    userId,
+    userMessage: message,
+    dynamoClient: dynamodbClient,
+    requestOpenAi,
+    logger
+  });
+
+  return {
+    statusCode: 200,
+    headers: {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*'
+    },
+    body: JSON.stringify({
+      response: result.reply,
+      message: result.reply,
+      success: true,
+      timestamp: new Date().toISOString()
+    })
+  };
+}
+async function callChatCompletions(payload) {
+  if (!process.env.OPENAI_API_KEY) {
+    throw new Error('OPENAI_API_KEY is not configured');
+  }
+
+  const requestBody = JSON.stringify(payload);
+  const responseBody = await makeHttpsRequest({
+    hostname: 'api.openai.com',
+    path: '/v1/chat/completions',
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer ' + process.env.OPENAI_API_KEY,
+      'Content-Type': 'application/json'
+    }
+  }, requestBody);
+
+  try {
+    return JSON.parse(responseBody);
+  } catch (error) {
+    throw new Error('Failed to parse OpenAI chat response: ' + error.message);
+  }
+}
+
+
 async function handleChatRequest(event, userContext) {
+  if (CHAT_LOOP_ENABLED) {
+    try {
+      return await handleChatLoopRequest(event, userContext);
+    } catch (loopError) {
+      console.error('CHAT LOOP ERROR:', loopError);
+      const fallbackMessage = "I'm working through a small glitch. Please try your question again in a moment.";
+      return {
+        statusCode: 200,
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*'
+        },
+        body: JSON.stringify({
+          response: fallbackMessage,
+          message: fallbackMessage,
+          success: true,
+          fallback: true,
+          timestamp: new Date().toISOString()
+        })
+      };
+    }
+  }
+
   try {
     console.log('Starting user thread chat continuation...');
     
@@ -335,8 +401,7 @@ async function handleChatRequest(event, userContext) {
     }, JSON.stringify({
       assistant_id: assistantId,
       max_completion_tokens: 1500,
-      temperature: 0.7,
-      instructions: CHAT_ASSISTANT_INSTRUCTIONS
+      temperature: 0.7
     }));
     
     const run = JSON.parse(runResponse);
@@ -439,10 +504,17 @@ async function handleChatRequest(event, userContext) {
 
 // Main Lambda handler
 exports.handler = async (event) => {
-  console.log('CHAT API HANDLER - Event:', JSON.stringify(event, null, 2));
+  console.log('CHAT API HANDLER - Event summary:', {
+    path: event?.path,
+    method: event?.httpMethod,
+    hasBody: !!event?.body,
+    hasAuth: !!(event?.headers?.Authorization || event?.headers?.authorization),
+  });
   console.log('CHAT API HANDLER - Environment Check:', {
     hasOpenAIKey: !!process.env.OPENAI_API_KEY,
-    userThreadsTable: process.env.USER_THREADS_TABLE
+    userThreadsTable: process.env.USER_THREADS_TABLE,
+    chatLoopEnabled: CHAT_LOOP_ENABLED,
+    httpTimeoutMs: HTTP_REQUEST_TIMEOUT_MS,
   });
   
   try {

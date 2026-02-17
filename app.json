@@ -14,7 +14,10 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.pinhighai.golfcoach"
+      "bundleIdentifier": "com.pinhighai.golfcoach",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -32,7 +35,18 @@
       "expo-secure-store",
       "expo-web-browser",
       "expo-dev-client",
-      "react-native-video-trim"
-    ]
+      "expo-font"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "2ec92eee-8ddd-4e73-8831-23e40a8e1e65"
+      }
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/2ec92eee-8ddd-4e73-8831-23e40a8e1e65"
+    }
   }
 }

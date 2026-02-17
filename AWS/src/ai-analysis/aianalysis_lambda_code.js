@@ -1,3 +1,6 @@
+// LEGACY REFERENCE FILE (not deployed as the active processor).
+// Source of truth is AWS/src/ai-analysis/ai-analysis-processor.js.
+// This file intentionally preserves historical implementation details.
 // Complete AI Analysis Lambda - Handles HTTP requests AND DynamoDB streams
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient, GetCommand, UpdateCommand, PutCommand, ScanCommand, QueryCommand } = require('@aws-sdk/lib-dynamodb');

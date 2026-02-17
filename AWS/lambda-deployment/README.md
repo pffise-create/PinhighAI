@@ -1,12 +1,12 @@
 # Lambda Deployment Staging Area
 
-This folder contains staging files for AWS Lambda deployment.
+This folder contains deployment scaffolding and snapshots used by Lambda packaging scripts.
 
-## How it works:
-1. Edit the main file: `AWS/aianalysis_lambda_code.js`
-2. Copy gets placed here automatically before deployment
-3. Deployment packages are created from here
-4. DO NOT edit files directly in this folder - they get overwritten
+## Source Of Truth
+- Primary editable backend code lives in `AWS/src/`.
+- Files under `AWS/lambda-deployment/` may lag behind active source code.
 
-## Archive:
-Old versions are stored in `AWS/archive/lambda-versions/`
+## Guidance
+- Make code changes in `AWS/src/*`.
+- Use deployment scripts in this folder to package/publish changes.
+- Ignore obsolete deployment instructions copied from older monolith workflows.

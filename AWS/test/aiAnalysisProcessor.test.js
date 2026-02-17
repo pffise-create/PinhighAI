@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const swingRepository = require('../src/data/swingRepository');
 const processor = require('../src/ai-analysis/ai-analysis-processor.js');
 
-const { gatherDeveloperContext } = processor.__private;
+const { gatherDeveloperContext, normalizeDynamoItem, extractFrameData } = processor.__private;
 
 function withStubbedSwingRepo(method, stub, fn) {
   const original = swingRepository[method];
@@ -55,4 +55,35 @@ test('gatherDeveloperContext returns null when no user or swings', async () => {
     const result = await gatherDeveloperContext({ userId: 'user-2', analysisId: 'analysis', dynamoClient: null });
     assert.equal(result, null);
   });
+});
+
+test('normalizeDynamoItem and extractFrameData handle DynamoDB-typed analysis_results', () => {
+  const rawItem = {
+    analysis_results: {
+      M: {
+        fps: { N: '4' },
+        video_duration: { N: '8.25' },
+        frames: {
+          L: [
+            {
+              M: {
+                phase: { S: 'frame_000' },
+                url: { S: 'https://example.com/frame_000.jpg' },
+                frame_number: { N: '0' },
+              },
+            },
+          ],
+        },
+      },
+    },
+  };
+
+  const normalized = normalizeDynamoItem(rawItem);
+  const { analysisResults, frames } = extractFrameData(normalized);
+
+  assert.equal(analysisResults.fps, 4);
+  assert.equal(analysisResults.video_duration, 8.25);
+  assert.equal(frames.length, 1);
+  assert.equal(frames[0].phase, 'frame_000');
+  assert.equal(frames[0].url, 'https://example.com/frame_000.jpg');
 });

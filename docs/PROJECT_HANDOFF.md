@@ -2,12 +2,12 @@
 
 ## Overview
 
-**Golf Coach AI** is a mobile coaching app that provides AI-powered golf swing analysis. Users upload swing videos, which are processed through an AWS serverless pipeline using FFmpeg for frame extraction and OpenAI GPT-4o for analysis. The app supports both authenticated users (Google OAuth via Cognito) and guest mode.
+**Golf Coach AI** is a mobile coaching app that provides AI-powered golf swing analysis. Users upload swing videos, which are processed through an AWS serverless pipeline using FFmpeg for frame extraction and OpenAI GPT-5 vision for analysis. The app supports both authenticated users (Google OAuth via Cognito) and guest mode.
 
 ### Technology Stack
 - **Frontend:** React Native 0.81.4 / Expo 54.0.25, React Navigation 7.x
 - **Backend:** AWS Lambda (Node.js 18.x + Python), API Gateway, DynamoDB, S3, Cognito
-- **AI:** OpenAI GPT-4o Vision API + Threads API for conversational coaching
+- **AI:** OpenAI GPT-5 vision for swing analysis + OpenAI chat/threads APIs for conversational coaching
 - **Auth:** AWS Cognito with Google OAuth integration
 
 ## Local Development Stack
@@ -67,7 +67,7 @@ SignInScreen (entry point)
 |----------|---------|---------|
 | `golf-video-upload-handler` | POST /api/video/analyze | Seeds analysis job, validates JWT, invokes frame extraction |
 | `golf-frame-extractor-simple` | Lambda invoke | Downloads video, extracts frames via FFmpeg, uploads to S3 |
-| `golf-ai-analysis-processor` | Lambda invoke | Batches frames through GPT-4o, persists coaching output |
+| `golf-ai-analysis-processor` | Lambda invoke | Batches frames through GPT-5 vision, persists coaching output |
 | `golf-results-api-handler` | GET /api/video/results/{jobId} | Returns analysis status for polling |
 | `golf-chat-api-handler` | POST /api/chat | Conversational endpoint with OpenAI Threads + tool-use |
 | `golf-presigned-url-generator` | POST /api/video/presigned-url | Issues presigned S3 upload URLs |
@@ -97,7 +97,7 @@ Mobile App
          |
     Invoke: golf-ai-analysis-processor
          |
-    [AI Analysis via GPT-4o]
+    [AI Analysis via GPT-5]
     |--> DynamoDB: ai_analysis, status=AI_COMPLETED
     |--> golf-coach-swing-profiles (update profile)
          |
@@ -137,7 +137,7 @@ COGNITO_APP_CLIENT_ID=2ngu9n6gdcbab01r89qbjh88ns
 - Google OAuth sign-in and guest mode
 - Video upload and S3 presigned URLs
 - Frame extraction via FFmpeg layer
-- AI-powered swing analysis via GPT-4o
+- AI-powered swing analysis via GPT-5
 - Chat interface with OpenAI Threads
 - Swing profile persistence (swingProfileRepository.js)
 - Recent analyses display and progress tracking
@@ -158,7 +158,6 @@ COGNITO_APP_CLIENT_ID=2ngu9n6gdcbab01r89qbjh88ns
 |------|---------|
 | `AGENTS.md` | Agent operating guidelines |
 | `docs/current-arch.md` | Detailed backend architecture |
-| `docs/handoff-summary.md` | Chat loop implementation summary |
 | `docs/acceptance-checklist.md` | QA checklist |
 | `docs/backend-auth-config.md` | Authentication configuration |
 | `infrastructure/README.md` | SQS deployment guide |

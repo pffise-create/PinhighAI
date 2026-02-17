@@ -7,8 +7,6 @@ import { Ionicons } from '@expo/vector-icons';
 
 import SignInScreen from '../screens/SignInScreen';
 import ChatScreen from '../screens/ChatScreen';
-import VideoRecordScreen from '../screens/VideoRecordScreen';
-import CameraScreen from '../screens/CameraScreen';
 import SettingsModal from '../screens/SettingsModal';
 import { colors, typography, spacing } from '../utils/theme';
 import ErrorBoundary from '../components/ErrorBoundary';
@@ -78,18 +76,6 @@ export default function AppNavigator() {
             options={{
               headerShown: false,
             }}
-          />
-
-          <Stack.Screen
-            name="VideoRecord"
-            component={VideoRecordScreen}
-            options={{ title: 'Upload Swing' }}
-          />
-
-          <Stack.Screen
-            name="Camera"
-            component={CameraScreen}
-            options={{ headerShown: false }}
           />
 
           <Stack.Screen

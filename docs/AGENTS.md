@@ -26,7 +26,7 @@
   /utils/                   # Design tokens (theme.js), helpers
 /AWS/                       # Lambda handlers, API definitions, utilities
   /src/api-handlers/        # API Gateway Lambda handlers (chat, video, results)
-  /src/ai-analysis/         # AI processing Lambda (GPT-4o integration)
+  /src/ai-analysis/         # AI processing Lambda (vision-model integration; GPT-5 in AWS/src)
   /src/frame-extractor/     # Frame extraction Lambda (Python + FFmpeg)
   /src/chat/                # Chat loop with tool-use (chatLoop.js)
   /src/data/                # Data access layer (swingRepository, chatRepository, swingProfileRepository)

@@ -1,6 +1,8 @@
 // videoService.js - Video upload and analysis pipeline
 // Handles: presigned URL -> S3 upload -> trigger analysis -> poll for results
 const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'https://t7y64hqkq0.execute-api.us-east-1.amazonaws.com/prod';
+const VIDEO_BUCKET = process.env.EXPO_PUBLIC_VIDEO_BUCKET || 'golf-coach-videos-1753203601';
+const DEFAULT_POLL_INTERVAL_MS = 1500;
 
 // Golf-themed progress messages mapped to pipeline stages.
 // Each stage has multiple variants that rotate every ~3-4s for visual life.
@@ -30,7 +32,23 @@ const STAGE_MESSAGES = {
     'Comparing against tour-level fundamentals...',
     'Building your personalized feedback...',
   ],
+  analyzing: [
+    'Your coach is studying the details...',
+    'Comparing against tour-level fundamentals...',
+    'Building your personalized feedback...',
+  ],
+  processing: ['Preparing your swing for analysis...'],
   completed: ['Analysis complete!'],
+};
+
+// Derive content type and extension from a video URI
+const inferVideoMeta = (uri) => {
+  const lower = (uri || '').toLowerCase();
+  if (lower.endsWith('.mp4') || lower.includes('.mp4')) {
+    return { contentType: 'video/mp4', ext: '.mp4' };
+  }
+  // Default to QuickTime (.mov) for iOS
+  return { contentType: 'video/quicktime', ext: '.mov' };
 };
 
 class VideoService {
@@ -39,11 +57,11 @@ class VideoService {
   }
 
   // Generate unique S3 key for video upload
-  generateFileName(userId) {
+  generateFileName(userId, ext = '.mov') {
     if (!userId) throw new Error('userId is required for generateFileName');
     const timestamp = Date.now();
     const random = Math.random().toString(36).substr(2, 9);
-    return `golf-swings/${userId}/${timestamp}-${random}.mov`;
+    return `golf-swings/${userId}/${timestamp}-${random}${ext}`;
   }
 
   // Step 1: Get presigned URL for S3 upload
@@ -74,13 +92,11 @@ class VideoService {
   }
 
   // Step 2: Upload video to S3 using presigned URL
-  async uploadVideoToS3(videoUri, presignedUrl, onProgress) {
-    const formData = new FormData();
-    formData.append('file', {
-      uri: videoUri,
-      type: 'video/quicktime',
-      name: 'golf-swing.mov',
-    });
+  async uploadVideoToS3(videoUri, presignedUrl, contentType, onProgress) {
+    // Convert local file URI to blob (RN's XHR only auto-handles file objects in FormData,
+    // but presigned PUTs need raw body, so we fetch the file as a blob first)
+    const fileResponse = await fetch(videoUri);
+    const blob = await fileResponse.blob();
 
     const xhr = new XMLHttpRequest();
     xhr.timeout = 90000; // 90s timeout for video uploads
@@ -108,13 +124,13 @@ class VideoService {
       xhr.addEventListener('timeout', () => reject(new Error('Video upload timed out after 90 seconds')));
 
       xhr.open('PUT', presignedUrl);
-      xhr.setRequestHeader('Content-Type', 'video/quicktime');
-      xhr.send(formData._parts[0][1]);
+      xhr.setRequestHeader('Content-Type', contentType);
+      xhr.send(blob);
     });
   }
 
   // Step 3: Trigger server-side analysis (no trim params — client trims before upload)
-  async triggerAnalysis(fileName, bucketName = 'golf-coach-videos-1753203601', userId, authHeaders = {}) {
+  async triggerAnalysis(fileName, bucketName = VIDEO_BUCKET, userId, authHeaders = {}) {
     if (!userId) throw new Error('AUTHENTICATION_REQUIRED');
 
     const response = await fetch(`${API_BASE_URL}/api/video/analyze`, {
@@ -180,9 +196,20 @@ class VideoService {
 
   // Parse DynamoDB item format into normalized result
   parseDynamoDBResponse(item) {
-    const status = item.status?.S || 'processing';
+    const rawStatus = item.status?.S || 'processing';
+    let status = rawStatus;
     const aiAnalysis = item.ai_analysis?.S ? JSON.parse(item.ai_analysis.S) : null;
     const analysisResults = item.analysis_results?.S ? JSON.parse(item.analysis_results.S) : null;
+
+    if (rawStatus === 'AI_COMPLETED' || rawStatus === 'completed') {
+      status = 'completed';
+    } else if (rawStatus === 'AI_PROCESSING' || rawStatus === 'READY_FOR_AI') {
+      status = 'analyzing';
+    } else if (rawStatus === 'FAILED') {
+      status = 'failed';
+    } else if (rawStatus === 'PROCESSING') {
+      status = 'processing';
+    }
 
     if (status === 'completed' && (aiAnalysis || analysisResults)) {
       return {
@@ -204,22 +231,23 @@ class VideoService {
     if (!userId) throw new Error('AUTHENTICATION_REQUIRED');
     if (!authHeaders?.Authorization) throw new Error('AUTHENTICATION_REQUIRED');
 
-    const fileName = this.generateFileName(userId);
+    const { contentType, ext } = inferVideoMeta(videoUri);
+    const fileName = this.generateFileName(userId, ext);
 
     // Get presigned URL
-    const presignedUrl = await this.getPresignedUrl(fileName, 'video/quicktime', authHeaders);
+    const presignedUrl = await this.getPresignedUrl(fileName, contentType, authHeaders);
 
     // Upload video (already trimmed client-side)
-    await this.uploadVideoToS3(videoUri, presignedUrl, onProgress);
+    await this.uploadVideoToS3(videoUri, presignedUrl, contentType, onProgress);
 
     // Trigger analysis
-    const analysisResult = await this.triggerAnalysis(fileName, 'golf-coach-videos-1753203601', userId, authHeaders);
+    const analysisResult = await this.triggerAnalysis(fileName, VIDEO_BUCKET, userId, authHeaders);
 
     return { jobId: analysisResult.jobId, fileName, status: 'uploaded' };
   }
 
   // Step 6: Poll for analysis completion with golf-themed progress messages
-  async waitForAnalysisComplete(jobId, onProgress, maxAttempts = 60, intervalMs = 5000, authHeaders = {}) {
+  async waitForAnalysisComplete(jobId, onProgress, maxAttempts = 60, intervalMs = DEFAULT_POLL_INTERVAL_MS, authHeaders = {}) {
     const startTime = Date.now();
     let lastStatus = '';
 
@@ -228,9 +256,8 @@ class VideoService {
         const idToCheck = this.currentAnalysisId || jobId;
         const results = await this.getAnalysisResults(idToCheck, authHeaders);
 
-        // Log status transitions
         if (results.status !== lastStatus) {
-          console.log(`Status: ${lastStatus || 'init'} -> ${results.status}`);
+          if (__DEV__) console.log(`Status: ${lastStatus || 'init'} -> ${results.status}`);
           lastStatus = results.status;
         }
 

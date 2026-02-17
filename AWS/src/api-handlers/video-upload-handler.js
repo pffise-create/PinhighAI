@@ -219,6 +219,11 @@ async function extractUserContext(event) {
   return guestContext;
 }
 
+function hasBearerToken(event) {
+  const authHeader = event?.headers?.Authorization || event?.headers?.authorization;
+  return !!(authHeader && authHeader.startsWith('Bearer '));
+}
+
 // Main workflow: Create analysis record and trigger frame extraction
 async function startAnalysisWorkflow(analysisId, s3Key, bucketName, userId, userContext, trimOptions = null) {
   try {
@@ -407,7 +412,12 @@ async function updateAnalysisStatus(analysisId, status, progressMessage = null) 
 
 // Main Lambda handler
 exports.handler = async (event) => {
-  console.log('VIDEO UPLOAD HANDLER - Event:', JSON.stringify(event, null, 2));
+  console.log('VIDEO UPLOAD HANDLER - Event summary:', {
+    path: event?.path,
+    method: event?.httpMethod,
+    hasBody: !!event?.body,
+    hasAuth: hasBearerToken(event),
+  });
   console.log('VIDEO UPLOAD HANDLER - Environment Check:', {
     dynamoTable: process.env.DYNAMODB_TABLE,
     frameExtractorFunction: process.env.FRAME_EXTRACTOR_FUNCTION_NAME,
@@ -418,6 +428,20 @@ exports.handler = async (event) => {
     // Extract user context from the request
     const userContext = await extractUserContext(event);
     console.log('USER CONTEXT:', userContext);
+
+    if (hasBearerToken(event) && !userContext.isAuthenticated) {
+      return {
+        statusCode: 401,
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*'
+        },
+        body: JSON.stringify({
+          error: 'Invalid or unverifiable authentication token',
+          code: 'AUTHENTICATION_REQUIRED'
+        })
+      };
+    }
     
     // Validate this is a POST request for video analysis
     if (event.httpMethod !== 'POST' || !event.body) {
@@ -492,4 +516,3 @@ exports.handler = async (event) => {
     };
   }
 };
-

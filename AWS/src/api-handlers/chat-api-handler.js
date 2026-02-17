@@ -10,6 +10,7 @@ let dynamodb = null;
 let secretsManager = null;
 let cachedOpenAIKey = null;
 const CHAT_LOOP_ENABLED = process.env.CHAT_LOOP_ENABLED === 'true';
+const HTTP_REQUEST_TIMEOUT_MS = parseInt(process.env.HTTP_REQUEST_TIMEOUT_MS || '8000', 10);
 
 function getDynamoClient() {
   if (!dynamodb) {
@@ -62,6 +63,9 @@ function makeHttpsRequest(options, data = null) {
     });
     
     req.on('error', reject);
+    req.setTimeout(HTTP_REQUEST_TIMEOUT_MS, () => {
+      req.destroy(new Error(`Request to ${options.hostname}${options.path} timed out after ${HTTP_REQUEST_TIMEOUT_MS}ms`));
+    });
     
     if (data) {
       req.write(data);
@@ -500,10 +504,17 @@ async function handleChatRequest(event, userContext) {
 
 // Main Lambda handler
 exports.handler = async (event) => {
-  console.log('CHAT API HANDLER - Event:', JSON.stringify(event, null, 2));
+  console.log('CHAT API HANDLER - Event summary:', {
+    path: event?.path,
+    method: event?.httpMethod,
+    hasBody: !!event?.body,
+    hasAuth: !!(event?.headers?.Authorization || event?.headers?.authorization),
+  });
   console.log('CHAT API HANDLER - Environment Check:', {
     hasOpenAIKey: !!process.env.OPENAI_API_KEY,
-    userThreadsTable: process.env.USER_THREADS_TABLE
+    userThreadsTable: process.env.USER_THREADS_TABLE,
+    chatLoopEnabled: CHAT_LOOP_ENABLED,
+    httpTimeoutMs: HTTP_REQUEST_TIMEOUT_MS,
   });
   
   try {

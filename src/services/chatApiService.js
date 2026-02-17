@@ -31,6 +31,7 @@ class ChatApiService {
       const response = await fetch(this.buildChatUrl(), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders },
+        // userId included for logging/legacy compat; backend derives identity from JWT
         body: JSON.stringify({ message: message.trim(), userId }),
         signal: controller.signal,
       });

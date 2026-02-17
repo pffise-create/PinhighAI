@@ -28,9 +28,15 @@ import ChatHistoryManager from '../services/chatHistoryManager';
 import chatApiService from '../services/chatApiService';
 import videoService from '../services/videoService';
 import useVideoTrim from '../hooks/useVideoTrim';
+import {
+  createVideoPickerOptions,
+  MAX_VIDEO_LENGTH_SECONDS,
+  resolveVideoAttachment,
+} from '../utils/videoAttachmentFlow';
 
 import ChatHeader from '../components/chat/ChatHeader';
 import MessageBubble from '../components/chat/MessageBubble';
+import VideoModal from '../components/chat/VideoModal';
 import TypingIndicator from '../components/chat/TypingIndicator';
 import ComposerBar from '../components/chat/ComposerBar';
 
@@ -88,9 +94,6 @@ const ChatScreen = ({ navigation }) => {
   const { user, getAuthHeaders } = useAuth();
   const userId = user?.id;
 
-  // Auth is required — AppNavigator gates this, but guard against race conditions
-  if (!userId) return null;
-
   // Core state
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
@@ -100,6 +103,7 @@ const ChatScreen = ({ navigation }) => {
   const [selectedVideo, setSelectedVideo] = useState(null);
   const [videoThumbnail, setVideoThumbnail] = useState(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  const [playbackVideoUri, setPlaybackVideoUri] = useState(null);
 
   // Refs
   const flatListRef = useRef(null);
@@ -107,10 +111,12 @@ const ChatScreen = ({ navigation }) => {
   const isNearBottomRef = useRef(true);
 
   // Video trim hook
-  const { trimVideo } = useVideoTrim();
+  const { trimVideo, isAvailable: isTrimAvailable } = useVideoTrim();
 
   // ─── Load Chat History ──────────────────────────────────────────────────
   useEffect(() => {
+    if (!userId) return; // No authenticated user yet — skip hydration
+
     let mounted = true;
 
     const hydrate = async () => {
@@ -122,15 +128,15 @@ const ChatScreen = ({ navigation }) => {
 
         // Welcome message: if first-time user, auto-send init to get AI greeting
         if (history?.userProfile?.isFirstTime && normalized.length === 0) {
-          await sendWelcome(mounted);
+          await sendWelcome();
         }
       } catch (error) {
         console.warn('Failed to load chat history:', error);
       }
     };
 
-    // Inline welcome sender — checks mounted flag to avoid state updates after unmount
-    const sendWelcome = async (isMounted) => {
+    // Inline welcome sender — references closed-over `mounted` directly (not by value)
+    const sendWelcome = async () => {
       setIsSending(true);
       try {
         const headers = await getAuthHeaders();
@@ -139,7 +145,7 @@ const ChatScreen = ({ navigation }) => {
           userId,
           headers,
         );
-        if (!isMounted) return;
+        if (!mounted) return;
         appendMessage(
           createMessage({
             sender: 'coach',
@@ -147,7 +153,7 @@ const ChatScreen = ({ navigation }) => {
           })
         );
       } catch {
-        if (!isMounted) return;
+        if (!mounted) return;
         appendMessage(
           createMessage({
             sender: 'coach',
@@ -155,13 +161,13 @@ const ChatScreen = ({ navigation }) => {
           })
         );
       } finally {
-        if (isMounted) setIsSending(false);
+        if (mounted) setIsSending(false);
       }
     };
 
     hydrate();
     return () => { mounted = false; };
-  }, [userId]);
+  }, [userId, appendMessage, getAuthHeaders]);
 
   // ─── Scroll Management (Inverted FlatList) ─────────────────────────────
   // In an inverted list: visual bottom = offset 0
@@ -180,11 +186,16 @@ const ChatScreen = ({ navigation }) => {
     setShowScrollToBottom(false);
   }, []);
 
+  const showScrollRef = useRef(false);
   const handleScroll = useCallback((event) => {
     const y = event.nativeEvent?.contentOffset?.y ?? 0;
     const nearBottom = y <= SCROLL_THRESHOLD;
     isNearBottomRef.current = nearBottom;
-    setShowScrollToBottom(!nearBottom);
+    const shouldShow = !nearBottom;
+    if (shouldShow !== showScrollRef.current) {
+      showScrollRef.current = shouldShow;
+      setShowScrollToBottom(shouldShow);
+    }
   }, []);
 
   // ─── Message Persistence ───────────────────────────────────────────────
@@ -259,46 +270,45 @@ const ChatScreen = ({ navigation }) => {
         return;
       }
 
-      // Pick video without editing (trim happens via react-native-video-trim)
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ['videos'],
-        allowsEditing: false,
-        quality: 0.8,
-        preferredAssetRepresentationMode: 'current',
+      const selection = await resolveVideoAttachment({
+        isTrimAvailable,
+        trimVideo,
+        preferSystemEditor: Platform.OS === 'ios',
+        pickVideo: ({ allowsEditing }) =>
+          ImagePicker.launchImageLibraryAsync(createVideoPickerOptions({ allowsEditing })),
       });
 
-      if (result.canceled || !result.assets?.length) return;
-      const video = result.assets[0];
-
-      // Open native trim editor (max 5s enforced by useVideoTrim)
-      let trimmedUri;
-      try {
-        trimmedUri = await trimVideo(video.uri);
-      } catch {
-        // If trim library not available (Expo Go), fall back to raw video
-        trimmedUri = video.uri;
+      if (selection.cancelled) return;
+      if (selection.rejectedTooLong) {
+        Alert.alert(
+          'Video too long',
+          `Please trim your clip to ${MAX_VIDEO_LENGTH_SECONDS} seconds or less before uploading.`,
+        );
+        return;
       }
 
-      if (!trimmedUri) return; // User cancelled trim
-
-      // Generate thumbnail from trimmed video
-      const durationSeconds = video.duration ? video.duration / 1000 : 0;
       try {
-        const thumb = await VideoThumbnails.getThumbnailAsync(trimmedUri, {
+        const thumb = await VideoThumbnails.getThumbnailAsync(selection.uri, {
           time: 500,
           quality: 0.7,
         });
-        setSelectedVideo({ uri: trimmedUri, duration: Math.min(durationSeconds, 5) });
+        setSelectedVideo({
+          uri: selection.uri,
+          duration: Math.min(selection.durationSeconds, MAX_VIDEO_LENGTH_SECONDS),
+        });
         setVideoThumbnail(thumb.uri);
       } catch {
-        setSelectedVideo({ uri: trimmedUri, duration: Math.min(durationSeconds, 5) });
+        setSelectedVideo({
+          uri: selection.uri,
+          duration: Math.min(selection.durationSeconds, MAX_VIDEO_LENGTH_SECONDS),
+        });
         setVideoThumbnail(null);
       }
     } catch (error) {
       console.error('Video selection failed:', error);
       Alert.alert('Error', 'Unable to select that video. Please try another clip.');
     }
-  }, [trimVideo]);
+  }, [trimVideo, isTrimAvailable]);
 
   const clearSelectedVideo = useCallback(() => {
     setSelectedVideo(null);
@@ -344,8 +354,8 @@ const ChatScreen = ({ navigation }) => {
       const analysisResult = await videoService.waitForAnalysisComplete(
         uploadResult.jobId,
         (progress) => setProcessingMessage(progress.message),
-        60,
-        5000,
+        80,
+        1500,
         headers,
       );
 
@@ -392,9 +402,13 @@ const ChatScreen = ({ navigation }) => {
   // Inverted FlatList: newest first in array = visual bottom
   const invertedMessages = useMemo(() => [...messages].reverse(), [messages]);
 
+  const handleVideoPress = useCallback((videoUri) => {
+    if (videoUri) setPlaybackVideoUri(videoUri);
+  }, []);
+
   const renderMessage = useCallback(({ item }) => (
-    <MessageBubble message={item} />
-  ), []);
+    <MessageBubble message={item} onVideoPress={handleVideoPress} />
+  ), [handleVideoPress]);
 
   const keyExtractor = useCallback((item) => item.id, []);
 
@@ -408,6 +422,9 @@ const ChatScreen = ({ navigation }) => {
       />
     </View>
   ), [isSending, isProcessingVideo, processingMessage]);
+
+  // Auth is required — AppNavigator gates this, but guard against race conditions
+  if (!userId) return null;
 
   return (
     <SafeAreaView style={styles.container}>
@@ -453,6 +470,13 @@ const ChatScreen = ({ navigation }) => {
           selectedVideo={selectedVideo}
           videoThumbnail={videoThumbnail}
           onClearVideo={clearSelectedVideo}
+        />
+
+        {/* Single video playback modal — shared across all messages */}
+        <VideoModal
+          visible={!!playbackVideoUri}
+          videoUri={playbackVideoUri}
+          onClose={() => setPlaybackVideoUri(null)}
         />
       </KeyboardAvoidingView>
     </SafeAreaView>

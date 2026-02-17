@@ -30,28 +30,31 @@ const ComposerBar = ({
     <View style={styles.container}>
       {/* Video preview row */}
       {selectedVideo && (
-        <View style={styles.videoPreviewRow}>
-          {videoThumbnail ? (
-            <Image source={{ uri: videoThumbnail }} style={styles.videoThumb} />
-          ) : (
-            <View style={[styles.videoThumb, styles.videoThumbFallback]}>
-              <Ionicons name="videocam" size={20} color={colors.white} />
+        <View style={styles.videoCard}>
+          <View style={styles.videoPreviewRow}>
+            {videoThumbnail ? (
+              <Image source={{ uri: videoThumbnail }} style={styles.videoThumb} />
+            ) : (
+              <View style={[styles.videoThumb, styles.videoThumbFallback]}>
+                <Ionicons name="videocam" size={20} color={colors.white} />
+              </View>
+            )}
+            <View style={styles.videoMeta}>
+              <Text style={styles.videoTitle}>Swing clip ready</Text>
+              <Text style={styles.videoSubtitle}>
+                {selectedVideo.duration?.toFixed(1)}s
+              </Text>
             </View>
-          )}
-          <View style={styles.videoMeta}>
-            <Text style={styles.videoTitle}>Swing clip ready</Text>
-            <Text style={styles.videoSubtitle}>
-              {selectedVideo.duration?.toFixed(1)}s
-            </Text>
+            <TouchableOpacity
+              onPress={onClearVideo}
+              accessibilityLabel="Remove selected video"
+              accessibilityRole="button"
+              style={styles.videoDismissButton}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Ionicons name="close" size={18} color={colors.textSecondary} />
+            </TouchableOpacity>
           </View>
-          <TouchableOpacity
-            onPress={onClearVideo}
-            accessibilityLabel="Remove selected video"
-            accessibilityRole="button"
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-          >
-            <Ionicons name="close-circle" size={24} color={colors.error} />
-          </TouchableOpacity>
         </View>
       )}
 
@@ -103,12 +106,20 @@ const styles = StyleSheet.create({
     borderTopColor: colors.borderSubtle,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
-    backgroundColor: colors.surfaceMuted,
+    backgroundColor: colors.background,
+  },
+  videoCard: {
+    backgroundColor: colors.surface,
+    borderRadius: borderRadius.lg,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    marginBottom: spacing.md,
   },
   videoPreviewRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: spacing.md,
   },
   videoThumb: {
     width: 56,
@@ -133,15 +144,31 @@ const styles = StyleSheet.create({
     fontSize: typography.fontSizes.sm,
     color: colors.textSecondary,
   },
+  videoDismissButton: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+    backgroundColor: colors.surfaceMuted,
+  },
   composerRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+    borderRadius: borderRadius.xl,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
   },
   attachButton: {
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: colors.surface,
+    backgroundColor: colors.surfaceMuted,
     borderWidth: 1,
     borderColor: colors.borderSubtle,
     justifyContent: 'center',
@@ -151,12 +178,8 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 44,
     maxHeight: 140,
-    paddingHorizontal: spacing.lg,
+    paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
-    borderRadius: borderRadius.xl,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.borderSubtle,
     marginHorizontal: spacing.md,
     color: colors.text,
     fontSize: typography.fontSizes.base,

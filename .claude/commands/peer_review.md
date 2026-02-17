@@ -6,7 +6,7 @@ A different team lead within the company has reviewed the current code/implement
 
 Findings from peer review:
 
-[PASTE FEEDBACK FROM OTHER MODEL]
+[paste here]
 
 ---
 

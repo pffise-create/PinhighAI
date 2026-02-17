@@ -5,7 +5,7 @@
 | --- | --- | --- | --- | --- |
 | `golf-video-upload-handler` | Seeds a swing-analysis job, validates JWT, and kicks off downstream processing. | API Gateway `POST /api/video/analyze` body `{ s3Key, bucketName }`; optional Cognito bearer token for authenticated users. | `DYNAMODB_TABLE`, `FRAME_EXTRACTOR_FUNCTION_NAME` (defaults to `golf-coach-frame-extractor-simple`), `AI_ANALYSIS_PROCESSOR_FUNCTION_NAME`, `COGNITO_REGION`, `COGNITO_USER_POOL_ID`, `COGNITO_APP_CLIENT_ID`, `JWKS_REQUEST_TIMEOUT_MS` / `HTTP_REQUEST_TIMEOUT_MS`. | `AWS/src/api-handlers/video-upload-handler.js:381` |
 | `golf-frame-extractor-simple` | Downloads swing video, extracts frames via ffmpeg layer, stores frame metadata, and notifies the AI processor. | Async `Invoke` from video upload Lambda; also accepts direct `ObjectCreated` S3 events (`Records[0].s3.*`). | `DYNAMODB_TABLE` (default `golf-coach-analyses`), `AI_ANALYSIS_PROCESSOR_FUNCTION_NAME` (default `golf-ai-analysis-processor`), S3 read/write, ffmpeg layer. | `AWS/src/frame-extractor/lambda_function.py:14` |
-| `golf-ai-analysis-processor` | Fetches extracted frames, batches them through GPT-4o, and persists consolidated coaching output. | Direct Lambda invoke payload `{ analysis_id, user_id }`; optional SQS (`aws:sqs`) or legacy DynamoDB stream events. | `DYNAMODB_TABLE`, `USER_THREADS_TABLE`, `OPENAI_API_KEY`, `HTTP_REQUEST_TIMEOUT_MS`. | `AWS/src/ai-analysis/ai-analysis-processor.js:591` |
+| `golf-ai-analysis-processor` | Fetches extracted frames, batches them through GPT-5 vision, and persists consolidated coaching output. | Direct Lambda invoke payload `{ analysis_id, user_id }`; optional SQS (`aws:sqs`) or legacy DynamoDB stream events. | `DYNAMODB_TABLE`, `USER_THREADS_TABLE`, `OPENAI_API_KEY`, `HTTP_REQUEST_TIMEOUT_MS`. | `AWS/src/ai-analysis/ai-analysis-processor.js:591` |
 | `golf-results-api-handler` | Returns analysis status and payloads for polling clients. | API Gateway `GET /api/video/results/{jobId}`. | `DYNAMODB_TABLE`. | `AWS/src/api-handlers/results-api-handler.js:135` |
 | `golf-chat-api-handler` | Conversational endpoint that reuses per-user OpenAI threads and applies Cognito auth. | API Gateway `POST /api/chat` with `{ message }`; accepts Cognito JWT for user context. | `USER_THREADS_TABLE`, `OPENAI_API_KEY`, `COGNITO_REGION`, `COGNITO_USER_POOL_ID`, `COGNITO_APP_CLIENT_ID`, `HTTP_REQUEST_TIMEOUT_MS`, optional `GOLF_COACH_ASSISTANT_ID`. | `AWS/src/api-handlers/chat-api-handler.js:511` |
 | `golf-presigned-url-generator` *(external)* | Issues presigned S3 upload URLs for the mobile client. | API Gateway `POST /api/video/presigned-url`. | S3 signer role (function code lives outside this repository - confirm before changes). | _not in repo_ |
@@ -69,7 +69,7 @@ flowchart TD
     UploadLambda --> FrameLambda[golf-frame-extractor-simple]
     FrameLambda --> FrameWork[Extract frames + upload to S3<br/>status=COMPLETED + analysis_results]
     FrameWork --> AIInvoke[`golf-ai-analysis-processor`]
-    AIInvoke --> OpenAI[OpenAI GPT-4o batches + consolidation]
+    AIInvoke --> OpenAI[OpenAI GPT-5 batches + consolidation]
     OpenAI --> DynamoFinalize[(Update Dynamo<br/>ai_analysis + status=AI_COMPLETED)]
     DynamoFinalize --> ResultsPoll[GET /api/video/results/{jobId}]
 ```
@@ -86,6 +86,7 @@ Optional future path: frame extractor can enqueue jobs on `golf-coach-ai-analysi
 - SQS queues are provisioned but not wired into the running workflow; decide whether to finish that integration or keep direct invocations.
 - **Swing profiles now implemented** via `golf-coach-swing-profiles` table and `AWS/src/data/swingProfileRepository.js`. The `get_user_swing_profile` tool is wired into the chat loop.
 - Chat history lives inside OpenAI Threads; Dynamo keeps only thread metadata.
+- Prompt logic is not fully centralized yet: chat loop uses `AWS/src/prompts/coachingSystemPrompt.js`, while video analysis currently uses inline prompts in `AWS/src/ai-analysis/ai-analysis-processor.js`.
 - Legacy monolithic Lambda remains in the repo for reference but should stay dormant to avoid regressions.
 
 

@@ -1,11 +1,16 @@
 // Chat API Handler - Focused Lambda for handling chat requests with user threading
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient, GetCommand, PutCommand } = require('@aws-sdk/lib-dynamodb');
+const { SecretsManagerClient, GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');
+const { executeChatLoop } = require('../chat/chatLoop');
 const https = require('https');
-const crypto = require('crypto');
 
 // Initialize clients
 let dynamodb = null;
+let secretsManager = null;
+let cachedOpenAIKey = null;
+const CHAT_LOOP_ENABLED = process.env.CHAT_LOOP_ENABLED === 'true';
+const HTTP_REQUEST_TIMEOUT_MS = parseInt(process.env.HTTP_REQUEST_TIMEOUT_MS || '8000', 10);
 
 function getDynamoClient() {
   if (!dynamodb) {
@@ -15,16 +20,39 @@ function getDynamoClient() {
   return dynamodb;
 }
 
-// HTTP request helper function
-const DEFAULT_HTTPS_TIMEOUT_MS = parseInt(process.env.HTTP_REQUEST_TIMEOUT_MS || '15000', 10);
+function getSecretsManagerClient() {
+  if (!secretsManager) {
+    secretsManager = new SecretsManagerClient({});
+  }
+  return secretsManager;
+}
 
-function makeHttpsRequest(options, data = null, timeoutMs = DEFAULT_HTTPS_TIMEOUT_MS) {
+async function ensureOpenAIKey() {
+  if (cachedOpenAIKey) return cachedOpenAIKey;
+  if (process.env.OPENAI_API_KEY) {
+    cachedOpenAIKey = process.env.OPENAI_API_KEY;
+    return cachedOpenAIKey;
+  }
+  const secretId = process.env.OPENAI_SECRET_NAME || process.env.OPENAI_SECRET_ARN;
+  if (!secretId) {
+    throw new Error('OPENAI_API_KEY not configured. Set OPENAI_SECRET_NAME or OPENAI_SECRET_ARN.');
+  }
+  const sm = getSecretsManagerClient();
+  const resp = await sm.send(new GetSecretValueCommand({ SecretId: secretId }));
+  if (!resp.SecretString) {
+    throw new Error('OpenAI secret is empty');
+  }
+  cachedOpenAIKey = resp.SecretString;
+  process.env.OPENAI_API_KEY = resp.SecretString;
+  return cachedOpenAIKey;
+}
+
+// HTTP request helper function
+function makeHttpsRequest(options, data = null) {
   return new Promise((resolve, reject) => {
-    const requestOptions = { ...options };
-    const req = https.request(requestOptions, (res) => {
+    const req = https.request(options, (res) => {
       let body = '';
-      res.setEncoding('utf8');
-      res.on('data', (chunk) => { body += chunk; });
+      res.on('data', (chunk) => body += chunk);
       res.on('end', () => {
         if (res.statusCode >= 200 && res.statusCode < 300) {
           resolve(body);
@@ -33,223 +61,89 @@ function makeHttpsRequest(options, data = null, timeoutMs = DEFAULT_HTTPS_TIMEOU
         }
       });
     });
-
+    
     req.on('error', reject);
-    req.setTimeout(timeoutMs, () => {
-      const host = requestOptions.hostname || requestOptions.host || 'unknown-host';
-      const path = requestOptions.path || '';
-      req.destroy(new Error(`Request to ${host}${path} timed out after ${timeoutMs}ms`));
+    req.setTimeout(HTTP_REQUEST_TIMEOUT_MS, () => {
+      req.destroy(new Error(`Request to ${options.hostname}${options.path} timed out after ${HTTP_REQUEST_TIMEOUT_MS}ms`));
     });
-
+    
     if (data) {
       req.write(data);
     }
-
+    
     req.end();
   });
-}
-const JWKS_CACHE_TTL_MS = 1000 * 60 * 60 * 6;
-let cachedJwks = null;
-let cachedJwksExpiresAt = 0;
-
-function decodeJwtSegment(segment, label) {
-  try {
-    return JSON.parse(Buffer.from(segment, 'base64url').toString('utf8'));
-  } catch (error) {
-    throw new Error(`Invalid ${label} segment`);
-  }
-}
-
-async function fetchJsonWithRequest(url, timeoutMs = DEFAULT_HTTPS_TIMEOUT_MS) {
-  const parsed = new URL(url);
-  const responseBody = await makeHttpsRequest({
-    hostname: parsed.hostname,
-    path: `${parsed.pathname}${parsed.search}`,
-    method: 'GET',
-    headers: { 'Accept': 'application/json' }
-  }, null, timeoutMs);
-
-  try {
-    return JSON.parse(responseBody);
-  } catch (error) {
-    throw new Error(`Failed to parse JSON from ${url}: ${error.message}`);
-  }
-}
-
-async function getJwks() {
-  const now = Date.now();
-  if (cachedJwks && cachedJwksExpiresAt > now) {
-    return cachedJwks;
-  }
-
-  const region = process.env.COGNITO_REGION;
-  const userPoolId = process.env.COGNITO_USER_POOL_ID;
-  if (!region || !userPoolId) {
-    throw new Error('Cognito configuration missing. Set COGNITO_REGION and COGNITO_USER_POOL_ID.');
-  }
-
-  const jwksUrl = `https://cognito-idp.${region}.amazonaws.com/${userPoolId}/.well-known/jwks.json`;
-  const jwks = await fetchJsonWithRequest(jwksUrl, Math.min(DEFAULT_HTTPS_TIMEOUT_MS, 5000));
-
-  cachedJwks = jwks;
-  cachedJwksExpiresAt = now + JWKS_CACHE_TTL_MS;
-  return jwks;
-}
-
-async function verifyAndDecodeJwt(token) {
-  const parts = token.split('.');
-  if (parts.length !== 3) {
-    throw new Error('Invalid JWT format');
-  }
-
-  const header = decodeJwtSegment(parts[0], 'header');
-  const payload = decodeJwtSegment(parts[1], 'payload');
-
-  if (header.alg !== 'RS256') {
-    throw new Error(`Unsupported JWT algorithm: ${header.alg}`);
-  }
-
-  const jwks = await getJwks();
-  const matchingKey = jwks.keys?.find((key) => key.kid === header.kid);
-  if (!matchingKey) {
-    throw new Error('Unable to find matching signing key for token');
-  }
-
-  let publicKey;
-  try {
-    publicKey = crypto.createPublicKey({ key: matchingKey, format: 'jwk' });
-  } catch (error) {
-    throw new Error(`Failed to construct public key: ${error.message}`);
-  }
-
-  const verifier = crypto.createVerify('RSA-SHA256');
-  verifier.update(`${parts[0]}.${parts[1]}`);
-  verifier.end();
-
-  const signature = Buffer.from(parts[2], 'base64url');
-  if (!verifier.verify(publicKey, signature)) {
-    throw new Error('Invalid JWT signature');
-  }
-
-  const region = process.env.COGNITO_REGION;
-  const userPoolId = process.env.COGNITO_USER_POOL_ID;
-  const issuer = `https://cognito-idp.${region}.amazonaws.com/${userPoolId}`;
-  if (payload.iss !== issuer) {
-    throw new Error('Token issuer mismatch');
-  }
-
-  const expectedClientId = process.env.COGNITO_APP_CLIENT_ID;
-  if (expectedClientId && payload.aud !== expectedClientId && payload.client_id !== expectedClientId) {
-    throw new Error('Token not issued for expected client');
-  }
-
-  if (!payload.exp || payload.exp * 1000 < Date.now()) {
-    throw new Error('Token has expired');
-  }
-
-  return payload;
-}
-
-function buildUserContextFromPayload(payload) {
-  return {
-    isAuthenticated: true,
-    userId: payload.sub,
-    email: payload.email || payload.username || payload['cognito:username'] || null,
-    name: payload.name || payload.email || payload.username || payload['cognito:username'] || 'Authenticated User',
-    username: payload.username || payload['cognito:username'] || payload.email || payload.sub,
-    userType: 'authenticated'
-  };
-}
-
-const CHAT_ASSISTANT_INSTRUCTIONS = `You are Pin High, an AI-powered golf coach and supportive golf buddy with Tour-level analysis. The golfer is typically an 8-25 handicapper. Keep the tone conversational, encouraging, and a little playful while staying deeply knowledgeable. Diagnose underlying fundamentals rather than just symptoms. Reference earlier swings, drills, and feedback whenever it helps the player feel you remember their journey. Explain what the body and club are doing and why, using plain language with precise golf terms when helpful. Offer tailored drills or feels, encourage iterative progress, and avoid deterministic absolutes--guide them toward self-discovery. Ask occasional pro-level engagement questions (for example about miss pattern, contact quality, or feels) to deepen the diagnosis and keep the session interactive.`;
-
-let cachedAssistantId = null;
-
-async function getOrCreateAssistant() {
-  if (process.env.GOLF_COACH_ASSISTANT_ID) {
-    return process.env.GOLF_COACH_ASSISTANT_ID;
-  }
-
-  if (cachedAssistantId) {
-    return cachedAssistantId;
-  }
-
-  try {
-    const assistantPayload = {
-      name: 'Pin High Swing Coach',
-      instructions: CHAT_ASSISTANT_INSTRUCTIONS,
-      model: 'gpt-4o-mini',
-      tools: []
-    };
-
-    const assistantResponse = await makeHttpsRequest({
-      hostname: 'api.openai.com',
-      path: '/v1/assistants',
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json',
-        'OpenAI-Beta': 'assistants=v2'
-      }
-    }, JSON.stringify(assistantPayload));
-
-    const assistant = JSON.parse(assistantResponse);
-    cachedAssistantId = assistant.id;
-    console.log('Created new assistant for chat:', cachedAssistantId);
-    return cachedAssistantId;
-  } catch (error) {
-    console.error('Failed to create chat assistant:', error);
-    throw new Error('Unable to obtain assistant id. Set GOLF_COACH_ASSISTANT_ID env var or allow creation.');
-  }
-}
-
-function getGuestContext() {
-  return {
-    isAuthenticated: false,
-    userId: 'guest-user',
-    email: null,
-    name: 'Guest User',
-    userType: 'guest'
-  };
 }
 
 // Extract user context from event with JWT validation
 async function extractUserContext(event) {
   console.log('EXTRACT USER CONTEXT: Starting JWT validation');
-
-  const guestContext = getGuestContext();
-
+  
   try {
+    // Check for Authorization header
     const authHeader = event.headers?.Authorization || event.headers?.authorization;
-
+    
     if (authHeader && authHeader.startsWith('Bearer ')) {
-      const token = authHeader.substring(7);
-      console.log('AUTH HEADER: Found JWT token, verifying...');
-
+      const token = authHeader.substring(7); // Remove 'Bearer ' prefix
+      console.log('AUTH HEADER: Found JWT token, validating...');
+      
       try {
-        const payload = await verifyAndDecodeJwt(token);
-        const authenticatedContext = buildUserContextFromPayload(payload);
-
+        // Decode JWT token (basic parsing without verification for now)
+        const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
+        
+        console.log('JWT PAYLOAD: Extracted user info from token');
+        
+        // Extract user information from Cognito JWT
+        const authenticatedContext = {
+          isAuthenticated: true,
+          userId: payload.sub, // Cognito user ID (consistent across all tokens)
+          email: payload.email || null,
+          name: payload.name || payload.email || payload.username || 'Authenticated User',
+          username: payload.username || payload['cognito:username'],
+          userType: 'authenticated'
+        };
+        
         console.log('USER CONTEXT: Returning authenticated context:', {
-          userId: authenticatedContext.userId,
-          email: authenticatedContext.email,
-          userType: authenticatedContext.userType
+          ...authenticatedContext,
+          userId: authenticatedContext.userId // Show userId for debugging
         });
-
+        
         return authenticatedContext;
+        
       } catch (jwtError) {
-        console.error('JWT VERIFICATION ERROR:', jwtError.message);
+        console.error('JWT PARSING ERROR:', jwtError.message);
+        // Fall through to guest mode
       }
     } else {
       console.log('AUTH HEADER: No Bearer token found');
     }
+    
+    // Fall back to guest user context
+    console.log('USER CONTEXT: Falling back to guest mode');
+    const guestContext = {
+      isAuthenticated: false,
+      userId: 'guest-user', // Use consistent guest ID
+      email: null,
+      name: 'Guest User',
+      userType: 'guest'
+    };
+    
+    return guestContext;
+    
   } catch (error) {
     console.error('ERROR extracting user context:', error);
+    
+    // Always return valid context, even on error
+    return {
+      isAuthenticated: false,
+      userId: 'guest-user', // Consistent fallback
+      email: null,
+      name: 'Guest User',
+      userType: 'guest'
+    };
   }
-
-  console.log('USER CONTEXT: Falling back to guest mode');
-  return guestContext;
 }
+
 // Get user thread data from DynamoDB
 async function getUserThread(userId) {
   try {
@@ -308,7 +202,109 @@ async function storeUserThread(userId, threadData) {
 }
 
 // Handle chat request with user threading
+async function handleChatLoopRequest(event, userContext) {
+  let body;
+  try {
+    body = typeof event.body === 'string' ? JSON.parse(event.body) : (event.body || {});
+  } catch (error) {
+    throw new Error('Invalid JSON body');
+  }
+
+  const message = typeof body.message === 'string' ? body.message.trim() : '';
+  if (!message) {
+    return {
+      statusCode: 400,
+      headers: {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*'
+      },
+      body: JSON.stringify({
+        error: 'Message is required',
+        success: false,
+        timestamp: new Date().toISOString()
+      })
+    };
+  }
+
+  const userId = userContext.userId;
+  const dynamodbClient = getDynamoClient();
+  const logger = {
+    debug: (...args) => console.debug('CHAT_LOOP_DEBUG', ...args),
+    warn: (...args) => console.warn('CHAT_LOOP_WARN', ...args),
+    error: (...args) => console.error('CHAT_LOOP_ERROR', ...args)
+  };
+
+  const requestOpenAi = async (payload) => callChatCompletions(payload);
+  const result = await executeChatLoop({
+    userId,
+    userMessage: message,
+    dynamoClient: dynamodbClient,
+    requestOpenAi,
+    logger
+  });
+
+  return {
+    statusCode: 200,
+    headers: {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*'
+    },
+    body: JSON.stringify({
+      response: result.reply,
+      message: result.reply,
+      success: true,
+      timestamp: new Date().toISOString()
+    })
+  };
+}
+async function callChatCompletions(payload) {
+  if (!process.env.OPENAI_API_KEY) {
+    throw new Error('OPENAI_API_KEY is not configured');
+  }
+
+  const requestBody = JSON.stringify(payload);
+  const responseBody = await makeHttpsRequest({
+    hostname: 'api.openai.com',
+    path: '/v1/chat/completions',
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer ' + process.env.OPENAI_API_KEY,
+      'Content-Type': 'application/json'
+    }
+  }, requestBody);
+
+  try {
+    return JSON.parse(responseBody);
+  } catch (error) {
+    throw new Error('Failed to parse OpenAI chat response: ' + error.message);
+  }
+}
+
+
 async function handleChatRequest(event, userContext) {
+  if (CHAT_LOOP_ENABLED) {
+    try {
+      return await handleChatLoopRequest(event, userContext);
+    } catch (loopError) {
+      console.error('CHAT LOOP ERROR:', loopError);
+      const fallbackMessage = "I'm working through a small glitch. Please try your question again in a moment.";
+      return {
+        statusCode: 200,
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*'
+        },
+        body: JSON.stringify({
+          response: fallbackMessage,
+          message: fallbackMessage,
+          success: true,
+          fallback: true,
+          timestamp: new Date().toISOString()
+        })
+      };
+    }
+  }
+
   try {
     console.log('Starting user thread chat continuation...');
     
@@ -405,8 +401,7 @@ async function handleChatRequest(event, userContext) {
     }, JSON.stringify({
       assistant_id: assistantId,
       max_completion_tokens: 1500,
-      temperature: 0.7,
-      instructions: CHAT_ASSISTANT_INSTRUCTIONS
+      temperature: 0.7
     }));
     
     const run = JSON.parse(runResponse);
@@ -509,13 +504,22 @@ async function handleChatRequest(event, userContext) {
 
 // Main Lambda handler
 exports.handler = async (event) => {
-  console.log('CHAT API HANDLER - Event:', JSON.stringify(event, null, 2));
+  console.log('CHAT API HANDLER - Event summary:', {
+    path: event?.path,
+    method: event?.httpMethod,
+    hasBody: !!event?.body,
+    hasAuth: !!(event?.headers?.Authorization || event?.headers?.authorization),
+  });
   console.log('CHAT API HANDLER - Environment Check:', {
     hasOpenAIKey: !!process.env.OPENAI_API_KEY,
-    userThreadsTable: process.env.USER_THREADS_TABLE
+    userThreadsTable: process.env.USER_THREADS_TABLE,
+    chatLoopEnabled: CHAT_LOOP_ENABLED,
+    httpTimeoutMs: HTTP_REQUEST_TIMEOUT_MS,
   });
   
   try {
+    await ensureOpenAIKey();
+    
     // Extract user context from the request
     const userContext = await extractUserContext(event);
     console.log('USER CONTEXT:', userContext);
@@ -553,12 +557,3 @@ exports.handler = async (event) => {
     };
   }
 };
-
-
-
-
-
-
-
-
-

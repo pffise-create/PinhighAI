@@ -2,30 +2,44 @@
 import React from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { colors, typography, spacing } from '../../utils/theme';
+import { colors, typography, spacing, borderRadius } from '../../utils/theme';
 
 const ChatHeader = ({ onSettingsPress }) => (
-  <View style={styles.header}>
-    <Text style={styles.title}>PinHigh</Text>
-    <TouchableOpacity
-      style={styles.settingsButton}
-      onPress={onSettingsPress}
-      accessibilityLabel="Open settings"
-      accessibilityRole="button"
-      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-    >
-      <Ionicons name="settings-outline" size={20} color={colors.textSecondary} />
-    </TouchableOpacity>
+  <View style={styles.container}>
+    <View style={styles.header}>
+      <View>
+        <Text style={styles.title}>PinHigh Coach</Text>
+        <View style={styles.statusRow}>
+          <View style={styles.statusDot} />
+          <Text style={styles.statusText}>Online</Text>
+        </View>
+      </View>
+      <TouchableOpacity
+        style={styles.settingsButton}
+        onPress={onSettingsPress}
+        accessibilityLabel="Open settings"
+        accessibilityRole="button"
+        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+      >
+        <Ionicons name="settings-outline" size={20} color={colors.textSecondary} />
+      </TouchableOpacity>
+    </View>
   </View>
 );
 
 const styles = StyleSheet.create({
+  container: {
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.sm,
+    backgroundColor: colors.background,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.borderSubtle,
+  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md,
   },
   title: {
     fontSize: typography.fontSizes.lg,
@@ -33,10 +47,26 @@ const styles = StyleSheet.create({
     color: colors.primary,
     letterSpacing: -0.3,
   },
+  statusRow: {
+    marginTop: spacing.xs,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  statusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: colors.success,
+    marginRight: spacing.xs,
+  },
+  statusText: {
+    color: colors.textSecondary,
+    fontSize: typography.fontSizes.sm,
+  },
   settingsButton: {
     width: 44,
     height: 44,
-    borderRadius: 22,
+    borderRadius: borderRadius.md,
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: colors.surface,

@@ -1,12 +1,24 @@
-// AI Analysis Processor - Focused Lambda for processing completed frame extractions with Amazon Bedrock
+// AI Analysis Processor - Focused Lambda for processing completed frame extractions with OpenAI vision models
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient, GetCommand, UpdateCommand, PutCommand } = require('@aws-sdk/lib-dynamodb');
+const { unmarshall } = require('@aws-sdk/util-dynamodb');
 const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
+const { SecretsManagerClient, GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');
 const https = require('https');
-
+const swingRepository = require('../data/swingRepository');
+const { buildDeveloperContext } = require('../prompts/coachingSystemPrompt');
+const swingProfileRepository = require('../data/swingProfileRepository');
 // Initialize clients
 let dynamodb = null;
 let s3Client = null;
+let secretsManager = null;
+let cachedOpenAIKey = null;
+const HTTP_REQUEST_TIMEOUT_MS = parseInt(process.env.HTTP_REQUEST_TIMEOUT_MS || '45000', 10);
+const AI_ANALYSIS_MODEL = process.env.AI_ANALYSIS_MODEL || 'gpt-4o-mini';
+const MAX_ANALYSIS_FRAMES = Math.max(6, Math.min(parseInt(process.env.MAX_ANALYSIS_FRAMES || '12', 10), 20));
+const IN_FLIGHT_LOCK_MS = Math.max(60_000, parseInt(process.env.AI_ANALYSIS_IN_FLIGHT_LOCK_MS || '600000', 10));
+const PRIOR_SWING_CONTEXT_LIMIT = Math.max(1, Math.min(parseInt(process.env.AI_ANALYSIS_CONTEXT_SWINGS || '3', 10), 5));
+const DYNAMO_ATTRIBUTE_KEYS = new Set(['S', 'N', 'BOOL', 'NULL', 'M', 'L', 'SS', 'NS', 'BS', 'B']);
 
 function getDynamoClient() {
   if (!dynamodb) {
@@ -21,6 +33,33 @@ function getS3Client() {
     s3Client = new S3Client({});
   }
   return s3Client;
+}
+
+function getSecretsManagerClient() {
+  if (!secretsManager) {
+    secretsManager = new SecretsManagerClient({});
+  }
+  return secretsManager;
+}
+
+async function ensureOpenAIKey() {
+  if (cachedOpenAIKey) return cachedOpenAIKey;
+  if (process.env.OPENAI_API_KEY) {
+    cachedOpenAIKey = process.env.OPENAI_API_KEY;
+    return cachedOpenAIKey;
+  }
+  const secretId = process.env.OPENAI_SECRET_NAME || process.env.OPENAI_SECRET_ARN;
+  if (!secretId) {
+    throw new Error('OPENAI_API_KEY not configured. Set OPENAI_SECRET_NAME or OPENAI_SECRET_ARN.');
+  }
+  const sm = getSecretsManagerClient();
+  const resp = await sm.send(new GetSecretValueCommand({ SecretId: secretId }));
+  if (!resp.SecretString) {
+    throw new Error('OpenAI secret is empty');
+  }
+  cachedOpenAIKey = resp.SecretString;
+  process.env.OPENAI_API_KEY = resp.SecretString;
+  return cachedOpenAIKey;
 }
 
 // HTTP request helper for OpenAI API
@@ -39,6 +78,9 @@ function makeHttpsRequest(options, data = null) {
     });
     
     req.on('error', reject);
+    req.setTimeout(HTTP_REQUEST_TIMEOUT_MS, () => {
+      req.destroy(new Error(`Request to ${options.hostname}${options.path} timed out after ${HTTP_REQUEST_TIMEOUT_MS}ms`));
+    });
     
     if (data) {
       req.write(data);
@@ -46,6 +88,116 @@ function makeHttpsRequest(options, data = null) {
     
     req.end();
   });
+}
+
+function isDynamoAttributeValue(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const keys = Object.keys(value);
+  if (keys.length === 0) {
+    return false;
+  }
+  return keys.every((key) => DYNAMO_ATTRIBUTE_KEYS.has(key));
+}
+
+function looksLikeMarshalledItem(item) {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) {
+    return false;
+  }
+  return Object.values(item).some((value) => isDynamoAttributeValue(value));
+}
+
+function normalizeDynamoItem(item) {
+  if (!item || typeof item !== 'object') {
+    return item;
+  }
+  if (!looksLikeMarshalledItem(item)) {
+    return item;
+  }
+
+  try {
+    return unmarshall(item);
+  } catch (error) {
+    console.warn('Failed to unmarshall DynamoDB item, continuing with raw item:', error.message);
+    return item;
+  }
+}
+
+function normalizeAnalysisResults(analysisResults) {
+  if (!analysisResults) {
+    return null;
+  }
+
+  if (typeof analysisResults === 'string') {
+    try {
+      return JSON.parse(analysisResults);
+    } catch (error) {
+      console.warn('Failed to parse string analysis_results payload:', error.message);
+      return null;
+    }
+  }
+
+  if (isDynamoAttributeValue(analysisResults)) {
+    try {
+      return unmarshall({ analysis_results: analysisResults }).analysis_results || null;
+    } catch (error) {
+      console.warn('Failed to unmarshall analysis_results attribute value:', error.message);
+      return null;
+    }
+  }
+
+  return analysisResults;
+}
+
+function normalizeFrame(frame) {
+  if (!frame) {
+    return null;
+  }
+
+  let normalized = frame;
+  if (isDynamoAttributeValue(frame)) {
+    try {
+      normalized = unmarshall({ frame }).frame;
+    } catch (error) {
+      console.warn('Failed to unmarshall frame value:', error.message);
+      return null;
+    }
+  }
+
+  if (!normalized || typeof normalized !== 'object') {
+    return null;
+  }
+
+  const phase = normalized.phase || normalized.frame_id || normalized.id;
+  const url = normalized.url || normalized.frame_url || normalized.image_url;
+
+  if (!phase || !url) {
+    return null;
+  }
+
+  return { ...normalized, phase, url };
+}
+
+function extractFrameData(fullSwingData) {
+  const analysisResults = normalizeAnalysisResults(
+    fullSwingData?.analysis_results || fullSwingData?.analysisResults
+  );
+
+  const rawFrames =
+    analysisResults?.frames ||
+    fullSwingData?.frames ||
+    fullSwingData?.frame_data ||
+    [];
+
+  const frames = Array.isArray(rawFrames)
+    ? rawFrames.map(normalizeFrame).filter(Boolean)
+    : [];
+
+  return {
+    analysisResults,
+    frames
+  };
 }
 
 
@@ -197,202 +349,228 @@ You can ask me questions about this analysis or request tips for improvement!`;
   }
 }
 
-// Main AI analysis function using OpenAI GPT-4o
-async function analyzeSwingWithVisionModel(frameData, swingData) {
-  try {
-    console.log('Starting analyzeSwingWithVisionModel function with OpenAI GPT-4o');
+function selectFramesForAnalysis(frames, maxFrames) {
+  if (!Array.isArray(frames) || frames.length === 0) {
+    return [];
+  }
 
-    // Extract userId from swingData
+  if (frames.length <= maxFrames) {
+    return frames;
+  }
+
+  const selected = [];
+  const usedIndexes = new Set();
+  const denominator = Math.max(maxFrames - 1, 1);
+
+  for (let i = 0; i < maxFrames; i++) {
+    const rawIndex = Math.round((i * (frames.length - 1)) / denominator);
+    let idx = Math.min(Math.max(rawIndex, 0), frames.length - 1);
+
+    while (usedIndexes.has(idx) && idx < frames.length - 1) {
+      idx += 1;
+    }
+    while (usedIndexes.has(idx) && idx > 0) {
+      idx -= 1;
+    }
+
+    usedIndexes.add(idx);
+    selected.push(frames[idx]);
+  }
+
+  return selected.sort((a, b) => {
+    const aPhase = a?.phase || '';
+    const bPhase = b?.phase || '';
+    return aPhase.localeCompare(bPhase);
+  });
+}
+
+function readAssistantMessageContent(message) {
+  const content = message?.content;
+  if (typeof content === 'string') {
+    return content;
+  }
+
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === 'string') {
+          return part;
+        }
+        if (part?.type === 'text' && typeof part.text === 'string') {
+          return part.text;
+        }
+        return '';
+      })
+      .filter(Boolean)
+      .join('\n')
+      .trim();
+  }
+
+  return '';
+}
+
+async function gatherDeveloperContext({ userId, analysisId, dynamoClient }) {
+  if (!userId) {
+    return null;
+  }
+
+  const swings = await swingRepository.getLastAnalyzedSwings({
+    userId,
+    limit: PRIOR_SWING_CONTEXT_LIMIT + 1,
+    client: dynamoClient,
+  });
+
+  if (!Array.isArray(swings) || swings.length === 0) {
+    return null;
+  }
+
+  const recentPriorSwings = swings
+    .filter((swing) => (swing.analysisId || swing.analysis_id) !== analysisId)
+    .slice(0, PRIOR_SWING_CONTEXT_LIMIT);
+
+  if (recentPriorSwings.length === 0) {
+    return null;
+  }
+
+  const derivedProfile =
+    recentPriorSwings[0]?.analysisResults?.user_context ||
+    recentPriorSwings[0]?.analysis_results?.user_context ||
+    null;
+
+  return buildDeveloperContext({
+    swings: recentPriorSwings,
+    swingProfile: derivedProfile,
+  });
+}
+
+// Main AI analysis function using OpenAI GPT-5
+async function analyzeSwingWithGPT5(frameData, swingData) {
+  try {
+    console.log(`Starting swing analysis with model ${AI_ANALYSIS_MODEL}`);
+
     const analysisId = swingData.analysis_id;
     const userId = swingData.user_id;
-    
-    console.log(`Processing swing analysis for user: ${userId}`);
-    
-    // Process all frames from frameData.frame_urls
+
     const allFrameUrls = frameData.frame_urls || {};
     const allFrames = Object.keys(allFrameUrls).sort().map(frameKey => ({
       phase: frameKey,
       url: allFrameUrls[frameKey]
     }));
-    
+
     if (allFrames.length === 0) {
       throw new Error('No valid frame URLs found for analysis');
     }
-    
-    console.log(`Converting ${allFrames.length} frames to base64 for GPT-4o analysis`);
-    
-    // Download and convert all frames to base64
-    const base64Images = [];
-    for (const frame of allFrames) {
+
+    const modelFrameLimit = AI_ANALYSIS_MODEL.startsWith('gpt-5')
+      ? Math.min(MAX_ANALYSIS_FRAMES, 10)
+      : MAX_ANALYSIS_FRAMES;
+    const selectedFrames = selectFramesForAnalysis(allFrames, modelFrameLimit);
+    console.log(`Selected ${selectedFrames.length}/${allFrames.length} frames for model inference`);
+
+    const selectedFrameImages = [];
+    for (const frame of selectedFrames) {
       try {
         console.log(`Processing frame: ${frame.phase}`);
         const base64Image = await downloadAndCompressImage(frame.url);
-        base64Images.push({
+        selectedFrameImages.push({
           phase: frame.phase,
           image: base64Image
         });
-        console.log(`Successfully converted frame ${frame.phase} to base64`);
       } catch (error) {
         console.error(`Failed to process frame ${frame.phase}:`, error.message);
       }
     }
-    
-    if (base64Images.length === 0) {
+
+    if (selectedFrameImages.length === 0) {
       throw new Error('No frame images could be converted');
     }
-    
-    console.log(`Successfully prepared ${base64Images.length} frames for GPT-4o analysis`);
-    
-    // GPT-4o has a 10-image limit, so we need to batch the frames
-    const batchSize = 10;
-    const batches = [];
-    for (let i = 0; i < base64Images.length; i += batchSize) {
-      batches.push(base64Images.slice(i, i + batchSize));
-    }
-    
-    console.log(`Splitting ${base64Images.length} frames into ${batches.length} batches for GPT-4o`);
-    
-    const batchTasks = batches.map((batch, batchIndex) => (async () => {
-      const isFirstBatch = batchIndex === 0;
 
-      console.log(`Processing batch ${batchIndex + 1}/${batches.length} with ${batch.length} frames`);
+    const developerContext = await gatherDeveloperContext({
+      userId,
+      analysisId,
+      dynamoClient: getDynamoClient(),
+    });
 
-      // Build the message content for this batch
-      const messageContent = [
+    const promptPrelude = developerContext
+      ? `Historical swing context JSON (use this to reference improvements/regressions when relevant): ${developerContext}`
+      : 'No prior swing context is available for this golfer.';
+
+    const messageContent = [
+      {
+        type: 'text',
+        text:
+          `${promptPrelude}\n\n` +
+          'You are a professional golf coach. Review this swing sequence and provide one cohesive coaching response. ' +
+          'Do not mention frames, image order, or internal references. ' +
+          'If evidence is insufficient, say so and ask for a clearer clip. ' +
+          'If evidence is sufficient, provide: (1) root cause, (2) 1-3 precise fixes, (3) one drill/feel. ' +
+          'Keep it concise and practical.',
+      },
+    ];
+
+    selectedFrameImages.forEach((frame, index) => {
+      messageContent.push({
+        type: 'text',
+        text: `Internal frame reference ${index + 1}: ${frame.phase}`,
+      });
+      messageContent.push({
+        type: 'image_url',
+        image_url: { url: frame.image },
+      });
+    });
+
+    const openaiRequest = {
+      model: AI_ANALYSIS_MODEL,
+      messages: [
         {
-          type: "text",
-          text: isFirstBatch 
-            ? `You are a PGA-certified golf instructor analyzing a golf swing sequence. This is batch ${batchIndex + 1} of ${batches.length} (frames ${batch[0].phase} to ${batch[batch.length-1].phase}).
+          role: 'user',
+          content: messageContent,
+        },
+      ],
+      max_completion_tokens: 900,
+      temperature: 0.2,
+    };
 
-${batches.length > 1 ? 'IMPORTANT: This is part of a multi-batch analysis. Focus on the swing elements visible in these specific frames. Your analysis will be combined with other batches.' : ''}
-
-Please provide coaching feedback focusing on:
-
-1. **Setup & Address Position**: Grip, stance, posture, alignment
-2. **Takeaway & Backswing**: Club path, wrist hinge, shoulder turn, weight shift  
-3. **Transition & Downswing**: Sequence, plane, tempo
-4. **Impact Zone**: Club face, path, body position
-5. **Follow-Through**: Extension, balance, finish position
-
-Reference specific frame phases when discussing technique. Provide actionable improvement suggestions.`
-            : `Continue analyzing the golf swing sequence. This is batch ${batchIndex + 1} of ${batches.length} (frames ${batch[0].phase} to ${batch[batch.length-1].phase}).
-
-Focus on the swing elements visible in these frames and provide specific technical feedback. Reference frame phases when discussing technique.`
-        }
-      ];
-      
-      // Add frames from this batch to the message
-      batch.forEach(frame => {
-        messageContent.push({
-          type: "text", 
-          text: `Frame: ${frame.phase}`
-        });
-        messageContent.push({
-          type: "image_url",
-          image_url: {
-            url: frame.image
-          }
-        });
-      });
-
-      console.log(`Sending batch ${batchIndex + 1} with ${batch.length} frames to gpt-4o for analysis`);
-
-      // Prepare OpenAI API request for this batch
-      const openaiRequest = {
-        model: "gpt-4o",
-        messages: [
-          {
-            role: "user",
-            content: messageContent
-          }
-        ],
-        max_completion_tokens: 2000
-      };
-      
-      console.log(`Sending gpt-4o request for batch ${batchIndex + 1}:`, JSON.stringify(openaiRequest, null, 2));
-
-      const response = await makeHttpsRequest({
-        hostname: 'api.openai.com',
-        path: '/v1/chat/completions',
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-          'Content-Type': 'application/json'
-        }
-      }, JSON.stringify(openaiRequest));
-      
-      const responseBody = JSON.parse(response);
-      
-      console.log(`gpt-4o response received for batch ${batchIndex + 1}:`, JSON.stringify(responseBody, null, 2));
-    
-      if (!responseBody.choices || !responseBody.choices[0] || !responseBody.choices[0].message) {
-        console.error(`Invalid response structure for batch ${batchIndex + 1}:`, responseBody);
-        throw new Error(`Invalid response from OpenAI gpt-4o API for batch ${batchIndex + 1}`);
-      }
-
-      const batchAnalysis = responseBody.choices[0].message.content;
-      
-      if (!batchAnalysis) {
-        console.error(`Empty analysis content for batch ${batchIndex + 1}:`, responseBody.choices[0].message);
-        throw new Error(`gpt-4o returned empty analysis content for batch ${batchIndex + 1}`);
-      }
-      
-      console.log(`Batch ${batchIndex + 1} analysis length: ${batchAnalysis.length} characters`);
-      return {
-        batchIndex: batchIndex + 1,
-        frames: batch.map(f => f.phase),
-        analysis: batchAnalysis,
-        tokensUsed: responseBody.usage?.total_tokens || 0
-      };
-    })());
-
-    const batchResults = (await Promise.all(batchTasks)).sort((a, b) => a.batchIndex - b.batchIndex);
-
-    // Combine all batch results
-    console.log(`Combining results from ${batchResults.length} batches`);
-    let combinedAnalysis = '';
-    let totalTokens = 0;
-    
-    if (batchResults.length === 1) {
-      // Single batch - use analysis directly
-      combinedAnalysis = batchResults[0].analysis;
-      totalTokens = batchResults[0].tokensUsed;
-    } else {
-      // Multiple batches - create comprehensive summary
-      combinedAnalysis = `# Golf Swing Analysis - Complete Sequence\n\n`;
-      combinedAnalysis += `*Analysis based on ${base64Images.length} frames processed in ${batchResults.length} batches*\n\n`;
-      
-      batchResults.forEach((result, index) => {
-        combinedAnalysis += `## Swing Phase Analysis ${result.batchIndex} (Frames: ${result.frames.join(', ')})\n\n`;
-        combinedAnalysis += result.analysis;
-        combinedAnalysis += '\n\n---\n\n';
-        totalTokens += result.tokensUsed;
-      });
-      
-      // Add summary conclusion
-      combinedAnalysis += `## Overall Assessment\n\nBased on the complete ${base64Images.length}-frame sequence analysis, the key areas for improvement span the entire swing motion. Focus on the specific technical points highlighted in each phase above for comprehensive swing development.\n\n`;
+    if (AI_ANALYSIS_MODEL.startsWith('gpt-5')) {
+      openaiRequest.reasoning_effort = 'minimal';
     }
-    
-    console.log(`Combined analysis length: ${combinedAnalysis.length} characters`);
-    
-    // Automatically post combined analysis to user's assistant thread
-    await addAnalysisToUserThread(userId, combinedAnalysis, analysisId);
-    
+
+    const response = await makeHttpsRequest({
+      hostname: 'api.openai.com',
+      path: '/v1/chat/completions',
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json'
+      }
+    }, JSON.stringify(openaiRequest));
+
+    const responseBody = JSON.parse(response);
+    const message = responseBody?.choices?.[0]?.message;
+    const finalAnalysis = readAssistantMessageContent(message);
+
+    if (!finalAnalysis) {
+      throw new Error('Model returned empty coaching analysis');
+    }
+
+    await addAnalysisToUserThread(userId, finalAnalysis, analysisId);
+
     return {
       success: true,
-      response: combinedAnalysis,
-      coaching_response: combinedAnalysis,
-      frames_analyzed: base64Images.length,
-      frames_skipped: 0,
+      response: finalAnalysis,
+      coaching_response: finalAnalysis,
+      frames_analyzed: selectedFrameImages.length,
+      frames_skipped: Math.max(allFrames.length - selectedFrameImages.length, 0),
       fallback_triggered: false,
       fallback_reason: null,
       skipped_frames: [],
-      tokens_used: totalTokens,
-      batches_processed: batchResults.length
+      tokens_used: responseBody?.usage?.total_tokens || 0,
+      batches_processed: 1,
+      model_used: AI_ANALYSIS_MODEL,
     };
     
   } catch (error) {
-    console.error('Error in analyzeSwingWithVisionModel:', error);
+    console.error('Error in analyzeSwingWithGPT5:', error);
     throw error;
   }
 }
@@ -438,12 +616,33 @@ async function processSwingAnalysis(swingData) {
     }
     
     console.log('Got full record from DynamoDB');
-    const fullSwingData = result.Item;
+    const fullSwingData = normalizeDynamoItem(result.Item);
+    const currentStatus = fullSwingData.status;
+    const lastUpdatedAtMs = fullSwingData.updated_at ? new Date(fullSwingData.updated_at).getTime() : null;
+    const isProcessingLockActive =
+      currentStatus === 'AI_PROCESSING' &&
+      lastUpdatedAtMs &&
+      (Date.now() - lastUpdatedAtMs) < IN_FLIGHT_LOCK_MS;
+
+    if (fullSwingData.ai_analysis_completed || currentStatus === 'AI_COMPLETED') {
+      console.log(`Skipping ${analysisId}: analysis already completed`);
+      return;
+    }
+
+    if (isProcessingLockActive) {
+      console.log(`Skipping ${analysisId}: another worker is already processing this analysis`);
+      return;
+    }
     
-    // Check if frame data exists - frames are stored directly in analysis_results
-    const frameData = fullSwingData.analysis_results?.frames;
+    // Check if frame data exists - frames can be plain JSON or marshalled DynamoDB map/list values
+    const { analysisResults, frames: frameData } = extractFrameData(fullSwingData);
     if (!frameData || frameData.length === 0) {
-      console.error(`No frame data found for analysis: ${analysisId}. Available analysis_results structure:`, JSON.stringify(fullSwingData.analysis_results, null, 2));
+      console.error(
+        `No frame data found for analysis: ${analysisId}. Available top-level keys:`,
+        Object.keys(fullSwingData || {})
+      );
+      console.error(`No frame data found for analysis: ${analysisId}. analysis_results value:`, fullSwingData.analysis_results);
+      await updateAnalysisStatus(analysisId, 'FAILED', 'AI analysis failed: no frame data found');
       return;
     }
     
@@ -459,8 +658,8 @@ async function processSwingAnalysis(swingData) {
     
     const convertedFrameData = {
       frame_urls: frame_urls,
-      video_duration: fullSwingData.analysis_results?.video_duration,
-      fps: fullSwingData.analysis_results?.fps,
+      video_duration: analysisResults?.video_duration,
+      fps: analysisResults?.fps,
       frames_extracted: frameData.length
     };
     
@@ -470,7 +669,7 @@ async function processSwingAnalysis(swingData) {
     await updateAnalysisStatus(analysisId, 'AI_PROCESSING', 'AI analysis in progress...');
     
     // Call AI analysis function
-    const aiResult = await analyzeSwingWithVisionModel(convertedFrameData, fullSwingData);
+    const aiResult = await analyzeSwingWithGPT5(convertedFrameData, fullSwingData);
     
     if (aiResult && aiResult.response) {
       console.log(`AI analysis completed successfully for: ${analysisId}`);
@@ -501,6 +700,24 @@ async function processSwingAnalysis(swingData) {
           ':frames_skipped': aiResult.frames_skipped || 0
         }
       }));
+      if (userId) {
+        const profileAnalysisResults = analysisResults
+          ? Object.fromEntries(Object.entries(analysisResults).filter(([key]) => key !== 'frames'))
+          : null;
+
+        try {
+          await swingProfileRepository.upsertFromAnalysis({
+            userId,
+            analysisId,
+            aiAnalysis: aiResult,
+            analysisResults: profileAnalysisResults,
+            client: dynamodb,
+            timestamp: new Date(),
+          });
+        } catch (profileError) {
+          console.error(`Failed to update swing profile for ${userId}:`, profileError);
+        }
+      }
       
       console.log(`🎉 Analysis fully completed for: ${analysisId}`);
     } else {
@@ -557,124 +774,102 @@ async function updateAnalysisStatus(analysisId, status, progressMessage = null) 
 
 // Main Lambda handler
 exports.handler = async (event) => {
-  console.log('AI ANALYSIS PROCESSOR - Event:', JSON.stringify(event, null, 2));
+  console.log('AI ANALYSIS PROCESSOR - Event summary:', {
+    hasAnalysisId: !!event?.analysis_id,
+    hasRecords: Array.isArray(event?.Records),
+    firstRecordSource: event?.Records?.[0]?.eventSource || null,
+  });
   console.log('AI ANALYSIS PROCESSOR - Environment Check:', {
     hasOpenAIKey: !!process.env.OPENAI_API_KEY,
     dynamoTable: process.env.DYNAMODB_TABLE,
-    userThreadsTable: process.env.USER_THREADS_TABLE
+    userThreadsTable: process.env.USER_THREADS_TABLE,
+    swingProfileTable: process.env.SWING_PROFILE_TABLE || 'golf-coach-swing-profiles',
+    model: AI_ANALYSIS_MODEL,
+    maxAnalysisFrames: MAX_ANALYSIS_FRAMES,
+    timeoutMs: HTTP_REQUEST_TIMEOUT_MS,
   });
   
   try {
-    // Handle SQS messages from frame extraction
-    if (event.Records && event.Records.length > 0) {
+    await ensureOpenAIKey();
+    
+    // Handle direct invocation from frame extraction
+    if (event.analysis_id && event.user_id) {
+      console.log('Processing direct invocation from frame extractor');
+      await processSwingAnalysis({
+        analysis_id: event.analysis_id,
+        user_id: event.user_id,
+        status: event.status || 'COMPLETED'
+      });
       
-      // Check if these are SQS records or DynamoDB stream records
-      const firstRecord = event.Records[0];
-      
-      if (firstRecord.eventSource === 'aws:sqs') {
-        console.log(`Processing ${event.Records.length} SQS messages for AI analysis`);
-        
-        const results = [];
-        
-        // Process each SQS message in the batch
-        for (const record of event.Records) {
-          try {
-            // Parse the SQS message body
-            const messageBody = JSON.parse(record.body);
-            
-            console.log('Processing SQS message:', {
-              messageId: record.messageId,
-              analysis_id: messageBody.analysis_id,
-              user_id: messageBody.user_id,
-              status: messageBody.status
-            });
-            
-            // Process the swing analysis
-            await processSwingAnalysis({
-              analysis_id: messageBody.analysis_id,
-              user_id: messageBody.user_id,
-              status: messageBody.status || 'COMPLETED'
-            });
-            
-            results.push({
-              messageId: record.messageId,
-              analysis_id: messageBody.analysis_id,
-              status: 'success'
-            });
-            
-            console.log(`Successfully processed AI analysis for: ${messageBody.analysis_id}`);
-            
-          } catch (recordError) {
-            console.error(`Error processing SQS record ${record.messageId}:`, recordError);
-            
-            // Try to extract analysis_id for error reporting
-            let analysis_id = 'unknown';
-            try {
-              const messageBody = JSON.parse(record.body);
-              analysis_id = messageBody.analysis_id || 'unknown';
-            } catch (parseError) {
-              console.error('Failed to parse message body for error reporting:', parseError);
-            }
-            
-            results.push({
-              messageId: record.messageId,
-              analysis_id: analysis_id,
-              status: 'error',
-              error: recordError.message
-            });
-            
-            // Continue processing other messages even if one fails
+      return {
+        statusCode: 200,
+        body: JSON.stringify({ message: 'AI analysis completed successfully' })
+      };
+    }
+
+    // Handle SQS events from frame extractor queue
+    if (event.Records && event.Records[0]?.eventSource === 'aws:sqs') {
+      console.log(`Processing ${event.Records.length} SQS messages for AI analysis`);
+      let processed = 0;
+
+      for (const record of event.Records) {
+        try {
+          const body = typeof record.body === 'string' ? JSON.parse(record.body) : (record.body || {});
+          const analysisId = body.analysis_id || record.messageAttributes?.analysis_id?.stringValue;
+          const userId = body.user_id || record.messageAttributes?.user_id?.stringValue;
+          const status = body.status || record.messageAttributes?.status?.stringValue || 'COMPLETED';
+
+          if (!analysisId) {
+            console.warn(`Skipping SQS message ${record.messageId}: missing analysis_id`);
+            continue;
           }
+
+          await processSwingAnalysis({
+            analysis_id: analysisId,
+            user_id: userId,
+            status,
+          });
+          processed += 1;
+        } catch (recordError) {
+          // Do not throw here, otherwise SQS retries can hot-loop and duplicate work.
+          console.error(`SQS message ${record.messageId} failed:`, recordError);
         }
-        
-        return {
-          statusCode: 200,
-          body: JSON.stringify({ 
-            message: 'SQS batch processed',
-            processed_records: results.length,
-            results: results
-          })
-        };
       }
-      
-      // Handle DynamoDB stream records (legacy support)
-      else if (firstRecord.eventSource === 'aws:dynamodb') {
-        console.log('Processing DynamoDB stream records (legacy mode)');
-        
-        for (const record of event.Records) {
-          if (record.eventName === 'INSERT' || record.eventName === 'MODIFY') {
-            const swingData = record.dynamodb.NewImage;
-            const status = swingData.status?.S;
-            const aiCompleted = swingData.ai_analysis_completed?.BOOL;
-            
-            // Only process completed records that haven't had AI analysis yet
-            if (status === 'COMPLETED' && (aiCompleted === false || aiCompleted === null || aiCompleted === undefined)) {
-              await processSwingAnalysis(swingData);
-            }
-          }
-        }
-        
-        return {
-          statusCode: 200,
-          body: JSON.stringify({ message: 'DynamoDB stream records processed' })
-        };
-      }
-      
-      // Unknown record type
-      else {
-        console.log('Unknown record type in event.Records:', firstRecord.eventSource);
-        return {
-          statusCode: 400,
-          body: JSON.stringify({ error: 'Unknown record type in event.Records' })
-        };
-      }
+
+      return {
+        statusCode: 200,
+        body: JSON.stringify({ message: 'SQS messages processed', processed, received: event.Records.length })
+      };
     }
     
-    // No Records found - unknown event type
-    console.log('Unknown event type received - no Records found');
+    // Handle DynamoDB stream records (legacy support)
+    if (event.Records) {
+      console.log('Processing DynamoDB stream records');
+      
+      for (const record of event.Records) {
+        if (record.eventName === 'INSERT' || record.eventName === 'MODIFY') {
+          const swingData = record.dynamodb.NewImage;
+          const status = swingData.status?.S;
+          const aiCompleted = swingData.ai_analysis_completed?.BOOL;
+          
+          // Only process completed records that haven't had AI analysis yet
+          if (status === 'COMPLETED' && (aiCompleted === false || aiCompleted === null || aiCompleted === undefined)) {
+            await processSwingAnalysis(swingData);
+          }
+        }
+      }
+      
+      return {
+        statusCode: 200,
+        body: JSON.stringify({ message: 'Stream records processed' })
+      };
+    }
+    
+    // Unknown event type
+    console.log('Unknown event type received');
     return {
       statusCode: 400,
-      body: JSON.stringify({ error: 'Unknown event type - expected SQS or DynamoDB records' })
+      body: JSON.stringify({ error: 'Unknown event type' })
     };
     
   } catch (error) {
@@ -685,3 +880,12 @@ exports.handler = async (event) => {
     };
   }
 };
+
+exports.__private = {
+  gatherDeveloperContext,
+  selectFramesForAnalysis,
+  readAssistantMessageContent,
+  normalizeDynamoItem,
+  extractFrameData,
+};
+

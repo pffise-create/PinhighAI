@@ -1,8 +1,8 @@
 # Golf Coach SQS Infrastructure
 
-This CloudFormation template creates SQS queues and IAM policies for the Golf Coach pipeline to replace direct Lambda invocations with reliable queue-based processing.
+This CloudFormation template creates SQS queues and IAM policies for the Golf Coach pipeline to support queue-based processing as an alternative to direct Lambda-to-Lambda invocation.
 
-## 📋 Resources Created
+## Resources Created
 
 ### SQS Queues
 - **golf-coach-frame-extraction-queue-prod**: Main processing queue for frame extraction
@@ -19,7 +19,7 @@ This CloudFormation template creates SQS queues and IAM policies for the Golf Co
 - **golf-coach-frame-extractor-role-prod**: For frame extraction Lambda
 - **golf-coach-ai-analysis-processor-role-prod**: For AI analysis Lambda
 
-## 🚀 Deployment Instructions
+## Deployment Instructions
 
 ### Step 1: Deploy the CloudFormation Stack
 
@@ -78,7 +78,7 @@ aws lambda update-function-configuration \
 
 # Update frame extractor role
 aws lambda update-function-configuration \
-  --function-name golf-frame-extractor-simple-with-ai \
+  --function-name golf-frame-extractor-simple \
   --role $(aws cloudformation describe-stacks \
     --stack-name golf-coach-sqs-infrastructure \
     --query "Stacks[0].Outputs[?OutputKey=='FrameExtractorRoleArn'].OutputValue" \
@@ -102,7 +102,7 @@ aws lambda create-event-source-mapping \
     --stack-name golf-coach-sqs-infrastructure \
     --query "Stacks[0].Outputs[?OutputKey=='FrameExtractionQueueArn'].OutputValue" \
     --output text) \
-  --function-name golf-frame-extractor-simple-with-ai \
+  --function-name golf-frame-extractor-simple \
   --batch-size 1
 
 # Create SQS trigger for AI analysis processor
@@ -115,7 +115,7 @@ aws lambda create-event-source-mapping \
   --batch-size 1
 ```
 
-## 🔧 Queue Configuration
+## Queue Configuration
 
 ### Frame Extraction Queue
 - **Visibility Timeout**: 30 seconds
@@ -129,7 +129,7 @@ aws lambda create-event-source-mapping \
 - **Max Receive Count**: 3 (then moves to DLQ)
 - **Long Polling**: 20 seconds
 
-## 📊 Environment Variables for Lambda Functions
+## Environment Variables for Lambda Functions
 
 After deployment, update your Lambda functions with these environment variables:
 
@@ -143,7 +143,7 @@ FRAME_EXTRACTION_QUEUE_URL=<FrameExtractionQueueURL from outputs>
 AI_ANALYSIS_QUEUE_URL=<AIAnalysisQueueURL from outputs>
 ```
 
-## 🧪 Testing the Queues
+## Testing the Queues
 
 ### Send Test Message to Frame Extraction Queue
 ```bash
@@ -175,14 +175,14 @@ DLQ_URL=$(aws cloudformation describe-stacks \
 aws sqs receive-message --queue-url $DLQ_URL
 ```
 
-## 🗑️ Cleanup
+## Cleanup
 
 To delete all resources:
 
 ```bash
 # Delete event source mappings first
 aws lambda list-event-source-mappings \
-  --function-name golf-frame-extractor-simple-with-ai \
+  --function-name golf-frame-extractor-simple \
   --query "EventSourceMappings[?contains(EventSourceArn, 'golf-coach-frame-extraction-queue')].UUID" \
   --output text | xargs -I {} aws lambda delete-event-source-mapping --uuid {}
 
@@ -200,14 +200,14 @@ aws cloudformation wait stack-delete-complete \
   --stack-name golf-coach-sqs-infrastructure
 ```
 
-## 📝 Next Steps
+## Next Steps
 
 1. **Update Lambda Code**: Modify your Lambda functions to send/receive SQS messages instead of direct invocations
 2. **Add Error Handling**: Implement proper error handling for SQS message processing
 3. **Monitor Performance**: Set up CloudWatch alarms for queue depth and processing errors
 4. **Scale Configuration**: Adjust batch sizes and concurrency based on processing volume
 
-## 🔍 Troubleshooting
+## Troubleshooting
 
 ### Common Issues
 
