@@ -35,7 +35,8 @@
       "expo-secure-store",
       "expo-web-browser",
       "expo-dev-client",
-      "expo-font"
+      "expo-font",
+      "@react-native-google-signin/google-signin"
     ],
     "extra": {
       "eas": {

@@ -10,10 +10,10 @@ import {
   StatusBar,
   StyleSheet,
   Text,
-  TouchableOpacity,
   View,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
+import { GoogleSigninButton } from '@react-native-google-signin/google-signin';
 import { signInWithRedirect } from 'aws-amplify/auth';
 import { useAuth } from '../context/AuthContext';
 import { colors, typography, spacing, borderRadius, shadows, radius } from '../utils/theme';
@@ -233,23 +233,13 @@ const SignInScreen = ({ navigation }) => {
           </View>
 
           <View style={styles.card}>
-            <TouchableOpacity
-              style={[styles.primaryButton, isLoading && styles.buttonDisabled]}
+            <GoogleSigninButton
+              size={GoogleSigninButton.Size.Wide}
+              color={GoogleSigninButton.Color.Dark}
               onPress={handleGoogleSignIn}
-              activeOpacity={0.85}
               disabled={isLoading}
-            >
-              {isLoading ? (
-                <ActivityIndicator color={colors.textInverse} />
-              ) : (
-                <>
-                  <View style={styles.googleIcon}>
-                    <Text style={styles.googleIconText}>G</Text>
-                  </View>
-                  <Text style={styles.primaryButtonLabel}>Continue with Google</Text>
-                </>
-              )}
-            </TouchableOpacity>
+              style={styles.googleSignInButton}
+            />
 
             <View style={styles.badge}>
               <Text style={styles.badgeText}>Precision Golf Coaching</Text>
@@ -347,36 +337,10 @@ const styles = StyleSheet.create({
     width: '100%',
     alignSelf: 'center',
   },
-  primaryButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    height: 52,
-    borderRadius: 16,
-    backgroundColor: colors.brandFern,
-    ...shadows.sm,
-  },
-  primaryButtonLabel: {
-    color: colors.textInverse,
-    fontSize: 16,
-    fontWeight: '500',
-    marginLeft: 8,
-  },
-  buttonDisabled: {
-    opacity: 0.7,
-  },
-  googleIcon: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: colors.white,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  googleIconText: {
-    color: colors.brandForest,
-    fontWeight: '700',
-    fontSize: 14,
+  googleSignInButton: {
+    width: '100%',
+    height: 56,
+    alignSelf: 'center',
   },
   badge: {
     marginTop: 24,
