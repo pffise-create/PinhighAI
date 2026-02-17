@@ -40,7 +40,9 @@ const VideoPlayer = ({ thumbnailUri, videoUri, duration, onPress }) => (
 const styles = StyleSheet.create({
   thumbnailContainer: {
     width: '100%',
-    height: 180,
+    aspectRatio: 16 / 9,
+    maxHeight: 220,
+    minHeight: 150,
     borderRadius: borderRadius.lg,
     overflow: 'hidden',
     marginBottom: spacing.sm,

@@ -122,8 +122,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   videoThumb: {
-    width: 56,
-    height: 56,
+    width: 96,
+    height: 54,
     borderRadius: borderRadius.md,
     marginRight: spacing.md,
   },
