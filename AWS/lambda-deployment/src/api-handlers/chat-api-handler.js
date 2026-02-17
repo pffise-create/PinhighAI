@@ -3,6 +3,7 @@ const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient, GetCommand, PutCommand } = require('@aws-sdk/lib-dynamodb');
 const { SecretsManagerClient, GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');
 const { executeChatLoop } = require('../chat/chatLoop');
+const crypto = require('crypto');
 const https = require('https');
 
 // Initialize clients
@@ -11,6 +12,9 @@ let secretsManager = null;
 let cachedOpenAIKey = null;
 const CHAT_LOOP_ENABLED = process.env.CHAT_LOOP_ENABLED === 'true';
 const HTTP_REQUEST_TIMEOUT_MS = parseInt(process.env.HTTP_REQUEST_TIMEOUT_MS || '8000', 10);
+const JWKS_CACHE_TTL_MS = 1000 * 60 * 60 * 6;
+let cachedJwks = null;
+let cachedJwksExpiresAt = 0;
 
 function getDynamoClient() {
   if (!dynamodb) {
@@ -75,72 +79,160 @@ function makeHttpsRequest(options, data = null) {
   });
 }
 
-// Extract user context from event with JWT validation
+function hasBearerToken(event) {
+  const authHeader = event?.headers?.Authorization || event?.headers?.authorization;
+  return !!(authHeader && authHeader.startsWith('Bearer '));
+}
+
+function decodeJwtSegment(segment, label) {
+  try {
+    return JSON.parse(Buffer.from(segment, 'base64url').toString('utf8'));
+  } catch (error) {
+    throw new Error(`Invalid ${label} segment`);
+  }
+}
+
+async function fetchJsonWithTimeout(url, timeoutMs = HTTP_REQUEST_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const req = https.request({
+      hostname: parsed.hostname,
+      path: `${parsed.pathname}${parsed.search}`,
+      method: 'GET',
+      headers: { Accept: 'application/json' }
+    }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          try {
+            resolve(JSON.parse(body));
+          } catch (parseError) {
+            reject(new Error(`Failed to parse JSON from ${url}: ${parseError.message}`));
+          }
+        } else {
+          reject(new Error(`HTTP ${res.statusCode} when requesting ${url}: ${body}`));
+        }
+      });
+    });
+
+    req.on('error', reject);
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`Request to ${url} timed out after ${timeoutMs}ms`));
+    });
+    req.end();
+  });
+}
+
+async function getJwks() {
+  const now = Date.now();
+  if (cachedJwks && cachedJwksExpiresAt > now) {
+    return cachedJwks;
+  }
+
+  const region = process.env.COGNITO_REGION;
+  const userPoolId = process.env.COGNITO_USER_POOL_ID;
+  if (!region || !userPoolId) {
+    throw new Error('Cognito configuration missing. Set COGNITO_REGION and COGNITO_USER_POOL_ID.');
+  }
+
+  const jwksUrl = `https://cognito-idp.${region}.amazonaws.com/${userPoolId}/.well-known/jwks.json`;
+  const jwks = await fetchJsonWithTimeout(jwksUrl);
+  cachedJwks = jwks;
+  cachedJwksExpiresAt = now + JWKS_CACHE_TTL_MS;
+  return jwks;
+}
+
+async function verifyAndDecodeJwt(token) {
+  const parts = token.split('.');
+  if (parts.length !== 3) {
+    throw new Error('Invalid JWT format');
+  }
+
+  const header = decodeJwtSegment(parts[0], 'header');
+  const payload = decodeJwtSegment(parts[1], 'payload');
+
+  if (header.alg !== 'RS256') {
+    throw new Error(`Unsupported JWT algorithm: ${header.alg}`);
+  }
+
+  const jwks = await getJwks();
+  const matchingKey = jwks.keys?.find((key) => key.kid === header.kid);
+  if (!matchingKey) {
+    throw new Error('Unable to find matching signing key for token');
+  }
+
+  let publicKey;
+  try {
+    publicKey = crypto.createPublicKey({ key: matchingKey, format: 'jwk' });
+  } catch (error) {
+    throw new Error(`Failed to construct public key: ${error.message}`);
+  }
+
+  const verifier = crypto.createVerify('RSA-SHA256');
+  verifier.update(`${parts[0]}.${parts[1]}`);
+  verifier.end();
+
+  const signature = Buffer.from(parts[2], 'base64url');
+  if (!verifier.verify(publicKey, signature)) {
+    throw new Error('Invalid JWT signature');
+  }
+
+  const region = process.env.COGNITO_REGION;
+  const userPoolId = process.env.COGNITO_USER_POOL_ID;
+  const issuer = `https://cognito-idp.${region}.amazonaws.com/${userPoolId}`;
+  if (payload.iss !== issuer) {
+    throw new Error('Token issuer mismatch');
+  }
+
+  const expectedClientId = process.env.COGNITO_APP_CLIENT_ID;
+  if (expectedClientId && payload.aud !== expectedClientId && payload.client_id !== expectedClientId) {
+    throw new Error('Token not issued for expected client');
+  }
+
+  if (!payload.exp || payload.exp * 1000 < Date.now()) {
+    throw new Error('Token has expired');
+  }
+
+  return payload;
+}
+
+function buildUserContextFromPayload(payload) {
+  return {
+    isAuthenticated: true,
+    userId: payload.sub,
+    email: payload.email || payload.username || payload['cognito:username'] || null,
+    name: payload.name || payload.email || payload.username || payload['cognito:username'] || 'Authenticated User',
+    username: payload.username || payload['cognito:username'] || payload.email || payload.sub,
+    userType: 'authenticated'
+  };
+}
+
+// Extract user context from event with strict JWT validation
 async function extractUserContext(event) {
   console.log('EXTRACT USER CONTEXT: Starting JWT validation');
-  
+
   try {
-    // Check for Authorization header
     const authHeader = event.headers?.Authorization || event.headers?.authorization;
-    
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      const token = authHeader.substring(7); // Remove 'Bearer ' prefix
-      console.log('AUTH HEADER: Found JWT token, validating...');
-      
-      try {
-        // Decode JWT token (basic parsing without verification for now)
-        const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
-        
-        console.log('JWT PAYLOAD: Extracted user info from token');
-        
-        // Extract user information from Cognito JWT
-        const authenticatedContext = {
-          isAuthenticated: true,
-          userId: payload.sub, // Cognito user ID (consistent across all tokens)
-          email: payload.email || null,
-          name: payload.name || payload.email || payload.username || 'Authenticated User',
-          username: payload.username || payload['cognito:username'],
-          userType: 'authenticated'
-        };
-        
-        console.log('USER CONTEXT: Returning authenticated context:', {
-          ...authenticatedContext,
-          userId: authenticatedContext.userId // Show userId for debugging
-        });
-        
-        return authenticatedContext;
-        
-      } catch (jwtError) {
-        console.error('JWT PARSING ERROR:', jwtError.message);
-        // Fall through to guest mode
-      }
-    } else {
-      console.log('AUTH HEADER: No Bearer token found');
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return { isAuthenticated: false, error: 'Missing bearer token' };
     }
-    
-    // Fall back to guest user context
-    console.log('USER CONTEXT: Falling back to guest mode');
-    const guestContext = {
-      isAuthenticated: false,
-      userId: 'guest-user', // Use consistent guest ID
-      email: null,
-      name: 'Guest User',
-      userType: 'guest'
-    };
-    
-    return guestContext;
-    
+
+    const token = authHeader.substring(7);
+    const payload = await verifyAndDecodeJwt(token);
+    const authenticatedContext = buildUserContextFromPayload(payload);
+
+    console.log('USER CONTEXT: Returning authenticated context:', {
+      userId: authenticatedContext.userId,
+      email: authenticatedContext.email,
+      userType: authenticatedContext.userType
+    });
+
+    return authenticatedContext;
   } catch (error) {
-    console.error('ERROR extracting user context:', error);
-    
-    // Always return valid context, even on error
-    return {
-      isAuthenticated: false,
-      userId: 'guest-user', // Consistent fallback
-      email: null,
-      name: 'Guest User',
-      userType: 'guest'
-    };
+    console.error('JWT VERIFICATION ERROR:', error.message);
+    return { isAuthenticated: false, error: error.message };
   }
 }
 
@@ -508,22 +600,18 @@ exports.handler = async (event) => {
     path: event?.path,
     method: event?.httpMethod,
     hasBody: !!event?.body,
-    hasAuth: !!(event?.headers?.Authorization || event?.headers?.authorization),
+    hasAuth: hasBearerToken(event),
   });
   console.log('CHAT API HANDLER - Environment Check:', {
     hasOpenAIKey: !!process.env.OPENAI_API_KEY,
     userThreadsTable: process.env.USER_THREADS_TABLE,
+    cognitoRegion: process.env.COGNITO_REGION,
+    cognitoUserPoolId: process.env.COGNITO_USER_POOL_ID,
     chatLoopEnabled: CHAT_LOOP_ENABLED,
     httpTimeoutMs: HTTP_REQUEST_TIMEOUT_MS,
   });
   
   try {
-    await ensureOpenAIKey();
-    
-    // Extract user context from the request
-    const userContext = await extractUserContext(event);
-    console.log('USER CONTEXT:', userContext);
-    
     // Validate this is a POST request for chat
     if (event.httpMethod !== 'POST' || !event.body) {
       return {
@@ -538,6 +626,29 @@ exports.handler = async (event) => {
         })
       };
     }
+
+    // Extract user context from the request
+    const userContext = await extractUserContext(event);
+    if (!userContext.isAuthenticated) {
+      return {
+        statusCode: 401,
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*'
+        },
+        body: JSON.stringify({
+          error: 'Authentication required',
+          code: 'AUTHENTICATION_REQUIRED',
+          success: false
+        })
+      };
+    }
+    console.log('USER CONTEXT:', {
+      userId: userContext.userId,
+      userType: userContext.userType
+    });
+
+    await ensureOpenAIKey();
     
     // Handle chat request
     return await handleChatRequest(event, userContext);

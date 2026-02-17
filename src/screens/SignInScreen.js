@@ -14,12 +14,9 @@ import {
   View,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import * as WebBrowser from 'expo-web-browser';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { signInWithRedirect } from 'aws-amplify/auth';
 import { useAuth } from '../context/AuthContext';
 import { colors, typography, spacing, borderRadius, shadows, radius } from '../utils/theme';
-
-WebBrowser.maybeCompleteAuthSession();
 
 const { height, width } = Dimensions.get('window');
 
@@ -156,92 +153,15 @@ const SignInScreen = ({ navigation }) => {
     return () => clearInterval(imageTimer);
   }, [imagesPreloaded, currentOpacity, nextOpacity, scaleAnim, translateXAnim, translateYAnim]);
 
-  const exchangeCodeForTokens = async (authorizationCode) => {
-    try {
-      const cognitoDomain = 'golf-coach-auth-1755756500.auth.us-east-1.amazoncognito.com';
-      const clientId = '2ngu9n6gdcbab01r89qbjh88ns';
-      const redirectUri = 'golfcoach://';
-
-      const tokenResponse = await fetch(`https://${cognitoDomain}/oauth2/token`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        body: [
-          'grant_type=authorization_code',
-          `client_id=${clientId}`,
-          `code=${authorizationCode}`,
-          `redirect_uri=${encodeURIComponent(redirectUri)}`,
-        ].join('&'),
-      });
-
-      const tokens = await tokenResponse.json();
-
-      if (!tokenResponse.ok) {
-        console.error('Token exchange failed:', tokens);
-        throw new Error(tokens.error_description || 'Failed to get authentication tokens');
-      }
-
-      await AsyncStorage.setItem(
-        'amplify-signin-tokens',
-        JSON.stringify({
-          accessToken: tokens.access_token,
-          idToken: tokens.id_token,
-          refreshToken: tokens.refresh_token,
-          tokenType: tokens.token_type,
-          expiresIn: tokens.expires_in,
-        })
-      );
-
-      await checkAuthState();
-      navigation.replace('Chat');
-    } catch (error) {
-      console.error('Token exchange error:', error);
-      throw new Error('Failed to complete sign-in. Please try again.');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
   const handleGoogleSignIn = async () => {
     try {
       setIsLoading(true);
-
-      const cognitoDomain = 'golf-coach-auth-1755756500.auth.us-east-1.amazoncognito.com';
-      const clientId = '2ngu9n6gdcbab01r89qbjh88ns';
-      const redirectUri = 'golfcoach://';
-
-      const oauthUrl =
-        `https://${cognitoDomain}/oauth2/authorize?` +
-        `identity_provider=Google&` +
-        `redirect_uri=${encodeURIComponent(redirectUri)}&` +
-        `response_type=code&` +
-        `client_id=${clientId}&` +
-        `scope=openid+email+profile&` +
-        `state=golf-coach-oauth`;
-
-      const result = await WebBrowser.openAuthSessionAsync(oauthUrl, redirectUri);
-
-      if (result.type === 'success' && result.url) {
-        const urlObject = new URL(result.url);
-        const error = urlObject.searchParams.get('error');
-        const code = urlObject.searchParams.get('code');
-
-        if (error) {
-          throw new Error(error);
-        }
-
-        if (code) {
-          await exchangeCodeForTokens(code);
-        }
-      } else if (result.type === 'cancel') {
-        Alert.alert('Sign-In Cancelled', 'Google sign-in was cancelled.');
-      } else {
-        Alert.alert('Sign-In Failed', 'Unable to complete Google sign-in.');
-      }
+      await signInWithRedirect({ provider: 'Google' });
+      await checkAuthState();
     } catch (error) {
       console.error('Google Sign-In error:', error);
       Alert.alert('Sign-In Error', error.message || 'Unable to sign in with Google.');
+    } finally {
       setIsLoading(false);
     }
   };

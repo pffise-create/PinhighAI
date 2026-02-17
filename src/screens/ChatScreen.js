@@ -91,7 +91,7 @@ const mergeMessageLists = (current = [], incoming = []) => {
 
 // ─── ChatScreen Component ───────────────────────────────────────────────────
 const ChatScreen = ({ navigation }) => {
-  const { user, getAuthHeaders } = useAuth();
+  const { user, isAuthenticated, getAuthHeaders } = useAuth();
   const userId = user?.id;
 
   // Core state
@@ -424,7 +424,7 @@ const ChatScreen = ({ navigation }) => {
   ), [isSending, isProcessingVideo, processingMessage]);
 
   // Auth is required — AppNavigator gates this, but guard against race conditions
-  if (!userId) return null;
+  if (!isAuthenticated || !userId) return null;
 
   return (
     <SafeAreaView style={styles.container}>

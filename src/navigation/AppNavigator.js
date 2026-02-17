@@ -47,7 +47,6 @@ export default function AppNavigator() {
       <NavigationContainer theme={navigationTheme}>
         <StatusBar style="dark" />
         <Stack.Navigator
-          initialRouteName={isAuthenticated ? 'Chat' : 'SignIn'}
           screenOptions={{
             headerShadowVisible: false,
             headerStyle: {
@@ -61,35 +60,38 @@ export default function AppNavigator() {
             headerTintColor: colors.text,
           }}
         >
-          <Stack.Screen
-            name="SignIn"
-            component={SignInScreen}
-            options={{
-              headerShown: false,
-              gestureEnabled: false,
-            }}
-          />
+          {!isAuthenticated ? (
+            <Stack.Screen
+              name="SignIn"
+              component={SignInScreen}
+              options={{
+                headerShown: false,
+                gestureEnabled: false,
+              }}
+            />
+          ) : (
+            <>
+              <Stack.Screen
+                name="Chat"
+                component={ChatScreen}
+                options={{
+                  headerShown: false,
+                }}
+              />
 
-          <Stack.Screen
-            name="Chat"
-            component={ChatScreen}
-            options={{
-              headerShown: false,
-            }}
-          />
-
-          <Stack.Screen
-            name="SettingsModal"
-            component={SettingsModal}
-            options={{
-              presentation: 'modal',
-              title: 'Settings',
-            }}
-          />
+              <Stack.Screen
+                name="SettingsModal"
+                component={SettingsModal}
+                options={{
+                  presentation: 'modal',
+                  title: 'Settings',
+                }}
+              />
+            </>
+          )}
         </Stack.Navigator>
       </NavigationContainer>
     </ErrorBoundary>
   );
 }
-
 

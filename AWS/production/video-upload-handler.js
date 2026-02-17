@@ -429,7 +429,7 @@ exports.handler = async (event) => {
     const userContext = await extractUserContext(event);
     console.log('USER CONTEXT:', userContext);
 
-    if (hasBearerToken(event) && !userContext.isAuthenticated) {
+    if (!userContext.isAuthenticated) {
       return {
         statusCode: 401,
         headers: {
@@ -437,7 +437,9 @@ exports.handler = async (event) => {
           'Access-Control-Allow-Origin': '*'
         },
         body: JSON.stringify({
-          error: 'Invalid or unverifiable authentication token',
+          error: hasBearerToken(event)
+            ? 'Invalid or unverifiable authentication token'
+            : 'Authentication required',
           code: 'AUTHENTICATION_REQUIRED'
         })
       };
@@ -469,7 +471,7 @@ exports.handler = async (event) => {
       };
     }
 
-    // Use authenticated user ID or fall back to guest
+    // Use authenticated user ID from validated JWT
     const userId = userContext.userId;
 
     console.log('API Gateway trigger for video:', s3Key);
