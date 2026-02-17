@@ -66,6 +66,12 @@ These rules aim to balance speed with prudence in an early-stage project:
 
 **Iterate quickly but keep diffs small:** Make focused commits for each logical change. Provide concise commit messages describing what changed and why. Formal code reviews are optional at this stage; the priority is momentum, but clarity in your diffs will help future you or collaborators understand the history.
 
+**Commit cadence for AWS dev folders (required):**
+
+- Any time files are changed under `AWS/src/`, create a commit before ending the work session.
+- If a change affects deployed Lambda behavior, keep `AWS/production/` and `AWS/lambda-deployment/` in sync in the same commit.
+- Avoid batching unrelated AWS edits across long sessions; prefer one logical commit per change set so runtime state can be traced cleanly in GitHub.
+
 **Respect boundaries:**
 
 - Read and modify files only within the repository unless explicitly instructed otherwise.
