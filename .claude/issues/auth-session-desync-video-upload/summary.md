@@ -7,6 +7,12 @@
 ## TL;DR
 The app restores a "logged-in" UI state on startup, but when the user uploads a video, the request path fails with `AUTHENTICATION_REQUIRED`. Auth state and token availability are out of sync.
 
+## Confirmed product requirements
+- No guest workflows anywhere in the app.
+- Auto-login is only valid if a real bearer token can be produced for protected APIs.
+- If cached/expired auth state cannot produce valid headers, force user back through sign-in.
+- Follow industry-standard mobile auth/session handling.
+
 ## Current vs Expected
 
 | | Behavior |
