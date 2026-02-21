@@ -1,7 +1,78 @@
-﻿const test = require('node:test');
+const Module = require('module');
+const test = require('node:test');
 const assert = require('node:assert/strict');
+
+const originalLoad = Module._load;
+const DYNAMO_ATTR_KEYS = new Set(['S', 'N', 'BOOL', 'NULL', 'M', 'L', 'SS', 'NS', 'BS', 'B']);
+
+function decodeDynamoValue(value) {
+  if (Array.isArray(value)) {
+    return value.map((entry) => decodeDynamoValue(entry));
+  }
+
+  if (!value || typeof value !== 'object') {
+    return value;
+  }
+
+  const keys = Object.keys(value);
+  const isAttrValue = keys.length > 0 && keys.every((key) => DYNAMO_ATTR_KEYS.has(key));
+  if (isAttrValue) {
+    if (Object.prototype.hasOwnProperty.call(value, 'S')) return value.S;
+    if (Object.prototype.hasOwnProperty.call(value, 'N')) return Number(value.N);
+    if (Object.prototype.hasOwnProperty.call(value, 'BOOL')) return Boolean(value.BOOL);
+    if (Object.prototype.hasOwnProperty.call(value, 'NULL')) return null;
+    if (Object.prototype.hasOwnProperty.call(value, 'M')) return decodeDynamoValue(value.M);
+    if (Object.prototype.hasOwnProperty.call(value, 'L')) {
+      return Array.isArray(value.L) ? value.L.map((entry) => decodeDynamoValue(entry)) : [];
+    }
+    return null;
+  }
+
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => [key, decodeDynamoValue(entry)])
+  );
+}
+
+Module._load = function (request, parent, isMain) {
+  if (request === '@aws-sdk/client-dynamodb') {
+    return { DynamoDBClient: class {} };
+  }
+
+  if (request === '@aws-sdk/lib-dynamodb') {
+    return {
+      DynamoDBDocumentClient: { from: () => ({ send: async () => ({}) }) },
+      GetCommand: class {},
+      UpdateCommand: class {},
+      PutCommand: class {},
+    };
+  }
+
+  if (request === '@aws-sdk/util-dynamodb') {
+    return {
+      unmarshall: (value) => decodeDynamoValue(value),
+    };
+  }
+
+  if (request === '@aws-sdk/client-s3') {
+    return {
+      S3Client: class {},
+      GetObjectCommand: class {},
+    };
+  }
+
+  if (request === '@aws-sdk/client-secrets-manager') {
+    return {
+      SecretsManagerClient: class {},
+      GetSecretValueCommand: class {},
+    };
+  }
+
+  return originalLoad(request, parent, isMain);
+};
+
 const swingRepository = require('../src/data/swingRepository');
 const processor = require('../src/ai-analysis/ai-analysis-processor.js');
+Module._load = originalLoad;
 
 const { gatherDeveloperContext, normalizeDynamoItem, extractFrameData } = processor.__private;
 

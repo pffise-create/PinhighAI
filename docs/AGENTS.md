@@ -52,6 +52,12 @@ PROJECT_HANDOFF.md          # Engineering handoff document
 
 These rules aim to balance speed with prudence in an early-stage project:
 
+**Session start (required):**
+
+- At the start of every work session in this repository, verify AWS auth before any deployment or infrastructure commands.
+- Run `pinhigh-login` and confirm identity with `pinhigh-whoami` (or `awsp sts get-caller-identity`).
+- If authentication fails, stop deployment-related actions and reconfigure credentials with `aws configure --profile pinhigh-deploy` (or `aws configure sso --profile pinhigh-deploy` for SSO setups).
+
 **Plan before acting:** Summarise the intended change, list the files you'll touch, and outline any commands you'll run. Seek confirmation for destructive actions (e.g. deleting files, deploying to production). For routine edits and local builds, you can proceed without pause.
 
 **Avoid hallucinations:** If a requirement is unclear or missing, ask the user for clarification rather than inventing assumptions. Do not fabricate functions, APIs, or data structures that don't exist in the codebase.

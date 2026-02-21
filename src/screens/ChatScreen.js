@@ -27,11 +27,10 @@ import { useAuth } from '../context/AuthContext';
 import ChatHistoryManager from '../services/chatHistoryManager';
 import chatApiService from '../services/chatApiService';
 import videoService from '../services/videoService';
-import useVideoTrim from '../hooks/useVideoTrim';
 import {
   createVideoPickerOptions,
+  getDurationSecondsFromAsset,
   MAX_VIDEO_LENGTH_SECONDS,
-  resolveVideoAttachment,
 } from '../utils/videoAttachmentFlow';
 
 import ChatHeader from '../components/chat/ChatHeader';
@@ -46,7 +45,17 @@ import { colors, spacing } from '../utils/theme';
 const SCROLL_THRESHOLD = 96;
 
 // ─── Message Factory ────────────────────────────────────────────────────────
-const createMessage = ({ id, sender, text, type = 'text', createdAt, videoUri, videoThumbnail, videoDuration }) => ({
+const createMessage = ({
+  id,
+  sender,
+  text,
+  type = 'text',
+  createdAt,
+  videoUri,
+  videoThumbnail,
+  videoDuration,
+  videoTrimData,
+}) => ({
   id: id || `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
   sender,
   text,
@@ -55,6 +64,7 @@ const createMessage = ({ id, sender, text, type = 'text', createdAt, videoUri, v
   videoUri,
   videoThumbnail,
   videoDuration,
+  videoTrimData: videoTrimData || null,
 });
 
 // ─── Storage Helpers ────────────────────────────────────────────────────────
@@ -72,6 +82,7 @@ const normalizeStoredMessages = (stored = []) =>
         videoUri: msg.videoUri,
         videoThumbnail: msg.videoThumbnail,
         videoDuration: msg.videoDuration,
+        videoTrimData: msg.videoTrimData || null,
       })
     )
     .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
@@ -104,14 +115,12 @@ const ChatScreen = ({ navigation }) => {
   const [videoThumbnail, setVideoThumbnail] = useState(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [playbackVideoUri, setPlaybackVideoUri] = useState(null);
+  const [playbackTrimData, setPlaybackTrimData] = useState(null);
 
   // Refs
   const flatListRef = useRef(null);
   const prevMessageCountRef = useRef(0);
   const isNearBottomRef = useRef(true);
-
-  // Video trim hook
-  const { trimVideo, isAvailable: isTrimAvailable } = useVideoTrim();
 
   // ─── Load Chat History ──────────────────────────────────────────────────
   useEffect(() => {
@@ -211,6 +220,7 @@ const ChatScreen = ({ navigation }) => {
         videoUri: message.videoUri,
         videoThumbnail: message.videoThumbnail,
         videoDuration: message.videoDuration,
+        videoTrimData: message.videoTrimData || null,
       }).catch((err) => console.warn('Failed to persist message', err));
     }
   }, [userId]);
@@ -270,37 +280,40 @@ const ChatScreen = ({ navigation }) => {
         return;
       }
 
-      const selection = await resolveVideoAttachment({
-        isTrimAvailable,
-        trimVideo,
-        preferSystemEditor: Platform.OS === 'ios',
-        pickVideo: ({ allowsEditing }) =>
-          ImagePicker.launchImageLibraryAsync(createVideoPickerOptions({ allowsEditing })),
-      });
+      const pickerOptions = createVideoPickerOptions({ allowsEditing: true });
+      if (Platform.OS === 'ios') {
+        // Expo iOS can return the original full-size asset when export preset is passthrough.
+        // Force a real export so edited (trimmed) media is materialized to a new file URI.
+        const exportPreset = ImagePicker.VideoExportPreset?.HighestQuality;
+        if (exportPreset !== undefined) {
+          pickerOptions.videoExportPreset = exportPreset;
+        }
+      }
 
-      if (selection.cancelled) return;
-      if (selection.rejectedTooLong) {
-        Alert.alert(
-          'Video too long',
-          `Please trim your clip to ${MAX_VIDEO_LENGTH_SECONDS} seconds or less before uploading.`,
-        );
+      const result = await ImagePicker.launchImageLibraryAsync(pickerOptions);
+      if (result.canceled || !result.assets?.length) {
         return;
       }
 
+      const asset = result.assets[0];
+      const durationSeconds = getDurationSecondsFromAsset(asset);
+
       try {
-        const thumb = await VideoThumbnails.getThumbnailAsync(selection.uri, {
+        const thumb = await VideoThumbnails.getThumbnailAsync(asset.uri, {
           time: 500,
           quality: 0.7,
         });
         setSelectedVideo({
-          uri: selection.uri,
-          duration: Math.min(selection.durationSeconds, MAX_VIDEO_LENGTH_SECONDS),
+          uri: asset.uri,
+          duration: durationSeconds,
+          trimData: null,
         });
         setVideoThumbnail(thumb.uri);
       } catch {
         setSelectedVideo({
-          uri: selection.uri,
-          duration: Math.min(selection.durationSeconds, MAX_VIDEO_LENGTH_SECONDS),
+          uri: asset.uri,
+          duration: durationSeconds,
+          trimData: null,
         });
         setVideoThumbnail(null);
       }
@@ -308,8 +321,27 @@ const ChatScreen = ({ navigation }) => {
       console.error('Video selection failed:', error);
       Alert.alert('Error', 'Unable to select that video. Please try another clip.');
     }
-  }, [trimVideo, isTrimAvailable]);
+  }, []);
 
+  const showTooLongVideoAlert = useCallback((durationSeconds) => {
+    const displayDuration = Number.isFinite(durationSeconds) ? durationSeconds.toFixed(1) : 'unknown';
+    Alert.alert(
+      'Clip too long',
+      `This clip is ${displayDuration}s. Please trim it to ${MAX_VIDEO_LENGTH_SECONDS}s or less in the iOS trimmer, then upload again.`,
+      [
+        {
+          text: 'Trim Again',
+          onPress: () => {
+            handleAttachmentPress();
+          },
+        },
+        {
+          text: 'Cancel',
+          style: 'cancel',
+        },
+      ]
+    );
+  }, [handleAttachmentPress]);
   const clearSelectedVideo = useCallback(() => {
     setSelectedVideo(null);
     setVideoThumbnail(null);
@@ -318,10 +350,18 @@ const ChatScreen = ({ navigation }) => {
   // ─── Send Video Message ────────────────────────────────────────────────
   const sendVideoMessage = useCallback(async () => {
     if (!selectedVideo) return;
+    if (
+      Number.isFinite(selectedVideo.duration) &&
+      selectedVideo.duration > MAX_VIDEO_LENGTH_SECONDS
+    ) {
+      showTooLongVideoAlert(selectedVideo.duration);
+      return;
+    }
 
     // Capture values before clearing state to avoid stale closure reads
     const videoUri = selectedVideo.uri;
     const videoDuration = selectedVideo.duration;
+    const trimData = selectedVideo.trimData || null;
 
     appendMessage(
       createMessage({
@@ -331,6 +371,7 @@ const ChatScreen = ({ navigation }) => {
         videoUri,
         videoThumbnail,
         videoDuration,
+        videoTrimData: trimData,
       })
     );
     setInputText('');
@@ -349,6 +390,7 @@ const ChatScreen = ({ navigation }) => {
         (progress) => setProcessingMessage(progress.message),
         userId,
         headers,
+        trimData,
       );
 
       const analysisResult = await videoService.waitForAnalysisComplete(
@@ -387,7 +429,16 @@ const ChatScreen = ({ navigation }) => {
         );
       }
     }
-  }, [selectedVideo, inputText, videoThumbnail, userId, appendMessage, clearSelectedVideo, getAuthHeaders]);
+  }, [
+    selectedVideo,
+    showTooLongVideoAlert,
+    inputText,
+    videoThumbnail,
+    userId,
+    appendMessage,
+    clearSelectedVideo,
+    getAuthHeaders,
+  ]);
 
   // ─── Unified Send Handler ──────────────────────────────────────────────
   const handleSend = useCallback(async () => {
@@ -402,8 +453,10 @@ const ChatScreen = ({ navigation }) => {
   // Inverted FlatList: newest first in array = visual bottom
   const invertedMessages = useMemo(() => [...messages].reverse(), [messages]);
 
-  const handleVideoPress = useCallback((videoUri) => {
-    if (videoUri) setPlaybackVideoUri(videoUri);
+  const handleVideoPress = useCallback((videoUri, trimData) => {
+    if (!videoUri) return;
+    setPlaybackVideoUri(videoUri);
+    setPlaybackTrimData(trimData || null);
   }, []);
 
   const renderMessage = useCallback(({ item }) => (
@@ -476,8 +529,13 @@ const ChatScreen = ({ navigation }) => {
         <VideoModal
           visible={!!playbackVideoUri}
           videoUri={playbackVideoUri}
-          onClose={() => setPlaybackVideoUri(null)}
+          trimData={playbackTrimData}
+          onClose={() => {
+            setPlaybackVideoUri(null);
+            setPlaybackTrimData(null);
+          }}
         />
+
       </KeyboardAvoidingView>
     </SafeAreaView>
   );

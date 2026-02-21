@@ -66,6 +66,7 @@ const MessageBubble = ({ message, onVideoPress }) => {
               thumbnailUri={message.videoThumbnail}
               videoUri={message.videoUri}
               duration={message.videoDuration}
+              trimData={message.videoTrimData}
               onPress={onVideoPress}
             />
           )}

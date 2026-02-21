@@ -6,6 +6,18 @@ import { NativeEventEmitter, NativeModules } from 'react-native';
 
 const MAX_DURATION_SECONDS = 5;
 
+const toFiniteNumber = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const normalizeTimeToMs = (value) => {
+  const parsed = toFiniteNumber(value);
+  if (parsed === null || parsed < 0) return null;
+  // react-native-video-trim can surface seconds in JS callbacks; normalize to ms.
+  return parsed <= MAX_DURATION_SECONDS + 1 ? Math.round(parsed * 1000) : Math.round(parsed);
+};
+
 // Safely check if the native module is available before importing bridge functions
 const nativeModule = NativeModules.VideoTrim;
 let isValidFile;
@@ -38,9 +50,25 @@ const useVideoTrim = () => {
 
     const handleFinish = (event) => {
       const uri = event?.outputPath || event?.url;
+      const startTimeMs = normalizeTimeToMs(event?.startTime);
+      const endTimeMs = normalizeTimeToMs(event?.endTime);
+      const eventDurationMs = normalizeTimeToMs(event?.duration);
+      const durationMs = eventDurationMs ?? (
+        startTimeMs !== null && endTimeMs !== null && endTimeMs > startTimeMs
+          ? endTimeMs - startTimeMs
+          : null
+      );
+
+      const trimResult = {
+        uri,
+        startTimeMs,
+        endTimeMs,
+        durationMs,
+      };
+
       setTrimmedUri(uri);
       setIsTrimming(false);
-      resolveRef.current?.(uri);
+      resolveRef.current?.(trimResult);
       resolveRef.current = null;
       rejectRef.current = null;
     };
@@ -86,6 +114,12 @@ const useVideoTrim = () => {
     if (typeof trimModule?.onCancelTrimming === 'function') {
       subscriptions.push(trimModule.onCancelTrimming(handleCancel));
     }
+    if (typeof trimModule?.onCancel === 'function') {
+      subscriptions.push(trimModule.onCancel(handleCancel));
+    }
+    if (typeof trimModule?.onHide === 'function') {
+      subscriptions.push(trimModule.onHide(handleCancel));
+    }
     if (typeof trimModule?.onError === 'function') {
       subscriptions.push(trimModule.onError(handleError));
     }
@@ -95,6 +129,8 @@ const useVideoTrim = () => {
       const eventEmitter = new NativeEventEmitter(nativeModule);
       subscriptions.push(eventEmitter.addListener('onFinishTrimming', handleFinish));
       subscriptions.push(eventEmitter.addListener('onCancelTrimming', handleCancel));
+      subscriptions.push(eventEmitter.addListener('onCancel', handleCancel));
+      subscriptions.push(eventEmitter.addListener('onHide', handleCancel));
       subscriptions.push(eventEmitter.addListener('onError', handleError));
       subscriptions.push(eventEmitter.addListener('VideoTrim', handleLegacyEvent));
     }
@@ -106,7 +142,7 @@ const useVideoTrim = () => {
     };
   }, []);
 
-  // Opens the native trim editor. Returns Promise<string|null>.
+  // Opens the native trim editor. Returns Promise<{ uri, startTimeMs, endTimeMs, durationMs }|null>.
   // Throws TRIM_UNAVAILABLE if the native module is not linked.
   const trimVideo = useCallback(async (videoUri) => {
     if (!isAvailable) {
@@ -130,7 +166,11 @@ const useVideoTrim = () => {
       resolveRef.current = resolve;
       rejectRef.current = reject;
       try {
-        showEditor(videoUri, { maxDuration: MAX_DURATION_SECONDS });
+        showEditor(videoUri, {
+          maxDuration: MAX_DURATION_SECONDS,
+          enableCancelDialog: false,
+          enableSaveDialog: false,
+        });
       } catch (nativeError) {
         setIsTrimming(false);
         resolveRef.current = null;

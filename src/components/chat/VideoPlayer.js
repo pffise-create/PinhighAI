@@ -11,10 +11,10 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { colors, typography, spacing, borderRadius } from '../../utils/theme';
 
-const VideoPlayer = ({ thumbnailUri, videoUri, duration, onPress }) => (
+const VideoPlayer = ({ thumbnailUri, videoUri, duration, trimData, onPress }) => (
   <TouchableOpacity
     style={styles.thumbnailContainer}
-    onPress={() => onPress?.(videoUri)}
+    onPress={() => onPress?.(videoUri, trimData || null)}
     activeOpacity={0.85}
     accessibilityLabel={`Play swing video${duration ? `, ${duration.toFixed(1)} seconds` : ''}`}
     accessibilityRole="button"

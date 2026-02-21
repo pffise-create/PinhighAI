@@ -1,7 +1,0 @@
-{
-  ":uid": {"S": "0488d468-9041-702f-2484-38cd63c12bbb"},
-  ":email": {"S": "pffise@gmail.com"},
-  ":name": {"S": "Patrick Fise"},
-  ":type": {"S": "authenticated"},
-  ":auth": {"BOOL": true}
-}

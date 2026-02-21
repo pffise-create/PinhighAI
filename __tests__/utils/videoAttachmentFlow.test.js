@@ -5,16 +5,16 @@ const {
 } = require('../../src/utils/videoAttachmentFlow');
 
 describe('videoAttachmentFlow', () => {
-  it('builds editing picker options with a 5-second cap', () => {
+  it('builds editing picker options without enforcing max duration in picker', () => {
     const options = createVideoPickerOptions({ allowsEditing: true });
 
     expect(options).toEqual(
       expect.objectContaining({
         mediaTypes: ['videos'],
         allowsEditing: true,
-        videoMaxDuration: MAX_VIDEO_LENGTH_SECONDS,
       })
     );
+    expect(options.videoMaxDuration).toBeUndefined();
   });
 
   it('uses native trim when available', async () => {
@@ -38,6 +38,38 @@ describe('videoAttachmentFlow', () => {
       rejectedTooLong: false,
       uri: 'file://trimmed.mov',
       durationSeconds: MAX_VIDEO_LENGTH_SECONDS,
+      trimData: null,
+    });
+  });
+
+  it('preserves trim bounds when native trimmer returns timing metadata', async () => {
+    const pickVideo = jest.fn().mockResolvedValue({
+      canceled: false,
+      assets: [{ uri: 'file://original.mov', duration: 12000 }],
+    });
+    const trimVideo = jest.fn().mockResolvedValue({
+      uri: 'file://trimmed.mov',
+      startTimeMs: 1000,
+      endTimeMs: 4800,
+      durationMs: 3800,
+    });
+
+    const result = await resolveVideoAttachment({
+      isTrimAvailable: true,
+      trimVideo,
+      pickVideo,
+    });
+
+    expect(result).toEqual({
+      cancelled: false,
+      rejectedTooLong: false,
+      uri: 'file://trimmed.mov',
+      durationSeconds: 3.8,
+      trimData: {
+        startTimeMs: 1000,
+        endTimeMs: 4800,
+        durationMs: 3800,
+      },
     });
   });
 
@@ -63,10 +95,15 @@ describe('videoAttachmentFlow', () => {
       rejectedTooLong: false,
       uri: 'file://ios-edited.mov',
       durationSeconds: 4.3,
+      trimData: {
+        startTimeMs: 0,
+        endTimeMs: 4300,
+        durationMs: 4300,
+      },
     });
   });
 
-  it('does not reject long metadata in system editor mode and clamps duration', async () => {
+  it('does not reject long metadata in system editor mode, clamps duration, and adds safety trim data', async () => {
     const pickVideo = jest.fn().mockResolvedValue({
       canceled: false,
       assets: [{ uri: 'file://ios-too-long.mov', duration: 6200 }],
@@ -86,6 +123,11 @@ describe('videoAttachmentFlow', () => {
       rejectedTooLong: false,
       uri: 'file://ios-too-long.mov',
       durationSeconds: MAX_VIDEO_LENGTH_SECONDS,
+      trimData: {
+        startTimeMs: 0,
+        endTimeMs: MAX_VIDEO_LENGTH_SECONDS * 1000,
+        durationMs: MAX_VIDEO_LENGTH_SECONDS * 1000,
+      },
     });
   });
 
@@ -115,6 +157,7 @@ describe('videoAttachmentFlow', () => {
       rejectedTooLong: false,
       uri: 'file://fallback-trimmed.mov',
       durationSeconds: 4.2,
+      trimData: null,
     });
   });
 
@@ -155,6 +198,7 @@ describe('videoAttachmentFlow', () => {
       rejectedTooLong: false,
       uri: 'file://short.mov',
       durationSeconds: 3.8,
+      trimData: null,
     });
   });
 

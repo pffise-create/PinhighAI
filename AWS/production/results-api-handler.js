@@ -1,9 +1,15 @@
 // Results API Handler - Focused Lambda for retrieving analysis results
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
-const { DynamoDBDocumentClient, GetCommand } = require('@aws-sdk/lib-dynamodb');
+const { DynamoDBDocumentClient, GetCommand, UpdateCommand } = require('@aws-sdk/lib-dynamodb');
+const { LambdaClient, InvokeCommand } = require('@aws-sdk/client-lambda');
 
 // Initialize clients
 let dynamodb = null;
+let lambdaClient = null;
+const AI_RETRY_MIN_INTERVAL_MS = Math.max(
+  15_000,
+  parseInt(process.env.AI_RECOVERY_MIN_INTERVAL_MS || '45000', 10)
+);
 
 function getDynamoClient() {
   if (!dynamodb) {
@@ -11,6 +17,76 @@ function getDynamoClient() {
     dynamodb = DynamoDBDocumentClient.from(client);
   }
   return dynamodb;
+}
+
+function getLambdaClient() {
+  if (!lambdaClient) {
+    lambdaClient = new LambdaClient({});
+  }
+  return lambdaClient;
+}
+
+function shouldRetryAiAnalysis(item) {
+  if (!item || item.ai_analysis_completed) return false;
+  if (!item.analysis_results || !item.user_id) return false;
+  if (item.status !== 'COMPLETED' && item.status !== 'READY_FOR_AI') return false;
+
+  if (!item.updated_at) return true;
+
+  const updatedAtMs = new Date(item.updated_at).getTime();
+  if (!Number.isFinite(updatedAtMs)) return true;
+  return (Date.now() - updatedAtMs) >= AI_RETRY_MIN_INTERVAL_MS;
+}
+
+async function triggerAiAnalysisRetry(jobId, userId) {
+  const functionName = process.env.AI_ANALYSIS_PROCESSOR_FUNCTION_NAME;
+  if (!functionName) {
+    console.warn(`Skipping AI retry for ${jobId}: AI_ANALYSIS_PROCESSOR_FUNCTION_NAME is not set`);
+    return false;
+  }
+
+  const lambda = getLambdaClient();
+  await lambda.send(new InvokeCommand({
+    FunctionName: functionName,
+    InvocationType: 'Event',
+    Payload: JSON.stringify({
+      analysis_id: jobId,
+      user_id: userId,
+      status: 'COMPLETED',
+      source: 'results-api-recovery',
+    }),
+  }));
+
+  return true;
+}
+
+async function markAiRecoveryInProgress(jobId) {
+  const dynamodb = getDynamoClient();
+  await dynamodb.send(new UpdateCommand({
+    TableName: process.env.DYNAMODB_TABLE,
+    Key: { analysis_id: jobId },
+    UpdateExpression: 'SET #status = :status, progress_message = :message, updated_at = :timestamp',
+    ExpressionAttributeNames: { '#status': 'status' },
+    ExpressionAttributeValues: {
+      ':status': 'AI_PROCESSING',
+      ':message': 'Retrying AI coaching analysis...',
+      ':timestamp': new Date().toISOString(),
+    },
+  }));
+}
+
+async function attemptAiRecovery(jobId, item) {
+  if (!shouldRetryAiAnalysis(item)) return false;
+
+  try {
+    const invokeSucceeded = await triggerAiAnalysisRetry(jobId, item.user_id);
+    if (!invokeSucceeded) return false;
+    await markAiRecoveryInProgress(jobId);
+    return true;
+  } catch (error) {
+    console.error(`AI recovery retry failed for ${jobId}:`, error);
+    return false;
+  }
 }
 
 // Main function to handle GET results requests
@@ -41,6 +117,13 @@ async function handleGetResults(jobId) {
           jobId: jobId
         })
       };
+    }
+
+    const recoveryTriggered = await attemptAiRecovery(jobId, result.Item);
+    if (recoveryTriggered) {
+      result.Item.status = 'AI_PROCESSING';
+      result.Item.progress_message = 'Retrying AI coaching analysis...';
+      result.Item.updated_at = new Date().toISOString();
     }
     
     // Determine the status based on what's in the record

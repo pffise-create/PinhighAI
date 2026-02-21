@@ -1,1 +1,0 @@
-{"Variables":{"OPENAI_SECRET_NAME":"golf/openai/api-key","DYNAMODB_TABLE":"golf-coach-analyses","USER_THREADS_TABLE":"golf-user-threads","HTTP_REQUEST_TIMEOUT_MS":"20000","MAX_ANALYSIS_FRAMES":"12","AI_ANALYSIS_MODEL":"gpt-4o-mini","AI_ANALYSIS_IN_FLIGHT_LOCK_MS":"600000","SWING_PROFILE_TABLE":"golf-coach-swing-profiles-dev"}}

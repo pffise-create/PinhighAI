@@ -6,7 +6,7 @@ const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
 const { SecretsManagerClient, GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');
 const https = require('https');
 const swingRepository = require('../data/swingRepository');
-const { buildDeveloperContext } = require('../prompts/coachingSystemPrompt');
+const { SYSTEM_PROMPT, buildDeveloperContext } = require('../prompts/coachingSystemPrompt');
 const swingProfileRepository = require('../data/swingProfileRepository');
 // Initialize clients
 let dynamodb = null;
@@ -269,7 +269,8 @@ async function getUserThread(userId) {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'OpenAI-Beta': 'assistants=v2',
       }
     }, JSON.stringify({}));
     
@@ -321,7 +322,8 @@ You can ask me questions about this analysis or request tips for improvement!`;
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'OpenAI-Beta': 'assistants=v2',
       }
     }, JSON.stringify({
       role: 'assistant',
@@ -500,10 +502,12 @@ async function analyzeSwingWithGPT5(frameData, swingData) {
         type: 'text',
         text:
           `${promptPrelude}\n\n` +
-          'You are a professional golf coach. Review this swing sequence and provide one cohesive coaching response. ' +
+          'You are a professional golf coach reviewing sequential images from one short swing video. ' +
+          'Treat these as one continuous motion and provide one cohesive coaching response. ' +
           'Do not mention frames, image order, or internal references. ' +
-          'If evidence is insufficient, say so and ask for a clearer clip. ' +
-          'If evidence is sufficient, provide: (1) root cause, (2) 1-3 precise fixes, (3) one drill/feel. ' +
+          'Default to best-effort coaching when the golfer and club are visible in most images. ' +
+          'Only say footage is insufficient if visibility is truly unusable (for example: golfer or club missing in most images, severe blur, or motion cannot be read). ' +
+          'If visibility is partial, state assumptions briefly and still provide: (1) likely root cause, (2) 1-3 precise fixes, (3) one drill/feel. ' +
           'Keep it concise and practical.',
       },
     ];
@@ -522,6 +526,10 @@ async function analyzeSwingWithGPT5(frameData, swingData) {
     const openaiRequest = {
       model: AI_ANALYSIS_MODEL,
       messages: [
+        {
+          role: 'system',
+          content: SYSTEM_PROMPT,
+        },
         {
           role: 'user',
           content: messageContent,

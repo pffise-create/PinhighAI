@@ -12,10 +12,55 @@ import { useVideoPlayer, VideoView } from 'expo-video';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing } from '../../utils/theme';
 
-const VideoModalInner = ({ videoUri, onClose }) => {
+const normalizeTrimBounds = (trimData) => {
+  if (!trimData || typeof trimData !== 'object') return null;
+
+  const asNumber = (value) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+
+  const startMs = asNumber(trimData.startTimeMs ?? trimData.trimStartMs);
+  const endMs = asNumber(trimData.endTimeMs ?? trimData.trimEndMs);
+  if (startMs === null || endMs === null || endMs <= startMs) return null;
+
+  return {
+    startSeconds: Math.max(0, startMs / 1000),
+    endSeconds: Math.max(0, endMs / 1000),
+  };
+};
+
+const VideoModalInner = ({ videoUri, onClose, trimData }) => {
+  const clipBounds = normalizeTrimBounds(trimData);
   const player = useVideoPlayer(videoUri, (p) => {
+    p.loop = false;
+    if (clipBounds) {
+      p.currentTime = clipBounds.startSeconds;
+      p.timeUpdateEventInterval = 0.1;
+    }
     p.play();
   });
+
+  React.useEffect(() => {
+    if (!player || !clipBounds) return undefined;
+
+    const sub = player.addListener('timeUpdate', ({ currentTime }) => {
+      if (currentTime >= clipBounds.endSeconds) {
+        player.pause();
+        player.currentTime = clipBounds.startSeconds;
+      }
+    });
+
+    return () => {
+      sub?.remove?.();
+      player.timeUpdateEventInterval = 0;
+    };
+  }, [clipBounds, player]);
+
+  React.useEffect(() => {
+    if (!player || !clipBounds) return;
+    player.currentTime = clipBounds.startSeconds;
+  }, [clipBounds, player]);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -39,7 +84,7 @@ const VideoModalInner = ({ videoUri, onClose }) => {
   );
 };
 
-const VideoModal = ({ visible, videoUri, onClose }) => (
+const VideoModal = ({ visible, videoUri, trimData, onClose }) => (
   <Modal
     visible={visible}
     animationType="slide"
@@ -47,7 +92,7 @@ const VideoModal = ({ visible, videoUri, onClose }) => (
     onRequestClose={onClose}
   >
     {visible && videoUri ? (
-      <VideoModalInner videoUri={videoUri} onClose={onClose} />
+      <VideoModalInner videoUri={videoUri} trimData={trimData} onClose={onClose} />
     ) : null}
   </Modal>
 );

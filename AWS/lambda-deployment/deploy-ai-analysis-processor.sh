@@ -22,15 +22,16 @@ print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 print_status "Deploying AI Analysis Processor with SQS integration..."
 
-# Navigate to the processor directory
-cd "$(dirname "$0")/src/ai-analysis"
+# Navigate to lambda deployment source root
+SRC_ROOT="$(dirname "$0")/src"
+cd "$SRC_ROOT"
 
-# Create deployment package
+# Create deployment package with processor + shared modules it requires
 print_status "Creating deployment package..."
-zip -r ../../ai-analysis-processor-sqs.zip ai-analysis-processor.js
-
-# Navigate back
-cd ../..
+zip -r ../ai-analysis-processor-sqs.zip \
+  ai-analysis \
+  prompts \
+  data
 
 # Update function code
 print_status "Updating Lambda function code..."

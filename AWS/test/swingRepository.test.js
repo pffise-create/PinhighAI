@@ -1,17 +1,46 @@
-﻿const test = require('node:test');
+const Module = require('module');
+const test = require('node:test');
 const assert = require('node:assert/strict');
-const path = require('node:path');
-const { createRequire } = require('node:module');
 
-const lambdaNodeModules = path.join(__dirname, '..', 'lambda-deployment', 'node_modules');
-const lambdaRequire = createRequire(path.join(lambdaNodeModules, 'package.json'));
-const { QueryCommand, GetCommand } = lambdaRequire('@aws-sdk/lib-dynamodb');
+let QueryCommand;
+let GetCommand;
+
+const originalLoad = Module._load;
+Module._load = function (request, parent, isMain) {
+  if (request === '@aws-sdk/client-dynamodb') {
+    return { DynamoDBClient: class {} };
+  }
+
+  if (request === '@aws-sdk/lib-dynamodb') {
+    QueryCommand = class {
+      constructor(input) {
+        this.input = input;
+      }
+    };
+
+    GetCommand = class {
+      constructor(input) {
+        this.input = input;
+      }
+    };
+
+    return {
+      DynamoDBDocumentClient: { from: () => ({ send: async () => ({}) }) },
+      QueryCommand,
+      GetCommand,
+    };
+  }
+
+  return originalLoad(request, parent, isMain);
+};
+
 const {
   getLastAnalyzedSwings,
   getSwingAnalysis,
   compareSwings,
   __private,
 } = require('../src/data/swingRepository');
+Module._load = originalLoad;
 
 function createMockClient({ onQuery, onGet }) {
   return {
