@@ -1,0 +1,38 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(powershell:*)",
+      "Bash(aws lambda update-function-code:*)",
+      "Bash(aws logs describe-log-groups:*)",
+      "Bash(aws logs describe-log-streams:*)",
+      "Bash(aws lambda invoke:*)",
+      "Bash(cat:*)",
+      "Bash(aws dynamodb scan:*)",
+      "Bash(aws dynamodb get-item:*)",
+      "Bash(aws lambda get-function:*)",
+      "Bash(aws:*)",
+      "Bash(npm install:*)",
+      "Bash(zip:*)",
+      "Bash(npx expo install:*)",
+      "Bash(node:*)",
+      "Bash(npx expo start:*)",
+      "Read(/C:\\Users\\pffis\\Downloads/**)",
+      "Bash(curl:*)",
+      "Bash(git add:*)",
+      "Bash(xcopy:*)",
+      "WebSearch",
+      "Bash(git checkout:*)",
+      "Bash(npx expo-cli config:*)",
+      "Bash(timeout:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nMajor cleanup: remove unused code, test artifacts, and organize structure\n\n- Delete Expo/ duplicate directory \\(full copy of src/\\)\n- Delete 5 orphaned screens \\(HomeScreen, ProfileScreen, etc.\\)\n- Delete AWS/archive/ with old Lambda versions\n- Delete 100+ test JSON files, log files, and debug artifacts\n- Delete build caches \\(.expo/, deploy_artifacts/, etc.\\)\n- Delete sprint docs, misc folders, and temp files\n- Move AGENTS.md and PROJECT_HANDOFF.md to docs/\n- Rename long logo filename to lodi-shield-logo.png\n- Update .gitignore to prevent future clutter\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git commit:*)",
+      "Bash(npx expo:*)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:docs.expo.dev)",
+      "WebFetch(domain:www.npmjs.com)",
+      "Bash(xxd:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

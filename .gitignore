@@ -1,0 +1,68 @@
+# Dependencies
+node_modules/
+
+# Expo
+.expo/
+dist/
+web-build/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Test artifacts
+test-*.json
+*-response.json
+*-payload.json
+trigger-*.json
+playwright-report/
+test-results/
+
+# Debug/temp files
+debug_*.py
+debug_*.zip
+debug_*.json
+temp*.txt
+temp_*.diff
+*.tmp
+
+# Log files (custom)
+ai-log.jsonl
+frame-log.jsonl
+ai-tail.json
+
+# Build artifacts
+deploy_artifacts/
+deployed-code/
+*.zip
+
+# Google Drive temp
+.tmp.driveupload/
+
+# Android/iOS builds (if building locally)
+*.apk
+*.aab
+*.ipa
+
+# AWS Lambda deployment artifacts (keep source in AWS/src/)
+AWS/lambda-deployment/node_modules/
+AWS/lambda-deployment/*.zip
+AWS/archive/
