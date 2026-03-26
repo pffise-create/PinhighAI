@@ -1,26 +1,75 @@
-﻿# Acceptance Validation Checklist
+# Acceptance Validation Checklist
 
-## Functional Scenarios
-- Run /api/chat with CHAT_LOOP_ENABLED=false; confirm legacy responses still return 200 with fallback messaging when OpenAI errors.
-- Enable CHAT_LOOP_ENABLED=true, seed two analyzed swings, and ask "Was I OTT last swing?" — verify numeric/path feedback with no batching references.
-- Upload a new swing through the pipeline; confirm the final analysis mentions improvements/regressions based on prior swings.
-- Verify swing profile is created/updated in `golf-coach-swing-profiles` table after AI analysis completes.
-- Test `get_user_swing_profile` tool returns profile data when called from chat loop.
+Use this checklist for launch-critical validation. It is intentionally biased toward the current launch path:
+- `iOS first`
+- `TestFlight beta -> soft launch`
+- `Google + Apple`
+- `7-day free trial`
+- `monthly + annual`
+- teaser/locked analysis before subscription
 
-## Performance & Observability
-- Review Lambda logs to confirm only one GSI query per analysis (user-timestamp-index) and note the developer context JSON block.
-- Confirm chat loop latency remains near ~1 s in CloudWatch metrics and video finalize duration is unchanged.
+## 1. Auth and First-Run
 
-## Safety & Feature Flags
-- Ensure all changes are behind CHAT_LOOP_ENABLED; disable the flag and re-run a chat to confirm the old path still works.
-- Validate no secrets or user identifiers are logged beyond safe metadata; adjust log level if necessary.
+- Fresh install on device or simulator opens to sign-in without stale session state.
+- Google sign-in completes successfully.
+- Apple sign-in completes successfully.
+- Sign-out returns the user to sign-in and clears authenticated state.
+- Fresh-user loop is repeatable using staging QA accounts and reset workflow.
 
-## Frontend Validation
-- Run `npx expo start -c` and verify no bundler syntax errors.
-- SignInScreen: Background video loops correctly, Google OAuth and guest mode work.
-- ChatScreen: Messages render, video upload options modal opens, chat history persists.
-- Settings: Notification toggle works, sign-out clears auth state.
+## 2. Core Product Flow
 
-## Test Suite
-- Execute NODE_PATH=AWS/lambda-deployment/node_modules node --test AWS/test/coachingSystemPrompt.test.js AWS/test/swingRepository.test.js AWS/test/chatLoop.test.js AWS/test/aiAnalysisProcessor.test.js and confirm all pass.
-- If any test fails, address the regression before release.
+- Authenticated user lands in chat successfully.
+- User can send a text message and receive a response.
+- User can select and upload a swing video.
+- Analysis polling completes and returns a coaching response or a locked-analysis response without crashing.
+- Chat history persists across relaunch for the same authenticated user.
+
+## 3. Subscription and Paywall
+
+- New non-entitled user sees teaser/locked analysis behavior as expected.
+- Paywall opens from the locked-analysis CTA.
+- Trial start flow works on device using sandbox billing.
+- Monthly and annual products are visible in the configured offering.
+- Restore purchases works correctly.
+- Manage subscription / Customer Center opens successfully.
+- Entitlement state updates correctly after purchase and restore.
+
+## 4. Settings, Legal, and Support
+
+- Settings opens from chat.
+- Settings shows real support information, not placeholders.
+- Privacy Policy link works.
+- Terms of Service link works.
+- Sign-out works from settings.
+
+## 5. Environment and Release Safety
+
+- Staging build uses staging auth/API/billing configuration.
+- Production build uses production auth/API/billing configuration.
+- No production build depends on dev fallback config.
+- RevenueCat webhook sync is configured and reachable in the target environment.
+
+## 6. Backend and Observability
+
+- Video upload handler, analysis processor, and chat handler respond successfully for the tested flow.
+- Locked-result gating matches backend entitlement state.
+- Relevant Lambda logs do not expose secrets or unnecessary personal data.
+- Deployment state is recorded in [`docs/DEPLOYMENT-TRACKER.md`](./DEPLOYMENT-TRACKER.md) when backend behavior changes.
+
+## 7. Automated Checks
+
+- `npm test`
+- `npm run check:hygiene`
+- Targeted backend tests for any changed AWS handlers
+
+## 8. Exit Criteria for TestFlight Beta
+
+- A brand-new staging user can install the app, sign in, hit the paywall, start a trial or restore, and access the app without placeholder or dead-end flows.
+
+## 9. Exit Criteria for Soft Launch
+
+- Beta cycle completed successfully.
+- Production env is configured.
+- Legal/support surfaces are live.
+- Billing works on production configuration.
+- Business/payout setup is complete outside the repo.
