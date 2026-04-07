@@ -10,7 +10,7 @@
 - ✅ **Processing posture:** Direct invocation approved for launch; SQS moved to post-launch revisit.
 - 🟡 **Frontend stabilization:** In progress; list rendering hardening landed and bundling sanity check passed.
 - ⚪ **CloudWatch alarms:** Not started.
-- ⚪ **CI regression automation:** Not started.
+- 🟡 **CI regression automation:** In progress; baseline GitHub Actions workflow added for tests + Expo web export.
 - 🟡 **Acceptance checklist evidence:** In progress; automated tests and web export completed.
 
 ## What appears launch-ready

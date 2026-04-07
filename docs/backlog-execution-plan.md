@@ -22,7 +22,7 @@ _Date: 2026-04-07_
    - Decide and implement: full SQS event-source mapping vs documented direct-invoke deferment.
 3. **Operational readiness** ⚪ _Not Started_
    - Add CloudWatch alarms and baseline monitoring.
-4. **Release safety net** ⚪ _Not Started_
+4. **Release safety net** 🟡 _In Progress_
    - Add/enable automated regression tests in CI.
 5. **Launch validation** 🟡 _In Progress_
    - Execute and record acceptance checklist evidence.
@@ -46,3 +46,4 @@ Before implementing any item below, I will ask for explicit confirmation if need
 - ✅ **2026-04-07:** Direct-invoke launch posture confirmed; SQS activation deferred for later revisit.
 - ✅ **2026-04-07:** Frontend unit/integration suite passed (`npm test -- --runInBand`).
 - ✅ **2026-04-07:** Web bundle/export completed successfully (`npx expo export --platform web --clear`) to validate no bundler syntax breakages.
+- ✅ **2026-04-07:** Added baseline GitHub Actions CI workflow to run tests and Expo web export on PRs/pushes (`.github/workflows/ci.yml`).
