@@ -4,17 +4,29 @@
     "development": {
       "developmentClient": true,
       "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_APP_ENV": "dev"
+      },
       "ios": { "simulator": true }
     },
     "development-device": {
       "developmentClient": true,
-      "distribution": "internal"
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_APP_ENV": "dev"
+      }
     },
     "preview": {
       "distribution": "internal",
-      "android": { "buildType": "apk" }
+      "env": {
+        "EXPO_PUBLIC_APP_ENV": "staging"
+      }
     },
-    "production": {}
+    "production": {
+      "env": {
+        "EXPO_PUBLIC_APP_ENV": "prod"
+      }
+    }
   },
   "submit": { "production": {} }
 }

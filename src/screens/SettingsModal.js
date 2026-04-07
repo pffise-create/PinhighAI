@@ -1,46 +1,35 @@
-﻿import React, { useLayoutEffect, useState } from 'react';
+import React, { useLayoutEffect, useState } from 'react';
 import {
   SafeAreaView,
   ScrollView,
   StyleSheet,
-  Switch,
   Alert,
   Text,
   TouchableOpacity,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { useAuth } from '../context/AuthContext';
+import { useSubscriptions } from '../context/SubscriptionContext';
+import { appEnv } from '../config/runtimeEnv';
 import { colors, spacing, typography, borderRadius, shadows } from '../utils/theme';
 
-const settingsSections = [
-  {
-    id: 'subscription',
-    icon: 'card-outline',
-    title: 'Subscription & Billing',
-    description: 'Manage your subscription and payment methods',
-    onPress: () => {},
-  },
-  {
-    id: 'privacy',
-    icon: 'shield-checkmark-outline',
-    title: 'Data & Privacy',
-    description: 'Review your data and privacy settings',
-    onPress: () => {},
-  },
-  {
-    id: 'help',
-    icon: 'help-circle-outline',
-    title: 'Help & Support',
-    description: 'Get help or contact support',
-    onPress: () => {},
-  },
-];
+const SUPPORT_EMAIL = 'support@divotlab.ai (placeholder)';
+const showQaTools = __DEV__ || appEnv !== 'prod';
 
 const SettingsModal = ({ navigation }) => {
   const { user, signOut } = useAuth();
-  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+  const {
+    restorePurchases,
+    presentCustomerCenter,
+    resetSubscriptionIdentityForQa,
+    entitlementActive,
+    customerInfo,
+    identityReady,
+    isNativeAvailable: subscriptionsNativeAvailable,
+  } = useSubscriptions();
   const [showSignOutConfirm, setShowSignOutConfirm] = useState(false);
 
   useLayoutEffect(() => {
@@ -64,6 +53,94 @@ const SettingsModal = ({ navigation }) => {
     }
   };
 
+  const showPlaceholderAction = (title, message) => {
+    Alert.alert(title, message);
+  };
+
+  const handleManageSubscription = async () => {
+    try {
+      await presentCustomerCenter();
+    } catch (error) {
+      console.error('Customer Center launch failed:', error);
+      Alert.alert(
+        'Manage Subscription',
+        'Customer Center could not be opened. Please try again.'
+      );
+    }
+  };
+
+  const handleRestorePurchases = async () => {
+    try {
+      const result = await restorePurchases();
+      if (result.entitlementActive) {
+        Alert.alert('Restored', 'Your subscription is active on this account.');
+      } else {
+        Alert.alert('No Purchases Found', 'No active purchases were found to restore.');
+      }
+    } catch (error) {
+      console.error('Restore purchases failed:', error);
+      Alert.alert('Restore Failed', error.message || 'Unable to restore purchases right now.');
+    }
+  };
+
+  const handleQaReset = () => {
+    Alert.alert(
+      'Reset QA State?',
+      'This signs out, clears local app storage, and resets RevenueCat identity for this dev/staging install. It does not delete backend data.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Reset',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await resetSubscriptionIdentityForQa?.();
+              await signOut();
+              await AsyncStorage.clear();
+              navigation.goBack();
+            } catch (error) {
+              console.error('QA reset failed:', error);
+              Alert.alert('QA Reset Failed', error.message || 'Unable to reset local QA state.');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const settingsActions = [
+    {
+      id: 'subscription',
+      icon: 'card-outline',
+      title: 'Manage Subscription',
+      onPress: handleManageSubscription,
+    },
+    {
+      id: 'restore',
+      icon: 'refresh-outline',
+      title: 'Restore Purchases',
+      onPress: handleRestorePurchases,
+    },
+    {
+      id: 'privacy',
+      icon: 'shield-checkmark-outline',
+      title: 'Privacy Policy',
+      onPress: () => showPlaceholderAction(
+        'Privacy Policy',
+        'Privacy Policy link will be added when the legal/support site project is ready.'
+      ),
+    },
+    {
+      id: 'help',
+      icon: 'help-circle-outline',
+      title: 'Help & Support',
+      onPress: () => showPlaceholderAction(
+        'Help & Support',
+        `Support email placeholder:\n${SUPPORT_EMAIL}`
+      ),
+    },
+  ];
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <ScrollView
@@ -71,89 +148,81 @@ const SettingsModal = ({ navigation }) => {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        <View style={styles.accountCard}>
-          <View style={styles.avatarWrapper}>
-            <Text style={styles.avatarInitials}>
-              {(user?.email || 'G')[0]?.toUpperCase?.()}
-            </Text>
-          </View>
-          <View style={styles.accountCopy}>
-            <Text style={styles.accountTitle}>Account</Text>
-            <Text style={styles.accountSubtitle}>{user?.email || 'Not signed in'}</Text>
-          </View>
-        </View>
-
-        <View style={styles.preferencesCard}>
-          <View style={styles.preferencesHeader}>
-            <View style={styles.preferencesIcon}>
-              <Ionicons name="notifications-outline" size={18} color={colors.brandFern} />
-            </View>
-            <View style={styles.preferencesCopy}>
-              <Text style={styles.preferenceTitle}>Notifications</Text>
-              <Text style={styles.preferenceDescription}>
-                Stay in the loop when your coach drops fresh drills.
+        <View style={styles.sheet}>
+          <View style={styles.accountRow}>
+            <View style={styles.avatarWrapper}>
+              <Text style={styles.avatarInitials}>
+                {(user?.email || 'G')[0]?.toUpperCase?.()}
               </Text>
             </View>
-            <Switch
-              value={notificationsEnabled}
-              onValueChange={setNotificationsEnabled}
-              trackColor={{ false: colors.border, true: colors.brandFern }}
-              thumbColor={notificationsEnabled ? colors.textInverse : colors.surface}
-            />
-          </View>
-        </View>
-
-        <View style={styles.sectionCard}>
-          <Text style={styles.sectionLabel}>Coaching</Text>
-          <View style={styles.sectionRow}>
-            <View style={styles.sectionIcon}>
-              <Ionicons name="golf-outline" size={20} color={colors.brandFern} />
-            </View>
-            <View style={styles.sectionCopy}>
-              <Text style={styles.sectionTitle}>Coaching style</Text>
-              <Text style={styles.sectionDescription}>Personalized coaching (more styles coming soon)</Text>
+            <View style={styles.accountCopy}>
+              <Text style={styles.accountPrimary}>{user?.email || 'Not signed in'}</Text>
             </View>
           </View>
-        </View>
 
-        <View style={styles.linksCard}>
-          {settingsSections.map((item) => (
-            <TouchableOpacity
-              key={item.id}
-              style={styles.linkRow}
-              activeOpacity={0.8}
-              onPress={item.onPress}
-            >
-              <View style={styles.linkIcon}>
-                <Ionicons name={item.icon} size={20} color={colors.brandFern} />
-              </View>
-              <View style={styles.linkCopy}>
-                <Text style={styles.linkTitle}>{item.title}</Text>
-                <Text style={styles.linkDescription}>{item.description}</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
-            </TouchableOpacity>
+          <View style={styles.groupDivider} />
+          {settingsActions.map((item, index) => (
+            <View key={item.id}>
+              <TouchableOpacity
+                style={styles.actionRow}
+                activeOpacity={0.8}
+                onPress={item.onPress}
+              >
+                <View style={styles.actionIcon}>
+                  <Ionicons name={item.icon} size={18} color={colors.brandFern} />
+                </View>
+                <View style={styles.actionCopy}>
+                  <Text style={styles.actionTitle}>{item.title}</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color={colors.textSecondary} />
+              </TouchableOpacity>
+              {index < settingsActions.length - 1 ? <View style={styles.separator} /> : null}
+            </View>
           ))}
-        </View>
 
-        <View style={styles.signOutSection}>
+          {showQaTools ? (
+            <>
+              <View style={styles.groupDivider} />
+              <View style={styles.qaPanel}>
+                <View style={styles.qaHeaderRow}>
+                  <Ionicons name="flask-outline" size={17} color={colors.statusWarning} />
+                  <Text style={styles.qaTitle}>QA Tools</Text>
+                </View>
+                <Text style={styles.qaMeta}>Env: {appEnv}</Text>
+                <Text style={styles.qaMeta}>User: {user?.id || 'none'}</Text>
+                <Text style={styles.qaMeta}>
+                  Entitlement: {entitlementActive ? 'active' : 'inactive'}
+                </Text>
+                <Text style={styles.qaMeta}>
+                  RevenueCat: {subscriptionsNativeAvailable ? 'native available' : 'native unavailable'} / {identityReady ? 'identity ready' : 'identity pending'}
+                </Text>
+                <Text style={styles.qaMeta}>
+                  RC User: {customerInfo?.originalAppUserId || customerInfo?.appUserID || 'none'}
+                </Text>
+                <TouchableOpacity
+                  style={styles.qaResetButton}
+                  activeOpacity={0.85}
+                  onPress={handleQaReset}
+                >
+                  <Text style={styles.qaResetButtonText}>Reset local first-run state</Text>
+                </TouchableOpacity>
+              </View>
+            </>
+          ) : null}
+
+          <View style={styles.groupDivider} />
           {!showSignOutConfirm ? (
             <TouchableOpacity
               style={styles.signOutRow}
               onPress={() => setShowSignOutConfirm(true)}
               activeOpacity={0.85}
             >
-              <Ionicons name="log-out-outline" size={20} color={colors.statusError} />
+              <Ionicons name="log-out-outline" size={18} color={colors.statusError} />
               <Text style={styles.signOutLabel}>Sign out</Text>
             </TouchableOpacity>
           ) : (
             <View style={styles.confirmContainer}>
-              <View style={styles.confirmTextContainer}>
-                <Text style={styles.confirmTitle}>Sign Out?</Text>
-                <Text style={styles.confirmDescription}>
-                  You can always sign back in anytime.
-                </Text>
-              </View>
+              <Text style={styles.confirmTitle}>Sign out?</Text>
               <View style={styles.confirmButtons}>
                 <TouchableOpacity
                   style={styles.confirmButtonSecondary}
@@ -188,34 +257,43 @@ const styles = StyleSheet.create({
   },
   content: {
     paddingHorizontal: spacing.lg,
+    paddingTop: spacing.xl,
     paddingBottom: spacing['3xl'],
-    paddingTop: spacing.base,
-    gap: spacing.lg,
   },
   headerButton: {
     padding: spacing.sm,
   },
-  cardBase: {
-    borderRadius: borderRadius.xl,
-    backgroundColor: colors.surface,
+  sheet: {
+    alignSelf: 'center',
+    width: '100%',
+    maxWidth: 560,
+    borderRadius: borderRadius.lg,
     borderWidth: 1,
-    borderColor: colors.border,
-    ...shadows.sm,
+    borderColor: colors.borderSubtle,
+    backgroundColor: colors.surface,
+    paddingHorizontal: spacing.xl,
+    paddingVertical: spacing.xl,
+    ...shadows.md,
   },
-  accountCard: {
-    borderRadius: borderRadius.xl,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-    padding: spacing.lg,
+  accountRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    ...shadows.sm,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+    backgroundColor: colors.surfaceBase,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.sm,
+  },
+  groupDivider: {
+    height: 1,
+    backgroundColor: colors.borderSubtle,
+    marginVertical: spacing.base,
   },
   avatarWrapper: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     backgroundColor: colors.brandFern,
     alignItems: 'center',
     justifyContent: 'center',
@@ -223,152 +301,98 @@ const styles = StyleSheet.create({
   },
   avatarInitials: {
     color: colors.textInverse,
-    fontSize: typography.fontSizes.lg,
+    fontSize: typography.fontSizes.base,
     fontFamily: typography.fontFamilyHeading,
     fontWeight: typography.fontWeights.semibold,
   },
   accountCopy: {
     flex: 1,
   },
-  accountTitle: {
-    color: colors.textSecondary,
-    fontFamily: typography.fontFamily,
-    fontSize: typography.fontSizes.sm,
-  },
-  accountSubtitle: {
-    marginTop: 2,
+  accountPrimary: {
     color: colors.text,
-    fontFamily: typography.fontFamilyHeading,
     fontSize: typography.fontSizes.base,
+    fontFamily: typography.fontFamily,
+    fontWeight: typography.fontWeights.medium,
   },
-  preferencesCard: {
-    borderRadius: borderRadius.xl,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-    padding: spacing.lg,
-    ...shadows.sm,
-  },
-  preferencesHeader: {
+  actionRow: {
     flexDirection: 'row',
     alignItems: 'center',
-  },
-  preferencesIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: colors.surfaceMuted,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: spacing.base,
-  },
-  preferencesCopy: {
-    flex: 1,
-  },
-  preferenceTitle: {
-    color: colors.text,
-    fontFamily: typography.fontFamilyHeading,
-    fontSize: typography.fontSizes.base,
-  },
-  preferenceDescription: {
-    marginTop: 2,
-    color: colors.textSecondary,
-    fontFamily: typography.fontFamily,
-    fontSize: typography.fontSizes.sm,
-    lineHeight: typography.lineHeights.relaxed * typography.fontSizes.sm,
-  },
-  sectionCard: {
-    borderRadius: borderRadius.xl,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-    padding: spacing.lg,
-    ...shadows.sm,
-  },
-  sectionLabel: {
-    color: colors.textSecondary,
-    fontFamily: typography.fontFamily,
-    fontSize: typography.fontSizes.xs,
-    textTransform: 'uppercase',
-    marginBottom: spacing.base,
-    letterSpacing: 1,
-  },
-  sectionRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  sectionIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: colors.surfaceMuted,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: spacing.base,
-  },
-  sectionCopy: {
-    flex: 1,
-  },
-  sectionTitle: {
-    color: colors.text,
-    fontFamily: typography.fontFamilyHeading,
-    fontSize: typography.fontSizes.base,
-  },
-  sectionDescription: {
-    marginTop: 4,
-    color: colors.textSecondary,
-    fontFamily: typography.fontFamily,
-    fontSize: typography.fontSizes.sm,
-    lineHeight: typography.lineHeights.relaxed * typography.fontSizes.sm,
-  },
-  linksCard: {
-    borderRadius: borderRadius.xl,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
+    borderRadius: borderRadius.md,
     paddingVertical: spacing.sm,
-    ...shadows.sm,
+    paddingHorizontal: spacing.xs,
   },
-  linkRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: spacing.base,
-    paddingHorizontal: spacing.lg,
-  },
-  linkIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+  actionIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     backgroundColor: colors.surfaceMuted,
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: spacing.base,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
   },
-  linkCopy: {
+  actionCopy: {
     flex: 1,
   },
-  linkTitle: {
+  actionTitle: {
     color: colors.text,
-    fontFamily: typography.fontFamilyHeading,
-    fontSize: typography.fontSizes.base,
-  },
-  linkDescription: {
-    marginTop: 2,
-    color: colors.textSecondary,
-    fontFamily: typography.fontFamily,
     fontSize: typography.fontSizes.sm,
-    lineHeight: typography.lineHeights.relaxed * typography.fontSizes.sm,
+    fontFamily: typography.fontFamily,
+    fontWeight: typography.fontWeights.medium,
   },
-  signOutSection: {
-    marginTop: spacing.lg,
+  separator: {
+    height: 1,
+    backgroundColor: colors.borderSubtle,
+  },
+  qaPanel: {
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+    backgroundColor: colors.surfaceBase,
+    padding: spacing.base,
+  },
+  qaHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: spacing.sm,
+  },
+  qaTitle: {
+    marginLeft: spacing.sm,
+    color: colors.text,
+    fontSize: typography.fontSizes.sm,
+    fontFamily: typography.fontFamilyHeading,
+    fontWeight: typography.fontWeights.semibold,
+  },
+  qaMeta: {
+    color: colors.textSecondary,
+    fontSize: typography.fontSizes.xs,
+    fontFamily: typography.fontFamilyMono,
+    marginTop: spacing.xs,
+  },
+  qaResetButton: {
+    marginTop: spacing.base,
+    minHeight: 40,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: colors.statusWarning,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(217,119,6,0.08)',
+  },
+  qaResetButtonText: {
+    color: colors.statusWarning,
+    fontSize: typography.fontSizes.sm,
+    fontFamily: typography.fontFamily,
+    fontWeight: typography.fontWeights.medium,
   },
   signOutRow: {
-    borderRadius: borderRadius.lg,
+    borderRadius: borderRadius.md,
     borderWidth: 1,
     borderColor: colors.statusError,
-    backgroundColor: 'rgba(197,48,48,0.08)',
-    paddingVertical: spacing.base,
-    paddingHorizontal: spacing.lg,
+    backgroundColor: 'rgba(197,48,48,0.06)',
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.base,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -376,29 +400,22 @@ const styles = StyleSheet.create({
   signOutLabel: {
     marginLeft: spacing.sm,
     color: colors.statusError,
-    fontFamily: typography.fontFamilyHeading,
-    fontSize: typography.fontSizes.base,
+    fontFamily: typography.fontFamily,
+    fontSize: typography.fontSizes.sm,
+    fontWeight: typography.fontWeights.medium,
   },
   confirmContainer: {
-    paddingVertical: spacing.sm,
-  },
-  confirmTextContainer: {
-    alignItems: 'center',
-    marginBottom: spacing.base,
+    paddingVertical: spacing.xs,
   },
   confirmTitle: {
-    fontSize: typography.fontSizes.base,
-    fontWeight: typography.fontWeights.medium,
     color: colors.text,
-    marginBottom: 4,
-    fontFamily: typography.fontFamily,
-  },
-  confirmDescription: {
-    fontSize: typography.fontSizes.sm,
-    color: colors.textSecondary,
-    fontFamily: typography.fontFamily,
+    fontSize: typography.fontSizes.base,
+    fontFamily: typography.fontFamilyHeading,
+    fontWeight: typography.fontWeights.semibold,
+    textAlign: 'center',
   },
   confirmButtons: {
+    marginTop: spacing.base,
     flexDirection: 'row',
     gap: spacing.sm,
   },
@@ -436,4 +453,3 @@ const styles = StyleSheet.create({
 });
 
 export default SettingsModal;
-

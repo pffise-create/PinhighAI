@@ -39,8 +39,7 @@ function extractAnalysisIdFromS3Key(s3Key) {
 
 // Extract user context from event with JWT validation
 const JWKS_CACHE_TTL_MS = 1000 * 60 * 60 * 6;
-let cachedJwks = null;
-let cachedJwksExpiresAt = 0;
+const jwksCacheByIssuer = new Map();
 
 function decodeJwtSegment(segment, label) {
   try {
@@ -87,23 +86,59 @@ async function fetchJsonWithTimeout(url, timeoutMs = JWKS_REQUEST_TIMEOUT_MS) {
   });
 }
 
-async function getJwks() {
-  const now = Date.now();
-  if (cachedJwks && cachedJwksExpiresAt > now) {
-    return cachedJwks;
-  }
+function parseCsvEnv(value) {
+  return String(value || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
 
+function getAllowedUserPoolIds() {
+  const poolIds = [
+    process.env.COGNITO_USER_POOL_ID,
+    ...parseCsvEnv(process.env.COGNITO_USER_POOL_IDS),
+  ].filter(Boolean);
+  return Array.from(new Set(poolIds));
+}
+
+function getAllowedClientIds() {
+  const clientIds = [
+    process.env.COGNITO_APP_CLIENT_ID,
+    ...parseCsvEnv(process.env.COGNITO_APP_CLIENT_IDS),
+  ].filter(Boolean);
+  return Array.from(new Set(clientIds));
+}
+
+function resolveTrustedIssuer(payload) {
   const region = process.env.COGNITO_REGION;
-  const userPoolId = process.env.COGNITO_USER_POOL_ID;
-  if (!region || !userPoolId) {
+  const allowedUserPoolIds = getAllowedUserPoolIds();
+  if (!region || !allowedUserPoolIds.length) {
     throw new Error('Cognito configuration missing. Set COGNITO_REGION and COGNITO_USER_POOL_ID.');
   }
 
-  const jwksUrl = `https://cognito-idp.${region}.amazonaws.com/${userPoolId}/.well-known/jwks.json`;
+  const trustedIssuers = allowedUserPoolIds.map(
+    (userPoolId) => `https://cognito-idp.${region}.amazonaws.com/${userPoolId}`
+  );
+  if (!trustedIssuers.includes(payload.iss)) {
+    throw new Error('Token issuer mismatch');
+  }
+  return payload.iss;
+}
+
+async function getJwks(issuer) {
+  const now = Date.now();
+  const cached = jwksCacheByIssuer.get(issuer);
+  if (cached?.jwks && cached.expiresAt > now) {
+    return cached.jwks;
+  }
+
+  const jwksUrl = `${issuer}/.well-known/jwks.json`;
   const jwks = await fetchJsonWithTimeout(jwksUrl);
 
-  cachedJwks = jwks;
-  cachedJwksExpiresAt = now + JWKS_CACHE_TTL_MS;
+  jwksCacheByIssuer.set(issuer, {
+    jwks,
+    expiresAt: now + JWKS_CACHE_TTL_MS,
+  });
   return jwks;
 }
 
@@ -120,7 +155,8 @@ async function verifyAndDecodeJwt(token) {
     throw new Error(`Unsupported JWT algorithm: ${header.alg}`);
   }
 
-  const jwks = await getJwks();
+  const issuer = resolveTrustedIssuer(payload);
+  const jwks = await getJwks(issuer);
   const matchingKey = jwks.keys?.find((key) => key.kid === header.kid);
   if (!matchingKey) {
     throw new Error('Unable to find matching signing key for token');
@@ -142,15 +178,12 @@ async function verifyAndDecodeJwt(token) {
     throw new Error('Invalid JWT signature');
   }
 
-  const region = process.env.COGNITO_REGION;
-  const userPoolId = process.env.COGNITO_USER_POOL_ID;
-  const issuer = `https://cognito-idp.${region}.amazonaws.com/${userPoolId}`;
-  if (payload.iss !== issuer) {
-    throw new Error('Token issuer mismatch');
-  }
-
-  const expectedClientId = process.env.COGNITO_APP_CLIENT_ID;
-  if (expectedClientId && payload.aud !== expectedClientId && payload.client_id !== expectedClientId) {
+  const allowedClientIds = getAllowedClientIds();
+  if (
+    allowedClientIds.length &&
+    !allowedClientIds.includes(payload.aud) &&
+    !allowedClientIds.includes(payload.client_id)
+  ) {
     throw new Error('Token not issued for expected client');
   }
 
@@ -225,7 +258,7 @@ function hasBearerToken(event) {
 }
 
 // Main workflow: Create analysis record and trigger frame extraction
-async function startAnalysisWorkflow(analysisId, s3Key, bucketName, userId, userContext, trimOptions = null) {
+async function startAnalysisWorkflow(analysisId, s3Key, bucketName, userId, userContext, trimOptions = null, userQuestion = null) {
   try {
     console.log(`Starting analysis workflow for ${analysisId}`);
     if (trimOptions) {
@@ -281,6 +314,9 @@ async function startAnalysisWorkflow(analysisId, s3Key, bucketName, userId, user
       analysisRecord.trim_start_ms = trimOptions.trimStartMs;
       analysisRecord.trim_end_ms = trimOptions.trimEndMs;
       analysisRecord.trim_duration_ms = trimOptions.trimEndMs - trimOptions.trimStartMs;
+    }
+    if (typeof userQuestion === 'string' && userQuestion.trim()) {
+      analysisRecord.user_question = userQuestion.trim();
     }
 
     // Create new analysis record
@@ -458,7 +494,7 @@ exports.handler = async (event) => {
     }
     
     const body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
-    const { s3Key, bucketName, trimStartMs, trimEndMs } = body;
+    const { s3Key, bucketName, trimStartMs, trimEndMs, userQuestion, question } = body;
 
     if (!s3Key || !bucketName) {
       return {
@@ -491,7 +527,8 @@ exports.handler = async (event) => {
       : null;
 
     // Start the analysis workflow with optional trim parameters
-    await startAnalysisWorkflow(analysisId, s3Key, bucketName, userId, userContext, trimOptions);
+    const normalizedUserQuestion = typeof userQuestion === 'string' ? userQuestion : (typeof question === 'string' ? question : null);
+    await startAnalysisWorkflow(analysisId, s3Key, bucketName, userId, userContext, trimOptions, normalizedUserQuestion);
     
     return {
       statusCode: 200,
