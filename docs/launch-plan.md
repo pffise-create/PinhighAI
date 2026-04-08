@@ -39,22 +39,30 @@ Prepare the app for the fastest credible launch path: `TestFlight beta -> iOS so
   - [x] 🟩 Add a dev/staging-only reset/debug path for auth, local state, and entitlement inspection.
   - [ ] 🟥 Validate the reset/debug path in a development build after a real Google sign-in.
 
-- [ ] 🟥 **Step 4: Finish Launch Auth**
-  - [ ] 🟥 Keep Google Sign In working.
-  - [ ] 🟥 Add and validate Apple Sign In in the actual app flow.
+- [ ] 🟨 **Step 4: Finish Launch Auth**
+  - [x] 🟩 Keep Google Sign In working.
+  - [ ] 🟨 Add and validate Apple Sign In in the actual app flow.
+    - [x] 🟩 Frontend button + handler wired (`signInWithRedirect({ provider: 'Apple' })`), gated on `'Apple'` being present in `EXPO_PUBLIC_AUTH_PROVIDERS`.
+    - [ ] 🟥 Configure Apple as an OIDC provider in staging + prod Cognito user pools (Apple team ID, services ID, key ID, private key). See `docs/staging-auth-setup-checklist.md` section 8.
+    - [ ] 🟥 Add `Apple` to `EXPO_PUBLIC_AUTH_PROVIDERS` in staging/prod env configs once Cognito is ready.
+    - [ ] 🟥 Device validation of the full round-trip on iOS.
   - [ ] 🟥 Verify sign-in, sign-out, and relaunch behavior on device.
 
-- [ ] 🟥 **Step 5: Finish RevenueCat and Store Wiring**
-  - [ ] 🟥 Configure RevenueCat entitlement and offering for launch.
+- [ ] 🟨 **Step 5: Finish RevenueCat and Store Wiring**
+  - [x] 🟩 `SubscriptionProvider` mounted in `App.js` inside `AuthProvider`; Settings `useSubscriptions()` now resolves instead of throwing.
+  - [ ] 🟥 Configure RevenueCat entitlement and offering for launch (dashboard).
   - [ ] 🟥 Create App Store products for `monthly` and `annual`.
   - [ ] 🟥 Configure the `7-day free trial`.
   - [ ] 🟥 Connect webhook-based entitlement sync.
   - [ ] 🟥 Validate paywall, trial, purchase, restore, and manage-subscription behavior on device.
 
-- [ ] 🟥 **Step 6: Finish Legal, Support, and Settings Surfaces**
-  - [ ] 🟥 Write real `Privacy Policy`.
-  - [ ] 🟥 Write real `Terms of Service`.
-  - [ ] 🟥 Replace placeholder support and legal actions in settings.
+- [ ] 🟨 **Step 6: Finish Legal, Support, and Settings Surfaces**
+  - [ ] 🟥 Write real `Privacy Policy` copy + host it.
+  - [ ] 🟥 Write real `Terms of Service` copy + host it.
+  - [ ] 🟨 Replace placeholder support and legal actions in settings.
+    - [x] 🟩 Added the missing Terms of Service row alongside Privacy Policy in `SettingsModal.js`.
+    - [x] 🟩 Removed literal "(placeholder)" suffix from the support copy; support email is a `TODO(launch)` awaiting real mailbox.
+    - [ ] 🟥 Swap the placeholder `Alert`s for real URL opens once copy is hosted.
   - [ ] 🟥 Ensure paywall and settings copy matches the real offer.
 
 - [ ] 🟥 **Step 7: Validate Beta Build**
