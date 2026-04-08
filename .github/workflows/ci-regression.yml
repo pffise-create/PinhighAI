@@ -1,0 +1,35 @@
+name: CI Regression
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - work
+
+jobs:
+  frontend-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Jest regression suite
+        run: npm test -- --runInBand
+
+      - name: Verify Expo web export compiles
+        env:
+          EXPO_NO_TELEMETRY: '1'
+          CI: '1'
+        run: npx expo export --platform web --clear

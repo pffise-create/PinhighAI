@@ -1,0 +1,204 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudWatch alarms for Golf Coach Lambda reliability and latency.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: golf-coach
+  Environment:
+    Type: String
+    Default: prod
+  AlarmTopicArn:
+    Type: String
+    Default: ''
+    Description: Optional SNS topic ARN for alarm notifications.
+
+  UploadHandlerFunctionName:
+    Type: String
+    Default: golf-video-upload-handler
+  FrameExtractorFunctionName:
+    Type: String
+    Default: golf-frame-extractor-simple
+  AiAnalysisFunctionName:
+    Type: String
+    Default: golf-ai-analysis-processor
+  ResultsApiFunctionName:
+    Type: String
+    Default: golf-results-api-handler
+  ChatApiFunctionName:
+    Type: String
+    Default: golf-chat-api-handler
+
+  ErrorThreshold:
+    Type: Number
+    Default: 1
+  ThrottleThreshold:
+    Type: Number
+    Default: 1
+  P95DurationMs:
+    Type: Number
+    Default: 15000
+
+Conditions:
+  HasAlarmTopic: !Not [!Equals [!Ref AlarmTopicArn, '']]
+
+Resources:
+  # Upload handler alarms
+  UploadErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-upload-errors'
+      AlarmDescription: !Sub 'Errors > ${ErrorThreshold} for ${UploadHandlerFunctionName}'
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref UploadHandlerFunctionName
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: !Ref ErrorThreshold
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref AWS::NoValue]
+
+  UploadDurationP95Alarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-upload-duration-p95'
+      AlarmDescription: !Sub 'p95 duration > ${P95DurationMs}ms for ${UploadHandlerFunctionName}'
+      Namespace: AWS/Lambda
+      MetricName: Duration
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref UploadHandlerFunctionName
+      ExtendedStatistic: p95
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: !Ref P95DurationMs
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref AWS::NoValue]
+
+  # Frame extractor alarms
+  FrameExtractorErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-frame-extractor-errors'
+      AlarmDescription: !Sub 'Errors > ${ErrorThreshold} for ${FrameExtractorFunctionName}'
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref FrameExtractorFunctionName
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: !Ref ErrorThreshold
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref AWS::NoValue]
+
+  FrameExtractorThrottlesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-frame-extractor-throttles'
+      AlarmDescription: !Sub 'Throttles > ${ThrottleThreshold} for ${FrameExtractorFunctionName}'
+      Namespace: AWS/Lambda
+      MetricName: Throttles
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref FrameExtractorFunctionName
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: !Ref ThrottleThreshold
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref AWS::NoValue]
+
+  # AI analysis alarms
+  AiAnalysisErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-ai-analysis-errors'
+      AlarmDescription: !Sub 'Errors > ${ErrorThreshold} for ${AiAnalysisFunctionName}'
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref AiAnalysisFunctionName
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: !Ref ErrorThreshold
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref AWS::NoValue]
+
+  AiAnalysisDurationP95Alarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-ai-analysis-duration-p95'
+      AlarmDescription: !Sub 'p95 duration > ${P95DurationMs}ms for ${AiAnalysisFunctionName}'
+      Namespace: AWS/Lambda
+      MetricName: Duration
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref AiAnalysisFunctionName
+      ExtendedStatistic: p95
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: !Ref P95DurationMs
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref AWS::NoValue]
+
+  # API handler alarms
+  ResultsApiErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-results-api-errors'
+      AlarmDescription: !Sub 'Errors > ${ErrorThreshold} for ${ResultsApiFunctionName}'
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ResultsApiFunctionName
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: !Ref ErrorThreshold
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref AWS::NoValue]
+
+  ChatApiErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-chat-api-errors'
+      AlarmDescription: !Sub 'Errors > ${ErrorThreshold} for ${ChatApiFunctionName}'
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ChatApiFunctionName
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: !Ref ErrorThreshold
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref AWS::NoValue]
+
+Outputs:
+  UploadErrorsAlarmName:
+    Value: !Ref UploadErrorsAlarm
+  FrameExtractorErrorsAlarmName:
+    Value: !Ref FrameExtractorErrorsAlarm
+  AiAnalysisErrorsAlarmName:
+    Value: !Ref AiAnalysisErrorsAlarm
+  ResultsApiErrorsAlarmName:
+    Value: !Ref ResultsApiErrorsAlarm
+  ChatApiErrorsAlarmName:
+    Value: !Ref ChatApiErrorsAlarm
