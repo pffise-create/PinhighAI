@@ -16,7 +16,9 @@ import { useSubscriptions } from '../context/SubscriptionContext';
 import { appEnv } from '../config/runtimeEnv';
 import { colors, spacing, typography, borderRadius, shadows } from '../utils/theme';
 
-const SUPPORT_EMAIL = 'support@divotlab.ai (placeholder)';
+// TODO(launch): replace with the real support mailbox before production release.
+// Tracked in docs/launch-plan.md Step 6.
+const SUPPORT_EMAIL_TBD = 'Support email is not configured yet.';
 const showQaTools = __DEV__ || appEnv !== 'prod';
 
 const SettingsModal = ({ navigation }) => {
@@ -127,7 +129,16 @@ const SettingsModal = ({ navigation }) => {
       title: 'Privacy Policy',
       onPress: () => showPlaceholderAction(
         'Privacy Policy',
-        'Privacy Policy link will be added when the legal/support site project is ready.'
+        'The Privacy Policy will be available before public launch.'
+      ),
+    },
+    {
+      id: 'terms',
+      icon: 'document-text-outline',
+      title: 'Terms of Service',
+      onPress: () => showPlaceholderAction(
+        'Terms of Service',
+        'The Terms of Service will be available before public launch.'
       ),
     },
     {
@@ -136,7 +147,7 @@ const SettingsModal = ({ navigation }) => {
       title: 'Help & Support',
       onPress: () => showPlaceholderAction(
         'Help & Support',
-        `Support email placeholder:\n${SUPPORT_EMAIL}`
+        SUPPORT_EMAIL_TBD
       ),
     },
   ];
