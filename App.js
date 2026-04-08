@@ -3,6 +3,7 @@ import { View, Text } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import AppNavigator from './src/navigation/AppNavigator';
 import { AuthProvider } from './src/context/AuthContext';
+import { SubscriptionProvider } from './src/context/SubscriptionContext';
 import { configureAmplify } from './src/config/amplifyConfig';
 
 // Configure AWS Amplify before component initialization
@@ -17,8 +18,10 @@ export default function App() {
   try {
     return (
       <AuthProvider>
-        <StatusBar style="light" backgroundColor="#2E8B57" />
-        <AppNavigator />
+        <SubscriptionProvider>
+          <StatusBar style="light" backgroundColor="#2E8B57" />
+          <AppNavigator />
+        </SubscriptionProvider>
       </AuthProvider>
     );
   } catch (error) {
