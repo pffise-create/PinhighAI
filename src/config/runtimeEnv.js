@@ -38,7 +38,7 @@ const api = {
   baseUrl: readString(process.env.EXPO_PUBLIC_API_BASE_URL),
 };
 
-const authProviders = readList(process.env.EXPO_PUBLIC_AUTH_PROVIDERS);
+export const authProviders = readList(process.env.EXPO_PUBLIC_AUTH_PROVIDERS);
 
 // Minimum set of variables required to configure Amplify for staging/prod.
 // Identity pool is intentionally not required here — amplifyConfig.js does not
