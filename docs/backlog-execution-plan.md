@@ -48,3 +48,7 @@ Before implementing any item below, I will ask for explicit confirmation if need
 - ✅ **2026-04-07:** Web bundle/export completed successfully (`npx expo export --platform web --clear`) to validate no bundler syntax breakages.
 - ✅ **2026-04-07:** Added GitHub Actions workflow (`.github/workflows/ci-regression.yml`) to run Jest regression + Expo web export on push/PR.
 - ✅ **2026-04-08:** Added CloudWatch alarm infrastructure template (`infrastructure/golf-cloudwatch-alarms.yaml`) + deployment instructions.
+- ✅ **2026-04-08:** Frontend audit on `claude/backlog-orchestration-plan-bfVtG` confirmed no helper-structure regressions and inverted FlatList perf props apply correctly.
+- ✅ **2026-04-08:** Expanded CloudWatch alarm template to full coverage (15 alarms = 5 Lambdas × Errors/Throttles/Duration p95) with per-Lambda p95 parameters; deploy runbook saved to `docs/aws-cloudwatch-alarms-deploy-handoff.md`.
+- ✅ **2026-04-08:** Added `aws-lambda-tests` job to `ci-regression.yml` running the four AWS Lambda Node test files; removed dead `work` branch trigger; verified `node --test` exits non-zero on failure.
+- ✅ **2026-04-08:** Captured automated acceptance evidence in `docs/acceptance-evidence-2026-04-08.md`; live-AWS / device items routed to bug bash.

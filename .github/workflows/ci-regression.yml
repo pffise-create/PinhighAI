@@ -5,7 +5,6 @@ on:
   push:
     branches:
       - main
-      - work
 
 jobs:
   frontend-regression:
@@ -33,3 +32,24 @@ jobs:
           EXPO_NO_TELEMETRY: '1'
           CI: '1'
         run: npx expo export --platform web --clear
+
+  aws-lambda-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run AWS Lambda unit tests
+        run: |
+          node --test \
+            AWS/test/coachingSystemPrompt.test.js \
+            AWS/test/swingRepository.test.js \
+            AWS/test/chatLoop.test.js \
+            AWS/test/aiAnalysisProcessor.test.js

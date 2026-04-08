@@ -209,9 +209,23 @@ aws cloudformation wait stack-delete-complete \
 
 ## CloudWatch Alarm Stack (Lambda Reliability)
 
-Use `golf-cloudwatch-alarms.yaml` to provision baseline error/throttle/duration alarms for the core Lambda pipeline.
+Use `golf-cloudwatch-alarms.yaml` to provision Errors / Throttles / Duration p95 alarms for all 5 core Lambdas (15 alarms total). Per-Lambda p95 thresholds are configurable via parameters; defaults reflect the 4/7 launch posture (chat=3s, results=2s, upload=10s, frame=20s, ai=45s).
 
-### Deploy alarm stack
+### Step 1: Create the SNS topic + email subscription (one-time)
+```bash
+aws sns create-topic \
+  --name golf-coach-alarms-prod \
+  --region us-east-1
+
+aws sns subscribe \
+  --topic-arn arn:aws:sns:us-east-1:<ACCOUNT_ID>:golf-coach-alarms-prod \
+  --protocol email \
+  --notification-endpoint pffise@gmail.com \
+  --region us-east-1
+```
+Confirm the subscription email in the inbox before deploying — unconfirmed subscriptions silently drop notifications.
+
+### Step 2: Deploy the alarm stack
 ```bash
 aws cloudformation deploy \
   --stack-name golf-coach-cloudwatch-alarms \
@@ -219,16 +233,28 @@ aws cloudformation deploy \
   --parameter-overrides \
     ProjectName=golf-coach \
     Environment=prod \
-    AlarmTopicArn=<optional-sns-topic-arn> \
+    AlarmTopicArn=arn:aws:sns:us-east-1:<ACCOUNT_ID>:golf-coach-alarms-prod \
+    ChatApiP95Ms=3000 \
+    ResultsApiP95Ms=2000 \
+    UploadP95Ms=10000 \
+    FrameExtractorP95Ms=20000 \
+    AiAnalysisP95Ms=45000 \
   --capabilities CAPABILITY_NAMED_IAM \
   --region us-east-1
 ```
+Omit `AlarmTopicArn` to deploy alarms without notifications (visible in CloudWatch console only). Omit any `*P95Ms` override to fall back to the default in the template.
 
-### Validate stack outputs
+### Step 3: Validate stack outputs and alarm states
 ```bash
 aws cloudformation describe-stacks \
   --stack-name golf-coach-cloudwatch-alarms \
   --query "Stacks[0].Outputs" \
+  --output table \
+  --region us-east-1
+
+aws cloudwatch describe-alarms \
+  --alarm-name-prefix golf-coach-prod \
+  --query "MetricAlarms[].{Name:AlarmName,State:StateValue}" \
   --output table \
   --region us-east-1
 ```
