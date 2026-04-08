@@ -1,9 +1,11 @@
 # Feature Implementation Plan
 
-**Overall Progress:** `38%`
+**Overall Progress:** `55%`
 
 ## TLDR
 Prepare the app for the fastest credible launch path: `TestFlight beta -> iOS soft launch`. Focus only on the remaining launch blockers we explicitly identified: staging/beta setup, repeatable first-run QA, Apple Sign In, RevenueCat/store wiring, legal/support surfaces, and final production readiness.
+
+**Code side is effectively done.** Every remaining task requires external access (AWS, Apple Developer portal, RevenueCat dashboard, App Store Connect, legal content, or a physical iOS device). See [Outstanding Launch Punch List](#outstanding-launch-punch-list) at the bottom of this file for the consolidated list. Env var reference: [`docs/launch-env-vars.md`](./launch-env-vars.md).
 
 ## Critical Decisions
 - Decision 1: `iOS only` - fastest path to launch and PMF testing.
@@ -80,3 +82,65 @@ Prepare the app for the fastest credible launch path: `TestFlight beta -> iOS so
   - [ ] 🟥 Release from a beta-validated build.
   - [ ] 🟥 Monitor sign-in completion, paywall views, trial starts, conversion, restores, and support issues.
   - [ ] 🟥 Use the soft launch to evaluate PMF before expanding scope.
+
+## Outstanding Launch Punch List
+
+Everything below needs a human to do it — either because it requires console/portal access, physical hardware, legal content, or business setup. Grouped by actor so each block can be worked in parallel.
+
+### 1. AWS / Cognito (Steps 2, 4)
+- [ ] Verify staging + prod Cognito user pools have all Hosted UI settings aligned with `golfcoach://` and `golfcoach://logout` callback URLs.
+- [ ] Configure **Apple** as an OIDC identity provider in the **staging** Cognito user pool. Requires: Apple team ID, Services ID, key ID, private key (.p8). See `docs/staging-auth-setup-checklist.md` §8 if it exists.
+- [ ] Repeat Apple OIDC configuration in the **prod** Cognito user pool before soft launch.
+
+### 2. EAS dashboard / env vars (Step 2)
+- [ ] Set all required `EXPO_PUBLIC_*` vars on the **preview** (staging) EAS environment per [`docs/launch-env-vars.md`](./launch-env-vars.md). Minimum: the 7 Cognito + API vars and `EXPO_PUBLIC_REVENUECAT_API_KEY`.
+- [ ] Once Apple OIDC is live in Cognito staging, update `EXPO_PUBLIC_AUTH_PROVIDERS` to `"Google,Apple"` on the preview environment.
+- [ ] Repeat for the **production** EAS environment before the prod build, including the RevenueCat product IDs and the legal/support URLs once those exist.
+
+### 3. Apple Developer portal (Step 4)
+- [ ] Create Services ID for Sign in with Apple (if not already).
+- [ ] Create the private key (.p8) and record key ID, team ID.
+- [ ] Hand these off to whoever configures Cognito OIDC.
+
+### 4. RevenueCat dashboard (Step 5)
+- [ ] Create entitlement `DivotLab Unlimited` (or update the env var to match whatever name you pick).
+- [ ] Create an offering containing the monthly + yearly packages.
+- [ ] Configure the **7-day free trial** on both products.
+- [ ] Set up the webhook for entitlement sync to the backend.
+
+### 5. App Store Connect (Steps 5, 8)
+- [ ] Create auto-renewable subscription products with IDs matching `EXPO_PUBLIC_REVENUECAT_MONTHLY_PRODUCT_ID` and `EXPO_PUBLIC_REVENUECAT_YEARLY_PRODUCT_ID` (defaults: `monthly`, `yearly`).
+- [ ] Attach the 7-day free introductory offer to each.
+- [ ] Create sandbox test users for purchase/restore validation.
+- [ ] Prepare App Store listing assets (screenshots, description, keywords, privacy labels).
+- [ ] Complete business entity, banking, tax, and payout setup.
+
+### 6. Legal / support content (Step 6)
+- [ ] Write Privacy Policy copy and host it at a stable URL.
+- [ ] Write Terms of Service copy and host it at a stable URL.
+- [ ] Stand up a real support mailbox.
+- [ ] Set `EXPO_PUBLIC_PRIVACY_POLICY_URL`, `EXPO_PUBLIC_TERMS_URL`, `EXPO_PUBLIC_SUPPORT_EMAIL` in the EAS environments — **no code change needed**, rows auto-flip to live links once set.
+- [ ] Audit paywall + settings copy against the real offer (price, trial length, billing cadence) before launch.
+
+### 7. QA identities (Step 3)
+- [ ] Create a set of staging Google test accounts.
+- [ ] Create dedicated Apple IDs for Sign in with Apple testing.
+- [ ] Create App Store sandbox testers for purchase testing.
+- [ ] Track them privately (password manager, not git).
+
+### 8. On-device validation (Steps 2, 3, 4, 5, 7)
+- [ ] Install a preview build from EAS on a physical iOS device.
+- [ ] **Step 2 close-out:** Confirm app boots against staging Cognito with no fallback warning. (Check console for `Configuring Amplify { ... usingFallback: false }`.)
+- [ ] **Step 3:** Run the reset/debug path in Settings → QA Tools after a real Google sign-in; confirm it clears auth + RevenueCat identity.
+- [ ] **Step 3:** Run both standardized QA loops — `fresh install + new account` and `existing install + unused account`.
+- [ ] **Step 4:** Round-trip Google Sign In (sign in → backgrounded → relaunch → sign out).
+- [ ] **Step 4:** Round-trip Apple Sign In, same flow, once Cognito OIDC is live.
+- [ ] **Step 5:** Paywall presentation, monthly purchase, yearly purchase, restore, trial start, manage subscription (Customer Center).
+- [ ] **Step 7:** End-to-end locked-analysis → paywall → purchase → unlocked-analysis flow.
+- [ ] **Step 7:** File any launch-blocking bugs found and re-test after fix.
+
+### 9. TestFlight + soft launch (Steps 7, 9)
+- [ ] Ship preview build to TestFlight once all device validation passes.
+- [ ] Invite beta testers; monitor crash reports + feedback.
+- [ ] Promote to soft launch after beta green light.
+- [ ] Monitor sign-in completion, paywall views, trial starts, conversion, restores, and support volume.
