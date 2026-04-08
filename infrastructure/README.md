@@ -207,6 +207,32 @@ aws cloudformation wait stack-delete-complete \
 3. **Monitor Performance**: Set up CloudWatch alarms for queue depth and processing errors
 4. **Scale Configuration**: Adjust batch sizes and concurrency based on processing volume
 
+## CloudWatch Alarm Stack (Lambda Reliability)
+
+Use `golf-cloudwatch-alarms.yaml` to provision baseline error/throttle/duration alarms for the core Lambda pipeline.
+
+### Deploy alarm stack
+```bash
+aws cloudformation deploy \
+  --stack-name golf-coach-cloudwatch-alarms \
+  --template-file golf-cloudwatch-alarms.yaml \
+  --parameter-overrides \
+    ProjectName=golf-coach \
+    Environment=prod \
+    AlarmTopicArn=<optional-sns-topic-arn> \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --region us-east-1
+```
+
+### Validate stack outputs
+```bash
+aws cloudformation describe-stacks \
+  --stack-name golf-coach-cloudwatch-alarms \
+  --query "Stacks[0].Outputs" \
+  --output table \
+  --region us-east-1
+```
+
 ## Troubleshooting
 
 ### Common Issues
