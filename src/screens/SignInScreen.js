@@ -5,6 +5,7 @@ import {
   Animated,
   Dimensions,
   Image,
+  Platform,
   SafeAreaView,
   ScrollView,
   StatusBar,
@@ -16,7 +17,7 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import { signInWithRedirect } from 'aws-amplify/auth';
 import { useAuth } from '../context/AuthContext';
-import { colors, typography, spacing, borderRadius, shadows, radius } from '../utils/theme';
+import { colors, typography, spacing, borderRadius, shadows } from '../utils/theme';
 
 const { height, width } = Dimensions.get('window');
 
@@ -37,9 +38,14 @@ const backgroundImages = [
   require('../../assets/photoes/AdobeStock_676798439.jpeg'),
 ];
 
-const SignInScreen = ({ navigation }) => {
+const isAlreadyAuthenticatedError = (error) =>
+  error?.name === 'UserAlreadyAuthenticatedException' ||
+  error?.code === 'UserAlreadyAuthenticatedException' ||
+  String(error?.message || '').includes('already a signed in user');
+
+const SignInScreen = () => {
   const [isLoading, setIsLoading] = useState(false);
-  const { isAuthenticated, isLoading: authLoading, checkAuthState } = useAuth();
+  const { isLoading: authLoading, checkAuthState } = useAuth();
   const [headlineIndex, setHeadlineIndex] = useState(0);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const [nextImageIndex, setNextImageIndex] = useState(1);
@@ -68,12 +74,6 @@ const SignInScreen = ({ navigation }) => {
     };
     preloadImages();
   }, []);
-
-  useEffect(() => {
-    if (!authLoading && isAuthenticated) {
-      navigation.replace('Chat');
-    }
-  }, [authLoading, isAuthenticated, navigation]);
 
   useEffect(() => {
     const headlineTimer = setInterval(() => {
@@ -159,6 +159,11 @@ const SignInScreen = ({ navigation }) => {
       await signInWithRedirect({ provider: 'Google' });
       await checkAuthState();
     } catch (error) {
+      if (isAlreadyAuthenticatedError(error)) {
+        await checkAuthState();
+        return;
+      }
+
       console.error('Google Sign-In error:', error);
       Alert.alert('Sign-In Error', error.message || 'Unable to sign in with Google.');
     } finally {
@@ -225,7 +230,7 @@ const SignInScreen = ({ navigation }) => {
             <View style={styles.logoBadge}>
               <Text style={styles.logoEmoji}>✨</Text>
             </View>
-            <Text style={styles.appTitle}>PinHigh AI</Text>
+            <Text style={styles.appTitle}>DivotLab AI</Text>
           </View>
 
           <View style={styles.headlineContainer}>
@@ -240,20 +245,21 @@ const SignInScreen = ({ navigation }) => {
               disabled={isLoading}
             >
               {isLoading ? (
-                <ActivityIndicator color={colors.textInverse} />
+                <ActivityIndicator color="#5F6368" size="small" />
               ) : (
                 <>
                   <View style={styles.googleIcon}>
-                    <Text style={styles.googleIconText}>G</Text>
+                    <Image
+                      source={require('../../assets/google/g-logo.png')}
+                      style={styles.googleMark}
+                      resizeMode="contain"
+                    />
                   </View>
                   <Text style={styles.primaryButtonLabel}>Continue with Google</Text>
                 </>
               )}
             </TouchableOpacity>
 
-            <View style={styles.badge}>
-              <Text style={styles.badgeText}>Precision Golf Coaching</Text>
-            </View>
           </View>
 
           <Text style={styles.legal}>
@@ -351,47 +357,40 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    height: 52,
-    borderRadius: 16,
-    backgroundColor: colors.brandFern,
-    ...shadows.sm,
+    height: 44,
+    borderRadius: 999,
+    backgroundColor: colors.white,
+    borderWidth: 1,
+    borderColor: '#747775',
+    paddingLeft: Platform.OS === 'ios' ? 16 : 12,
+    paddingRight: Platform.OS === 'ios' ? 16 : 12,
   },
   primaryButtonLabel: {
-    color: colors.textInverse,
-    fontSize: 16,
+    color: '#1F1F1F',
+    fontSize: 14,
+    lineHeight: 20,
+    fontFamily:
+      Platform.OS === 'android'
+        ? 'Roboto'
+        : Platform.OS === 'web'
+          ? 'Roboto, Arial, sans-serif'
+          : undefined,
     fontWeight: '500',
-    marginLeft: 8,
+    marginLeft: Platform.OS === 'ios' ? 12 : 10,
   },
   buttonDisabled: {
     opacity: 0.7,
   },
   googleIcon: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
+    width: 18,
+    height: 18,
     backgroundColor: colors.white,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  googleIconText: {
-    color: colors.brandForest,
-    fontWeight: '700',
-    fontSize: 14,
-  },
-  badge: {
-    marginTop: 24,
-    alignSelf: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    backgroundColor: 'rgba(201, 166, 84, 0.2)',
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: 'rgba(201, 166, 84, 0.4)',
-  },
-  badgeText: {
-    color: colors.brandGold,
-    fontSize: 14,
-    fontWeight: '600',
+  googleMark: {
+    width: 18,
+    height: 18,
   },
   legal: {
     marginTop: 24,

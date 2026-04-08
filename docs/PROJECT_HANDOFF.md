@@ -2,183 +2,143 @@
 
 ## Overview
 
-**Golf Coach AI** is a mobile coaching app that provides AI-powered golf swing analysis. Users upload swing videos, which are processed through an AWS serverless pipeline using FFmpeg for frame extraction and OpenAI GPT-5 vision for analysis. The app supports both authenticated users (Google OAuth via Cognito) and guest mode.
+**DivotLab AI** is a React Native / Expo mobile app for AI-powered golf swing coaching. Users authenticate, upload swing videos, receive AI analysis, and continue with conversational follow-up coaching.
 
-### Technology Stack
-- **Frontend:** React Native 0.81.4 / Expo 54.0.25, React Navigation 7.x
-- **Backend:** AWS Lambda (Node.js 18.x + Python), API Gateway, DynamoDB, S3, Cognito
-- **AI:** OpenAI GPT-5 vision for swing analysis + OpenAI chat/threads APIs for conversational coaching
-- **Auth:** AWS Cognito with Google OAuth integration
+Current product direction:
+- `iOS first`
+- `Google + Apple` auth at launch
+- `7-day free trial`
+- `monthly + annual` subscriptions
+- teaser/locked analysis before purchase
+- launch path: `TestFlight beta -> iOS soft launch`
 
-## Local Development Stack
+Launch planning reference:
+- See [`docs/launch-plan.md`](./launch-plan.md) for the current launch path and blockers.
+
+## Technology Stack
+
+- **Frontend:** React Native 0.81.5 / Expo 54 / React Navigation 7
+- **Backend:** AWS Lambda, API Gateway, DynamoDB, S3, Cognito
+- **AI:** OpenAI vision + chat/threads-based coaching
+- **Auth:** Cognito hosted auth with Google live, Apple planned for launch completion
+- **Subscriptions:** RevenueCat (`react-native-purchases`, `react-native-purchases-ui`)
+
+## Local Development
 
 ```bash
-# Install dependencies
 npm install
-
-# Start Expo (clears cache to pick up asset/layout changes)
 npx expo start -c
 ```
 
-- iOS: press `i` (simulator)
-- Android: press `a` (emulator)
+Useful scripts:
+- `npm test`
+- `npm run check:hygiene`
+- `npm run test:e2e`
 
-### Key Configuration Files
-- `src/config/amplifyConfig.js` - AWS Cognito/Amplify configuration
-- `src/utils/theme.js` - Design system tokens (colors, typography, spacing)
-- `app.json` - Expo configuration
-- `package.json` - Dependencies and scripts
+## Current Frontend Shape
 
-## Frontend Architecture
+### Navigation
 
-### Navigation Flow
-```
-SignInScreen (entry point)
-  |-- [Authenticated] --> ChatScreen (main interface)
-  |     |-- CoachingDashboard (recent analyses)
-  |     |-- UploadOptionsModal --> VideoRecordScreen/CameraScreen
-  |     |-- SettingsModal (navigation drawer)
-  |-- [Guest] --> Chat with limitations
+```text
+SignInScreen
+  -> ChatScreen
+     -> SettingsModal
 ```
 
-### Key Frontend Modules
+### Primary Frontend Files
 
 | Area | Primary Files |
 |------|---------------|
-| App Entry | `App.js`, `src/navigation/AppNavigator.js` |
-| Chat Experience | `src/screens/ChatScreen.js`, `src/components/ChatMessage.js` |
-| Sign-In | `src/screens/SignInScreen.js` |
+| App entry | `App.js`, `src/navigation/AppNavigator.js` |
+| Auth | `src/context/AuthContext.js`, `src/config/amplifyConfig.js`, `src/config/runtimeEnv.js` |
+| Subscriptions | `src/context/SubscriptionContext.js`, `src/config/subscriptions.js` |
+| Sign-in | `src/screens/SignInScreen.js` |
+| Chat | `src/screens/ChatScreen.js`, `src/components/chat/*` |
 | Settings | `src/screens/SettingsModal.js` |
-| Video Flows | `src/screens/VideoRecordScreen.js`, `src/screens/CameraScreen.js` |
-| Services | `src/services/chatApiService.js`, `src/services/videoService.js` |
-| Auth Context | `src/context/AuthContext.js` (Cognito + guest mode) |
+| Video upload / analysis client | `src/services/videoService.js`, `src/services/chatApiService.js` |
 
-### Design System (src/utils/theme.js)
-- **Colors:** Forest (#1E3A2A), Fern (#3C8D5A), Gold (#C9A654)
-- **Typography:** Manrope (headings), Inter (body)
-- **Spacing:** Tailwind-like 4px base scale
-- **Shadows:** 4-tier shadow system for depth
+### Current User Experience Status
 
-## AWS Backend Architecture
+Working now:
+- Google sign-in
+- authenticated app navigation
+- chat flow
+- video upload + polling for analysis
+- locked analysis handling in chat
+- RevenueCat client wiring
+- settings shell with subscription actions
 
-### Lambda Functions (Production)
+Not finished for launch:
+- Apple Sign In
+- real legal/support destinations
+- productionized paywall + store setup validation
+- repeatable first-run QA tooling
+- fully configured staging/prod envs
 
-| Function | Trigger | Purpose |
-|----------|---------|---------|
-| `golf-video-upload-handler` | POST /api/video/analyze | Seeds analysis job, validates JWT, invokes frame extraction |
-| `golf-frame-extractor-simple` | Lambda invoke | Downloads video, extracts frames via FFmpeg, uploads to S3 |
-| `golf-ai-analysis-processor` | Lambda invoke | Batches frames through GPT-5 vision, persists coaching output |
-| `golf-results-api-handler` | GET /api/video/results/{jobId} | Returns analysis status for polling |
-| `golf-chat-api-handler` | POST /api/chat | Conversational endpoint with OpenAI Threads + tool-use |
-| `golf-presigned-url-generator` | POST /api/video/presigned-url | Issues presigned S3 upload URLs |
+## Backend Architecture
 
-### DynamoDB Tables
+### Main Lambda Functions
 
-| Table | Primary Key | Purpose |
-|-------|-------------|---------|
-| `golf-coach-analyses` | `analysis_id` | Stores swing analysis jobs and results |
-| `golf-user-threads` | `user_id` | OpenAI thread metadata per user |
-| `golf-coach-swing-profiles` | `user_id` | Persistent golfer swing profile |
+| Function | Purpose |
+|----------|---------|
+| `golf-video-upload-handler` | Starts a video analysis job |
+| `golf-frame-extractor-simple` | Extracts frames with FFmpeg |
+| `golf-ai-analysis-processor` | Produces coaching output from frames |
+| `golf-results-api-handler` | Returns job status / results |
+| `golf-chat-api-handler` | Handles conversational coaching |
+| `golf-presigned-url-generator` | Generates S3 upload URLs |
+| `golf-revenuecat-webhook-handler` | Syncs entitlement state into backend access records |
 
-### Data Pipeline
-```
-Mobile App
-    |
-[1. Get Presigned URL] --> S3 signer
-    |
-[2. Upload Video] --> S3 (golf-coach-videos-*)
-    |
-[3. POST /api/video/analyze] --> golf-video-upload-handler
-    |--> DynamoDB: status=STARTED
-    |--> Invoke: golf-frame-extractor-simple
-         |
-    [Frame Extraction via FFmpeg]
-    |--> DynamoDB: status=COMPLETED, analysis_results
-         |
-    Invoke: golf-ai-analysis-processor
-         |
-    [AI Analysis via GPT-5]
-    |--> DynamoDB: ai_analysis, status=AI_COMPLETED
-    |--> golf-coach-swing-profiles (update profile)
-         |
-[4. Poll GET /api/video/results/{jobId}]
-    |
-Mobile App displays analysis + coaching
-```
+### Main Data Stores
 
-### Chat Loop Features (AWS/src/chat/chatLoop.js)
-When `CHAT_LOOP_ENABLED=true`, the chat handler supports tool-use:
-- `get_last_swing(user_id, limit)` - Fetch recent analyses
-- `get_swing_analysis(analysis_id)` - Get full swing details
-- `compare_swings(current_id, baseline_id)` - Delta metrics
-- `get_user_swing_profile(user_id)` - Golfer tendency snapshot
+| Table | Purpose |
+|-------|---------|
+| `golf-coach-analyses` | analysis jobs and results |
+| `golf-user-threads` | chat thread metadata |
+| `golf-coach-swing-profiles` | user swing profile persistence |
+| `USER_ACCESS_TABLE` / access records | entitlement state for subscription gating |
 
-### SQS Queues (Provisioned but Not Active)
-- `golf-coach-frame-extraction-queue-prod` + DLQ
-- `golf-coach-ai-analysis-queue-prod` + DLQ
-- Lambda event source mappings not yet configured
-- See `infrastructure/golf-sqs-queues.yaml` and `infrastructure/README.md`
+## Environment Model
 
-## Environment Variables (Lambda)
+The app is structured for:
+- `dev`
+- `staging`
+- `prod`
 
-```
-DYNAMODB_TABLE=golf-coach-analyses
-USER_THREADS_TABLE=golf-user-threads
-OPENAI_API_KEY=sk-...
-CHAT_LOOP_ENABLED=true
-COGNITO_REGION=us-east-1
-COGNITO_USER_POOL_ID=us-east-1_s9LDheoFF
-COGNITO_APP_CLIENT_ID=2ngu9n6gdcbab01r89qbjh88ns
-```
+Reference docs:
+- [`docs/environment-rollout.md`](./environment-rollout.md)
+- [`docs/staging-auth-setup-checklist.md`](./staging-auth-setup-checklist.md)
 
-## Current Status
+Important behavior:
+- `dev` may use fallback config for continuity
+- `staging` and `prod` should use explicit `EXPO_PUBLIC_*` env values
+- launch-critical auth/billing/settings changes should validate in staging before prod
 
-### Working Features
-- Google OAuth sign-in and guest mode
-- Video upload and S3 presigned URLs
-- Frame extraction via FFmpeg layer
-- AI-powered swing analysis via GPT-5
-- Chat interface with OpenAI Threads
-- Swing profile persistence (swingProfileRepository.js)
-- Recent analyses display and progress tracking
+## Known Launch Gaps
 
-### Known Frontend Issues
-1. **ChatScreen JSX error** - Helper functions around lines 680-780 may have malformed JSX or unmatched braces
-2. **Bundler errors on metadata list** - Replace `{'\u2022'}` with plain string bullets
-3. **Asset resolution** - Confirm `assets/videos/golf-background-{1,2,3}.mp4` exist for SignIn background
+- Apple Sign In is not wired into the current UI flow
+- Settings still contain placeholder support/legal actions
+- Legal copy still needs to be written
+- RevenueCat/store setup still needs end-to-end device validation
+- business entity and payout setup are outside the repo and still pending
 
-### Pending Backend Work
-- [ ] Activate SQS queue-based processing (queues provisioned, mappings not configured)
-- [ ] Add CloudWatch alarms for queue depth and error monitoring
-- [ ] Implement automated regression tests in CI
+## Validation Status
 
-## Key Documentation Files
+Locally verified during current review:
+- `npm test` passes
+- `npm run check:hygiene` passes
 
-| File | Purpose |
-|------|---------|
-| `AGENTS.md` | Agent operating guidelines |
-| `docs/current-arch.md` | Detailed backend architecture |
-| `docs/acceptance-checklist.md` | QA checklist |
-| `docs/backend-auth-config.md` | Authentication configuration |
-| `infrastructure/README.md` | SQS deployment guide |
+Not yet verified in this review:
+- full Expo runtime boot
+- device sign-in flow
+- Apple Sign In
+- real purchase / restore flows
+- TestFlight path
 
-## Suggested Next Steps
+## Recommended Next References
 
-1. **Fix ChatScreen helpers** - Rebuild `renderMessage` and `renderInputSection` cleanly
-2. **Validate asset imports** - Run `ls assets/videos` to confirm video filenames
-3. **Smoke test** - `expo start -c`, verify sign-in loops, chat displays, uploads work
-4. **Activate SQS** - Create Lambda event source mappings per `infrastructure/README.md`
-5. **Add monitoring** - CloudWatch alarms for error rates and latency
-
-## Repository Notes
-
-- The `Expo/src/` directory contains legacy copies that may be out of sync with `src/`
-- `AWS/archive/` contains legacy code kept for reference
-- Numerous AWS test artifacts exist in root; consider cleanup after stabilization
-- Git status shows many untracked files; review before committing
-
-## Contact/Follow-Up
-
-- Designer assets: `UI redesign/Visual Redesign for Golf App/`
-- Background videos: `assets/videos/`
-- Lambda reference implementations: `AWS/lambda-deployment/production/`
+- [`docs/launch-plan.md`](./launch-plan.md)
+- [`docs/acceptance-checklist.md`](./acceptance-checklist.md)
+- [`docs/revenuecat-react-native-setup.md`](./revenuecat-react-native-setup.md)
+- [`docs/owner-sop-revenuecat-and-store-setup.md`](./owner-sop-revenuecat-and-store-setup.md)
+- [`docs/DEPLOYMENT-TRACKER.md`](./DEPLOYMENT-TRACKER.md)

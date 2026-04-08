@@ -38,8 +38,8 @@
   golf-dynamo-tables.yaml   # DynamoDB table definitions
 /docs/                      # Documentation and runbooks
 /assets/                    # Static assets (videos, images, icons)
-AGENTS.md                   # This file
-PROJECT_HANDOFF.md          # Engineering handoff document
+docs/AGENTS.md              # Agent operating guidelines
+docs/PROJECT_HANDOFF.md     # Engineering handoff document
 ```
 
 ### What to Commit
@@ -78,6 +78,8 @@ These rules aim to balance speed with prudence in an early-stage project:
 - Keep commits scoped to one logical change set so history is easy to trace and rollback.
 - Push commits to GitHub after each completed change set; avoid long local-only drift.
 - If a change affects deployed Lambda behavior, keep `AWS/src/`, `AWS/production/`, and `AWS/lambda-deployment/` in sync in the same commit.
+- If a change affects deployed Lambda behavior, add/update an entry in `docs/DEPLOYMENT-TRACKER.md` with `PENDING` or `DEPLOYED` status and evidence.
+- Any time code is touched in this repo (frontend or backend), verify end-to-end tests pass before considering the work complete. Minimum path to verify: upload video -> analysis result -> follow-up chat response. Record failures immediately and do not mark deployment `DEPLOYED` until E2E passes.
 
 **Respect boundaries:**
 
@@ -93,6 +95,16 @@ Because agility is important, the branching model is lightweight:
 - For each feature or fix, create a short-lived branch (e.g. feature/some-feature, fix/some-bug). Push your branch to GitHub early and often.
 - When the branch meets its goal (tests pass, the user is satisfied), merge it back into main. Formal pull-request reviews are optional; summarise changes and any outstanding caveats in the merge commit or description.
 
+### Beta-First Rollout (required for mobile auth/billing work)
+
+- For changes touching auth, subscriptions/paywall, or user settings, validate in `staging (beta)` before production release.
+- Prefer promoting the same tested commit from staging to production (or a narrowly scoped hotfix commit).
+- Use short-lived branches prefixed `codex/` for feature work to keep release diffs focused and reversible.
+- Document environment assumptions and validation steps in the work summary (e.g. "tested in staging with test account", "Playwright UI only", "device sandbox purchase tested").
+- Playwright validation is required for UI/auth/gating regressions, but **does not replace** device testing for App Store / Play purchase and restore flows.
+- Treat `docs/launch-plan.md` as the current launch scope reference unless a newer planning doc explicitly supersedes it.
+- For first-run signup/paywall work, maintain a repeatable QA path using staging identities plus a reset/debug workflow; do not rely on reused prod identities or app config hacks.
+
 ## 4) CI/CD and Deployments
 
 Automate what you can, but don't let automation block progress. Typical patterns include:
@@ -100,6 +112,10 @@ Automate what you can, but don't let automation block progress. Typical patterns
 - On push to main, run lints/tests and deploy a dev/staging environment via GitHub Actions using an AWS OIDC role. This keeps main always runnable.
 - Optionally, tag a commit (e.g. v0.1.0) to trigger a production deployment. Manual approval gates are recommended for prod, but can be added later when the project matures.
 - Keep CI workflows simple initially (install dependencies, run tests, deploy dev). Expand as the codebase and team grow.
+
+### Environment and rollout reference
+
+- See `docs/environment-rollout.md` for the current `dev / staging(beta) / prod` model, environment-variable strategy, and beta-first promotion workflow.
 
 ## 5) Environment Variables and Secrets
 
