@@ -1,5 +1,5 @@
 // Authentication Context for Golf Coach App
-import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { fetchAuthSession, getCurrentUser, signOut } from 'aws-amplify/auth';
 import { Hub } from 'aws-amplify/utils';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -43,6 +43,16 @@ function parseIdTokenPayload(idToken) {
   return decodeJwtPayload(idToken.toString());
 }
 
+function isExpectedUnauthenticatedError(error) {
+  const message = String(error?.message || error || '');
+  return (
+    message.includes('User needs to be authenticated') ||
+    message.includes('No current user') ||
+    message.includes('No ID token in auth session') ||
+    message.includes('not authenticated')
+  );
+}
+
 function buildUserInfo(currentUser, payload) {
   const userId = currentUser?.userId || payload?.sub;
   const email = payload?.email || currentUser?.signInDetails?.loginId || '';
@@ -61,6 +71,7 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const authCheckPromiseRef = useRef(null);
 
   const clearLegacyAuthStorage = useCallback(async () => {
     try {
@@ -99,25 +110,45 @@ export const AuthProvider = ({ children }) => {
   }, []);
 
   const checkAuthState = useCallback(async () => {
-    try {
-      setIsLoading(true);
+    if (authCheckPromiseRef.current) {
+      return authCheckPromiseRef.current;
+    }
 
-      const currentUser = await getCurrentUser();
-      const { payload } = await resolveValidSession(false);
-      const userInfo = buildUserInfo(currentUser, payload);
+    const checkPromise = (async () => {
+      try {
+        setIsLoading(true);
 
-      if (!userInfo.id) {
-        throw new Error('Authenticated session missing user id');
+        const currentUser = await getCurrentUser();
+        const { payload } = await resolveValidSession(false);
+        const userInfo = buildUserInfo(currentUser, payload);
+
+        if (!userInfo.id) {
+          throw new Error('Authenticated session missing user id');
+        }
+
+        setUser(userInfo);
+        setIsAuthenticated(true);
+        await clearLegacyAuthStorage();
+        return true;
+      } catch (error) {
+        if (!isExpectedUnauthenticatedError(error)) {
+          console.log('No valid authenticated session found:', error?.message || error);
+        }
+        await setUnauthenticated();
+        return false;
+      } finally {
+        setIsLoading(false);
       }
+    })();
 
-      setUser(userInfo);
-      setIsAuthenticated(true);
-      await clearLegacyAuthStorage();
-    } catch (error) {
-      console.log('No valid authenticated session found:', error?.message || error);
-      await setUnauthenticated();
+    authCheckPromiseRef.current = checkPromise;
+
+    try {
+      return await checkPromise;
     } finally {
-      setIsLoading(false);
+      if (authCheckPromiseRef.current === checkPromise) {
+        authCheckPromiseRef.current = null;
+      }
     }
   }, [clearLegacyAuthStorage, resolveValidSession, setUnauthenticated]);
 

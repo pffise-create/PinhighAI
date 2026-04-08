@@ -1,20 +1,27 @@
 // Chat API Handler - Focused Lambda for handling chat requests with user threading
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient, GetCommand, PutCommand } = require('@aws-sdk/lib-dynamodb');
+const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
 const { SecretsManagerClient, GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');
 const { executeChatLoop } = require('../chat/chatLoop');
+const swingRepository = require('../data/swingRepository');
+const { SYSTEM_PROMPT, buildCoachRenderPrompt } = require('../prompts/coachingSystemPrompt');
+const { buildLockedContent, evaluateAccessForLockedResult } = require('../access/entitlementGate');
 const crypto = require('crypto');
 const https = require('https');
 
 // Initialize clients
 let dynamodb = null;
+let s3Client = null;
 let secretsManager = null;
 let cachedOpenAIKey = null;
 const CHAT_LOOP_ENABLED = process.env.CHAT_LOOP_ENABLED === 'true';
 const HTTP_REQUEST_TIMEOUT_MS = parseInt(process.env.HTTP_REQUEST_TIMEOUT_MS || '8000', 10);
+const CHAT_VISUAL_TOOL_ENABLED = process.env.CHAT_VISUAL_TOOL_ENABLED !== 'false';
+const CHAT_VISUAL_TOOL_MAX_FRAMES = Math.max(2, Math.min(parseInt(process.env.CHAT_VISUAL_TOOL_MAX_FRAMES || '4', 10), 6));
+const COACH_TONE_PROFILE = (process.env.COACH_TONE_PROFILE || 'wry').toLowerCase();
 const JWKS_CACHE_TTL_MS = 1000 * 60 * 60 * 6;
-let cachedJwks = null;
-let cachedJwksExpiresAt = 0;
+const jwksCacheByIssuer = new Map();
 
 function getDynamoClient() {
   if (!dynamodb) {
@@ -29,6 +36,13 @@ function getSecretsManagerClient() {
     secretsManager = new SecretsManagerClient({});
   }
   return secretsManager;
+}
+
+function getS3Client() {
+  if (!s3Client) {
+    s3Client = new S3Client({});
+  }
+  return s3Client;
 }
 
 async function ensureOpenAIKey() {
@@ -84,6 +98,78 @@ function hasBearerToken(event) {
   return !!(authHeader && authHeader.startsWith('Bearer '));
 }
 
+function createChatLockedResultRef({ userId, message, reply }) {
+  const hash = crypto.createHash('sha256');
+  hash.update(String(userId || ''));
+  hash.update('|chat|');
+  hash.update(String(message || ''));
+  hash.update('|');
+  hash.update(String(reply || ''));
+  return `chat#${hash.digest('hex').slice(0, 24)}`;
+}
+
+async function buildChatSuccessPayload({ userContext, userMessage, coachReply, extra = {} }) {
+  const safeReply = typeof coachReply === 'string' ? coachReply.trim() : '';
+  const basePayload = {
+    response: safeReply,
+    message: safeReply,
+    success: true,
+    timestamp: new Date().toISOString(),
+    ...extra,
+  };
+
+  if (!userContext?.userId) {
+    return basePayload;
+  }
+
+  let accessDecision;
+  try {
+    accessDecision = await evaluateAccessForLockedResult({
+      userId: userContext.userId,
+      client: getDynamoClient(),
+      previewType: 'chat',
+      resultRef: createChatLockedResultRef({
+        userId: userContext.userId,
+        message: userMessage,
+        reply: safeReply,
+      }),
+    });
+  } catch (error) {
+    console.error('CHAT_GATING_CHECK_ERROR:', error);
+    return basePayload;
+  }
+
+  if (accessDecision.allowFullResult) {
+    return basePayload;
+  }
+
+  const lockedAnalysis = accessDecision.allowLockedResult
+    ? buildLockedContent({
+        aiAnalysis: { coaching_response: safeReply },
+        lockContext: 'chat_response',
+      })
+    : {
+        locked: true,
+        lock_context: 'chat_response',
+        headline: 'See the full swing breakdown',
+        body: 'Start your 7-day free trial to unlock the complete analysis.',
+        cta_label: 'Start 7-Day Free Trial',
+        cta_action: 'start_trial',
+      };
+
+  const teaserText = lockedAnalysis.preview_summary || lockedAnalysis.preview_key_issue || lockedAnalysis.body;
+
+  return {
+    ...basePayload,
+    response: teaserText,
+    message: teaserText,
+    locked: true,
+    lock_reason: 'subscription_required',
+    partial_result_available: !!accessDecision.allowLockedResult,
+    locked_analysis: lockedAnalysis,
+  };
+}
+
 function decodeJwtSegment(segment, label) {
   try {
     return JSON.parse(Buffer.from(segment, 'base64url').toString('utf8'));
@@ -125,22 +211,58 @@ async function fetchJsonWithTimeout(url, timeoutMs = HTTP_REQUEST_TIMEOUT_MS) {
   });
 }
 
-async function getJwks() {
-  const now = Date.now();
-  if (cachedJwks && cachedJwksExpiresAt > now) {
-    return cachedJwks;
-  }
+function parseCsvEnv(value) {
+  return String(value || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
 
+function getAllowedUserPoolIds() {
+  const poolIds = [
+    process.env.COGNITO_USER_POOL_ID,
+    ...parseCsvEnv(process.env.COGNITO_USER_POOL_IDS),
+  ].filter(Boolean);
+  return Array.from(new Set(poolIds));
+}
+
+function getAllowedClientIds() {
+  const clientIds = [
+    process.env.COGNITO_APP_CLIENT_ID,
+    ...parseCsvEnv(process.env.COGNITO_APP_CLIENT_IDS),
+  ].filter(Boolean);
+  return Array.from(new Set(clientIds));
+}
+
+function resolveTrustedIssuer(payload) {
   const region = process.env.COGNITO_REGION;
-  const userPoolId = process.env.COGNITO_USER_POOL_ID;
-  if (!region || !userPoolId) {
+  const allowedUserPoolIds = getAllowedUserPoolIds();
+  if (!region || !allowedUserPoolIds.length) {
     throw new Error('Cognito configuration missing. Set COGNITO_REGION and COGNITO_USER_POOL_ID.');
   }
 
-  const jwksUrl = `https://cognito-idp.${region}.amazonaws.com/${userPoolId}/.well-known/jwks.json`;
+  const trustedIssuers = allowedUserPoolIds.map(
+    (userPoolId) => `https://cognito-idp.${region}.amazonaws.com/${userPoolId}`
+  );
+  if (!trustedIssuers.includes(payload.iss)) {
+    throw new Error('Token issuer mismatch');
+  }
+  return payload.iss;
+}
+
+async function getJwks(issuer) {
+  const now = Date.now();
+  const cached = jwksCacheByIssuer.get(issuer);
+  if (cached?.jwks && cached.expiresAt > now) {
+    return cached.jwks;
+  }
+
+  const jwksUrl = `${issuer}/.well-known/jwks.json`;
   const jwks = await fetchJsonWithTimeout(jwksUrl);
-  cachedJwks = jwks;
-  cachedJwksExpiresAt = now + JWKS_CACHE_TTL_MS;
+  jwksCacheByIssuer.set(issuer, {
+    jwks,
+    expiresAt: now + JWKS_CACHE_TTL_MS,
+  });
   return jwks;
 }
 
@@ -157,7 +279,8 @@ async function verifyAndDecodeJwt(token) {
     throw new Error(`Unsupported JWT algorithm: ${header.alg}`);
   }
 
-  const jwks = await getJwks();
+  const issuer = resolveTrustedIssuer(payload);
+  const jwks = await getJwks(issuer);
   const matchingKey = jwks.keys?.find((key) => key.kid === header.kid);
   if (!matchingKey) {
     throw new Error('Unable to find matching signing key for token');
@@ -179,15 +302,12 @@ async function verifyAndDecodeJwt(token) {
     throw new Error('Invalid JWT signature');
   }
 
-  const region = process.env.COGNITO_REGION;
-  const userPoolId = process.env.COGNITO_USER_POOL_ID;
-  const issuer = `https://cognito-idp.${region}.amazonaws.com/${userPoolId}`;
-  if (payload.iss !== issuer) {
-    throw new Error('Token issuer mismatch');
-  }
-
-  const expectedClientId = process.env.COGNITO_APP_CLIENT_ID;
-  if (expectedClientId && payload.aud !== expectedClientId && payload.client_id !== expectedClientId) {
+  const allowedClientIds = getAllowedClientIds();
+  if (
+    allowedClientIds.length &&
+    !allowedClientIds.includes(payload.aud) &&
+    !allowedClientIds.includes(payload.client_id)
+  ) {
     throw new Error('Token not issued for expected client');
   }
 
@@ -332,7 +452,8 @@ async function handleChatLoopRequest(event, userContext) {
     userMessage: message,
     dynamoClient: dynamodbClient,
     requestOpenAi,
-    logger
+    logger,
+    visualQuestionTool: answerVisualQuestionWithFrames,
   });
 
   return {
@@ -341,12 +462,13 @@ async function handleChatLoopRequest(event, userContext) {
       'Content-Type': 'application/json',
       'Access-Control-Allow-Origin': '*'
     },
-    body: JSON.stringify({
-      response: result.reply,
-      message: result.reply,
-      success: true,
-      timestamp: new Date().toISOString()
-    })
+    body: JSON.stringify(
+      await buildChatSuccessPayload({
+        userContext,
+        userMessage: message,
+        coachReply: result.reply,
+      })
+    )
   };
 }
 async function callChatCompletions(payload) {
@@ -370,6 +492,171 @@ async function callChatCompletions(payload) {
   } catch (error) {
     throw new Error('Failed to parse OpenAI chat response: ' + error.message);
   }
+}
+
+function selectVisualFrames(frames, maxFrames = CHAT_VISUAL_TOOL_MAX_FRAMES) {
+  if (!Array.isArray(frames) || frames.length === 0) {
+    return [];
+  }
+  if (frames.length <= maxFrames) {
+    return frames;
+  }
+
+  const preferredPhases = ['setup', 'backswing', 'transition', 'downswing', 'impact', 'follow_through'];
+  const selected = [];
+  const usedIndexes = new Set();
+
+  preferredPhases.forEach((phase) => {
+    if (selected.length >= maxFrames) return;
+    const idx = frames.findIndex((frame, index) => !usedIndexes.has(index) && String(frame.phase || '').toLowerCase().includes(phase));
+    if (idx >= 0) {
+      usedIndexes.add(idx);
+      selected.push(frames[idx]);
+    }
+  });
+
+  for (let i = 0; i < frames.length && selected.length < maxFrames; i += 1) {
+    if (!usedIndexes.has(i)) {
+      usedIndexes.add(i);
+      selected.push(frames[i]);
+    }
+  }
+
+  return selected;
+}
+
+async function downloadFrameAsDataUrl(imageUrl) {
+  const url = new URL(imageUrl);
+  const bucket = url.hostname.split('.')[0];
+  const key = decodeURIComponent(url.pathname.replace(/^\//, ''));
+  const s3 = getS3Client();
+  const response = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+  const chunks = [];
+  for await (const chunk of response.Body) {
+    chunks.push(chunk);
+  }
+  const buffer = Buffer.concat(chunks);
+  return {
+    dataUrl: `data:image/jpeg;base64,${buffer.toString('base64')}`,
+    bytes: buffer.length,
+  };
+}
+
+function extractFramesFromAnalysis(analysis) {
+  const frames = analysis?.analysisResults?.frames;
+  if (!Array.isArray(frames)) {
+    return [];
+  }
+  return frames
+    .filter((frame) => frame && typeof frame === 'object' && (frame.url || frame.frame_url || frame.image_url))
+    .map((frame, index) => ({
+      phase: frame.phase || frame.frame_id || `frame_${index + 1}`,
+      url: frame.url || frame.frame_url || frame.image_url,
+    }));
+}
+
+async function answerVisualQuestionWithFrames({ userId, question, analysisId, dynamoClient, logger }) {
+  const safeLog = logger || console;
+
+  if (!CHAT_VISUAL_TOOL_ENABLED) {
+    return {
+      status: 'disabled',
+      answer: null,
+      message: 'Visual frame re-check tool is disabled.',
+    };
+  }
+
+  const analysis = analysisId
+    ? await swingRepository.getSwingAnalysis({ analysisId, client: dynamoClient })
+    : (await swingRepository.getLastAnalyzedSwings({ userId, limit: 1, client: dynamoClient }))[0];
+
+  if (!analysis) {
+    return {
+      status: 'not_found',
+      answer: null,
+      message: 'No analyzed swing found for visual follow-up.',
+    };
+  }
+
+  const frames = extractFramesFromAnalysis(analysis);
+  const selectedFrames = selectVisualFrames(frames, CHAT_VISUAL_TOOL_MAX_FRAMES);
+  if (selectedFrames.length === 0) {
+    return {
+      status: 'frames_unavailable',
+      answer: null,
+      message: 'Frames are unavailable for this swing.',
+      analysis_id: analysis.analysisId,
+    };
+  }
+
+  const frameImages = [];
+  for (const frame of selectedFrames) {
+    try {
+      const payload = await downloadFrameAsDataUrl(frame.url);
+      frameImages.push({ phase: frame.phase, image: payload.dataUrl, bytes: payload.bytes });
+    } catch (error) {
+      safeLog.warn('CHAT_LOOP_WARN visual frame download failed', frame.phase, error.message);
+    }
+  }
+
+  if (frameImages.length === 0) {
+    return {
+      status: 'frames_unavailable',
+      answer: null,
+      message: 'Frames could not be loaded for this swing.',
+      analysis_id: analysis.analysisId,
+    };
+  }
+
+  const visualPrompt = [
+    {
+      type: 'text',
+      text:
+        buildCoachRenderPrompt({
+          responseMode: 'visual_fact_check',
+          tone: COACH_TONE_PROFILE,
+          hasQuestion: true,
+        }) + ' Only use what you can infer from the provided swing images. Do not invent details.',
+    },
+    {
+      type: 'text',
+      text: `User question: ${question}`,
+    },
+  ];
+
+  frameImages.forEach((frame) => {
+    visualPrompt.push({ type: 'text', text: `Reference frame phase: ${frame.phase}` });
+    visualPrompt.push({ type: 'image_url', image_url: { url: frame.image } });
+  });
+
+  const startedAt = Date.now();
+  const response = await callChatCompletions({
+    model: process.env.CHAT_VISUAL_TOOL_MODEL || process.env.CHAT_LOOP_MODEL || 'gpt-4o-mini',
+    messages: [
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'user', content: visualPrompt },
+    ],
+    max_completion_tokens: 320,
+    temperature: 0.35,
+  });
+  const durationMs = Date.now() - startedAt;
+
+  const answer = response?.choices?.[0]?.message?.content?.trim() || '';
+  safeLog.debug?.('VISUAL_TOOL_RESULT', {
+    analysisId: analysis.analysisId,
+    framesRequested: selectedFrames.length,
+    framesLoaded: frameImages.length,
+    bytesLoaded: frameImages.reduce((sum, frame) => sum + (frame.bytes || 0), 0),
+    durationMs,
+  });
+
+  return {
+    status: 'ok',
+    answer,
+    analysis_id: analysis.analysisId,
+    frames_used: frameImages.map((frame) => frame.phase),
+    duration_ms: durationMs,
+  };
 }
 
 
@@ -556,13 +843,14 @@ async function handleChatRequest(event, userContext) {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*'
       },
-      body: JSON.stringify({
-        response: chatResponse.trim(),
-        message: chatResponse.trim(), // Fallback for app compatibility
-        thread_id: threadId,
-        timestamp: new Date().toISOString(),
-        success: true
-      })
+      body: JSON.stringify(
+        await buildChatSuccessPayload({
+          userContext,
+          userMessage: message,
+          coachReply: chatResponse.trim(),
+          extra: { thread_id: threadId },
+        })
+      )
     };
     
   } catch (error) {

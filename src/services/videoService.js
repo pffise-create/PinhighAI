@@ -1,6 +1,9 @@
 // videoService.js - Video upload and analysis pipeline
 // Handles: presigned URL -> S3 upload -> trigger analysis -> poll for results
-const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'https://t7y64hqkq0.execute-api.us-east-1.amazonaws.com/prod';
+const API_BASE_URL =
+  process.env.EXPO_PUBLIC_API_BASE_URL ||
+  process.env.EXPO_PUBLIC_API_URL ||
+  'https://t7y64hqkq0.execute-api.us-east-1.amazonaws.com/prod';
 const VIDEO_BUCKET = process.env.EXPO_PUBLIC_VIDEO_BUCKET || 'golf-coach-videos-1753203601';
 const DEFAULT_POLL_INTERVAL_MS = 1500;
 
@@ -8,37 +11,37 @@ const DEFAULT_POLL_INTERVAL_MS = 1500;
 // Each stage has multiple variants that rotate every ~3-4s for visual life.
 const STAGE_MESSAGES = {
   EXTRACTING_FRAMES: [
-    'Breaking down your swing frame by frame...',
-    'Capturing key positions...',
-    'Isolating your swing sequence...',
+    'Pulling the clip apart frame by frame...',
+    'Marking key positions in your swing...',
+    'Laying out your swing sequence...',
   ],
   PROCESSING: [
-    'Mapping P1 through P10 positions...',
-    'Tracing your swing plane...',
-    'Measuring club path and face angle...',
+    'Fixing divots and lining up the details...',
+    'Walking the swing through setup to finish...',
+    'Checking path, face, and strike pattern...',
   ],
   UPLOADING_FRAMES: [
-    'Preparing frames for analysis...',
+    'Stacking your key frames on the range mat...',
     'Lining up the shot data...',
-    'Organizing swing positions...',
+    'Sorting swing positions for the next pass...',
   ],
   READY_FOR_AI: [
-    'Handing off to your AI coach...',
-    'Coach is reviewing your swing...',
-    'Setting up the lesson...',
+    'Handing this over for a deeper look...',
+    'Getting the next swing notes ready...',
+    'Setting up your breakdown...',
   ],
   ANALYZING: [
-    'Your coach is studying the details...',
-    'Comparing against tour-level fundamentals...',
-    'Building your personalized feedback...',
+    'Checking the little things that move the ball...',
+    'Comparing your motion to solid fundamentals...',
+    'Building your swing notes...',
   ],
   analyzing: [
-    'Your coach is studying the details...',
-    'Comparing against tour-level fundamentals...',
-    'Building your personalized feedback...',
+    'Checking the little things that move the ball...',
+    'Comparing your motion to solid fundamentals...',
+    'Building your swing notes...',
   ],
-  processing: ['Preparing your swing for analysis...'],
-  completed: ['Analysis complete!'],
+  processing: ['Cleaning up the lie and prepping your swing...'],
+  completed: ['Round complete. Your swing breakdown is ready.'],
 };
 
 // Derive content type and extension from a video URI
@@ -133,7 +136,7 @@ class VideoService {
   }
 
   // Step 3: Trigger server-side analysis (optionally include trim bounds)
-  async triggerAnalysis(fileName, bucketName = VIDEO_BUCKET, userId, authHeaders = {}, trimData = null) {
+  async triggerAnalysis(fileName, bucketName = VIDEO_BUCKET, userId, authHeaders = {}, trimData = null, userQuestion = null) {
     if (!userId) throw new Error('AUTHENTICATION_REQUIRED');
 
     const requestBody = { s3Key: fileName, bucketName };
@@ -141,6 +144,9 @@ class VideoService {
     if (normalizedTrim) {
       requestBody.trimStartMs = normalizedTrim.trimStartMs;
       requestBody.trimEndMs = normalizedTrim.trimEndMs;
+    }
+    if (typeof userQuestion === 'string' && userQuestion.trim()) {
+      requestBody.userQuestion = userQuestion.trim();
     }
 
     const response = await fetch(`${API_BASE_URL}/api/video/analyze`, {
@@ -191,20 +197,30 @@ class VideoService {
     if (data.Item) return this.parseDynamoDBResponse(data.Item);
 
     // Direct format
-    if (data.ai_analysis || data.analysis_results || data.status) {
+    if (data.ai_analysis || data.analysis_results || data.status || data.locked) {
       const aiAnalysis = this.parseMaybeJson(data.ai_analysis);
       const analysisResults = this.parseMaybeJson(data.analysis_results);
+      const lockedAnalysis = this.parseMaybeJson(data.locked_analysis);
       const coachingResponse = this.extractCoachingResponse(aiAnalysis);
       const normalizedStatus = this.normalizeStatus(data.status, {
         aiAnalysisCompleted: Boolean(data.ai_analysis_completed),
         coachingResponse,
+        locked: Boolean(data.locked || lockedAnalysis?.locked),
       });
+      const lockedCoachingSummary =
+        lockedAnalysis?.preview_summary ||
+        lockedAnalysis?.preview_key_issue ||
+        null;
 
       return {
         status: normalizedStatus,
         analysis: aiAnalysis || analysisResults,
-        coaching_response: coachingResponse,
+        coaching_response: coachingResponse || lockedCoachingSummary,
         message: data.message || 'Processing...',
+        locked: Boolean(data.locked || lockedAnalysis?.locked),
+        locked_analysis: lockedAnalysis || null,
+        lock_reason: data.lock_reason || null,
+        partial_result_available: Boolean(data.partial_result_available),
       };
     }
 
@@ -220,11 +236,17 @@ class VideoService {
     const normalizedItem = this.parseDynamoValue(item);
     const aiAnalysis = this.parseMaybeJson(normalizedItem.ai_analysis);
     const analysisResults = this.parseMaybeJson(normalizedItem.analysis_results);
+    const lockedAnalysis = this.parseMaybeJson(normalizedItem.locked_analysis);
     const coachingResponse = this.extractCoachingResponse(aiAnalysis);
     const status = this.normalizeStatus(normalizedItem.status, {
       aiAnalysisCompleted: Boolean(normalizedItem.ai_analysis_completed),
       coachingResponse,
+      locked: Boolean(normalizedItem.locked || lockedAnalysis?.locked),
     });
+    const lockedCoachingSummary =
+      lockedAnalysis?.preview_summary ||
+      lockedAnalysis?.preview_key_issue ||
+      null;
 
     if (status === 'completed' && (aiAnalysis || analysisResults)) {
       return {
@@ -241,8 +263,12 @@ class VideoService {
     return {
       status,
       analysis: aiAnalysis || analysisResults,
-      coaching_response: coachingResponse,
+      coaching_response: coachingResponse || lockedCoachingSummary,
       message: normalizedItem.progress_message || 'Processing...',
+      locked: Boolean(normalizedItem.locked || lockedAnalysis?.locked),
+      locked_analysis: lockedAnalysis || null,
+      lock_reason: normalizedItem.lock_reason || null,
+      partial_result_available: Boolean(normalizedItem.partial_result_available),
     };
   }
 
@@ -338,8 +364,12 @@ class VideoService {
     return null;
   }
 
-  normalizeStatus(rawStatus, { aiAnalysisCompleted = false, coachingResponse = null } = {}) {
+  normalizeStatus(rawStatus, { aiAnalysisCompleted = false, coachingResponse = null, locked = false } = {}) {
     const statusToken = typeof rawStatus === 'string' ? rawStatus.toUpperCase() : '';
+
+    if (locked || statusToken === 'LOCKED') {
+      return 'locked';
+    }
 
     if (coachingResponse && aiAnalysisCompleted) {
       return 'completed';
@@ -370,7 +400,7 @@ class VideoService {
   }
 
   // Step 5: Complete upload + analysis workflow
-  async uploadAndAnalyze(videoUri, videoDuration, onProgress, userId, authHeaders = {}, trimData = null) {
+  async uploadAndAnalyze(videoUri, videoDuration, onProgress, userId, authHeaders = {}, trimData = null, analysisOptions = null) {
     if (!userId) throw new Error('AUTHENTICATION_REQUIRED');
     if (!authHeaders?.Authorization) throw new Error('AUTHENTICATION_REQUIRED');
 
@@ -384,7 +414,10 @@ class VideoService {
     await this.uploadVideoToS3(videoUri, presignedUrl, contentType, onProgress);
 
     // Trigger analysis
-    const analysisResult = await this.triggerAnalysis(fileName, VIDEO_BUCKET, userId, authHeaders, trimData);
+    const userQuestion = analysisOptions && typeof analysisOptions === 'object'
+      ? analysisOptions.userQuestion
+      : null;
+    const analysisResult = await this.triggerAnalysis(fileName, VIDEO_BUCKET, userId, authHeaders, trimData, userQuestion);
 
     return { jobId: analysisResult.jobId, fileName, status: 'uploaded' };
   }
@@ -406,6 +439,9 @@ class VideoService {
 
         // Full completion: AI analysis present
         if (results.status === 'completed' && results.analysis && results.coaching_response) {
+          return results;
+        }
+        if (results.status === 'locked' && results.locked) {
           return results;
         }
 

@@ -5,7 +5,9 @@ const resolveBaseUrl = (value) => {
   const base = value || DEFAULT_BASE_URL;
   return base.endsWith('/') ? base.slice(0, -1) : base;
 };
-const API_BASE_URL = resolveBaseUrl(process.env.EXPO_PUBLIC_API_URL);
+const API_BASE_URL = resolveBaseUrl(
+  process.env.EXPO_PUBLIC_API_BASE_URL || process.env.EXPO_PUBLIC_API_URL
+);
 const CHAT_PATH = process.env.EXPO_PUBLIC_CHAT_PATH || '/api/chat';
 
 class ChatApiService {
@@ -52,6 +54,10 @@ class ChatApiService {
       return {
         response: data.response || data.message,
         timestamp: data.timestamp || new Date().toISOString(),
+        locked: Boolean(data.locked || data.locked_analysis?.locked),
+        locked_analysis: data.locked_analysis || null,
+        lock_reason: data.lock_reason || null,
+        partial_result_available: Boolean(data.partial_result_available),
       };
     } catch (error) {
       clearTimeout(timeoutId);
