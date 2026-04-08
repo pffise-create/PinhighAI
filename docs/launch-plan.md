@@ -59,10 +59,10 @@ Prepare the app for the fastest credible launch path: `TestFlight beta -> iOS so
 - [ ] 🟨 **Step 6: Finish Legal, Support, and Settings Surfaces**
   - [ ] 🟥 Write real `Privacy Policy` copy + host it.
   - [ ] 🟥 Write real `Terms of Service` copy + host it.
-  - [ ] 🟨 Replace placeholder support and legal actions in settings.
+  - [x] 🟩 Replace placeholder support and legal actions in settings.
     - [x] 🟩 Added the missing Terms of Service row alongside Privacy Policy in `SettingsModal.js`.
-    - [x] 🟩 Removed literal "(placeholder)" suffix from the support copy; support email is a `TODO(launch)` awaiting real mailbox.
-    - [ ] 🟥 Swap the placeholder `Alert`s for real URL opens once copy is hosted.
+    - [x] 🟩 Removed literal "(placeholder)" suffix from the support copy.
+    - [x] 🟩 URL opens pre-wired: `EXPO_PUBLIC_PRIVACY_POLICY_URL`, `EXPO_PUBLIC_TERMS_URL`, `EXPO_PUBLIC_SUPPORT_EMAIL` (mailto). When unset, rows fall back to the neutral "coming before public launch" alert — set the env vars in eas.json/build env to flip them live with no code change.
   - [ ] 🟥 Ensure paywall and settings copy matches the real offer.
 
 - [ ] 🟥 **Step 7: Validate Beta Build**
