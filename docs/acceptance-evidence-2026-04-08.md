@@ -24,18 +24,18 @@ Exported successfully to dist/
 ```
 No Metro/bundler errors. Bundle written to `dist/`. This satisfies the acceptance-checklist line "Run `npx expo start -c` and verify no bundler syntax errors" — `expo export` is a strict superset (it actually compiles, not just starts a dev server).
 
-### AWS Lambda Node test suite — ✅ PASS (17/17)
+### AWS Lambda Node test suite — ✅ PASS (21/21)
 ```
-$ node --test \
-    AWS/test/coachingSystemPrompt.test.js \
-    AWS/test/swingRepository.test.js \
-    AWS/test/chatLoop.test.js \
-    AWS/test/aiAnalysisProcessor.test.js
-# pass 17
+$ npm run test:aws
+> node --test AWS/test/*.test.js
+# tests 21
+# pass 21
 # fail 0
-# duration_ms 8096.327392
+# duration_ms 8101.010151
 ```
-All 17 subtests pass. These tests mock `@aws-sdk/lib-dynamodb` and `requestOpenAi`, so they need no AWS credentials and no env vars — they now run in CI as the `aws-lambda-tests` job (`.github/workflows/ci-regression.yml`).
+Runs all 6 test files in `AWS/test/` (`aiAnalysisProcessor`, `chatLoop`, `coachingSystemPrompt`, `resultsApiHandler`, `swingProfileRepository`, `swingRepository`) via shell glob, so new test files in that directory get picked up automatically. Tests mock `@aws-sdk/lib-dynamodb` and `requestOpenAi`, so they need no AWS credentials and no env vars — CI runs the same `npm run test:aws` script in the `aws-lambda-tests` job (`.github/workflows/ci-regression.yml`).
+
+> **Phase 3 fix:** the original commit hardcoded only 4 of the 6 test files in CI, silently excluding `resultsApiHandler.test.js` and `swingProfileRepository.test.js`. The follow-up commit replaces the hardcoded list with the npm script so this can't recur.
 
 ### CloudFormation alarms template — ✅ PARSES
 ```
@@ -45,15 +45,16 @@ Outputs:   15
 Parameters:15
 All 15 alarms present.
 ```
-Template now provisions Errors, Throttles, and Duration p95 alarms for all 5 Lambdas (15 alarms total) with per-Lambda p95 thresholds (chat=3s, results=2s, upload=10s, frame=20s, ai=45s) and an optional SNS topic ARN for notifications.
+Template now provisions Errors, Throttles, and Duration p95 alarms for all 5 Lambdas (15 alarms total) with per-Lambda p95 thresholds (chat=3s, results=2s, upload=10s, frame=20s, ai=45s) and an optional SNS topic ARN for notifications. Phase 3 fixes: function-name parameters dropped their defaults so deploys must pass real Lambda names (typo guard), and every alarm description now spells out impact + first investigation step. The notBreaching/dead-Lambda blind spot is documented in `docs/aws-cloudwatch-alarms-deploy-handoff.md` and `infrastructure/README.md`.
 
 **Deploy is still pending** — agent has no AWS credentials. Use the runbook in `docs/aws-cloudwatch-alarms-deploy-handoff.md`.
 
 ### CI workflow — ✅ EXTENDED
 - Removed dead `work` branch trigger.
-- Added `aws-lambda-tests` job alongside `frontend-regression`.
+- Added `aws-lambda-tests` job alongside `frontend-regression`, running `npm run test:aws` (auto-discovers all `AWS/test/*.test.js` files).
+- Added a top-level `concurrency:` block (`ci-regression-${github.ref}`, `cancel-in-progress: true`) so superseded pushes on the same ref get cancelled instead of piling up.
 - Both jobs run on `pull_request` and on `push` to `main`.
-- Verified locally: `node --test` exits non-zero on failure; the existing Jest + Expo export jobs are unchanged.
+- Verified locally: `npm run test:aws` exits non-zero on failure; the existing Jest + Expo export jobs are unchanged.
 
 ### Playwright smoke — ⚠️ NOT RUN BY AGENT
 `tests/smoke.spec.ts` exists and asserts the web app shell loads. It is **not wired into CI** because it requires `expo start --web` as a webServer step (heavy, slow startup). To run locally:

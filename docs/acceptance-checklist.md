@@ -22,5 +22,6 @@
 - Settings: Notification toggle works, sign-out clears auth state.
 
 ## Test Suite
-- Execute NODE_PATH=AWS/lambda-deployment/node_modules node --test AWS/test/coachingSystemPrompt.test.js AWS/test/swingRepository.test.js AWS/test/chatLoop.test.js AWS/test/aiAnalysisProcessor.test.js and confirm all pass.
+- Execute `npm run test:aws` (runs `node --test AWS/test/*.test.js`, all 6 AWS Lambda unit test files) and confirm all pass. CI runs the same script in the `aws-lambda-tests` job.
+- Execute `npm test -- --runInBand` for the Jest frontend regression suite. CI runs the same in the `frontend-regression` job.
 - If any test fails, address the regression before release.

@@ -6,6 +6,10 @@ on:
     branches:
       - main
 
+concurrency:
+  group: ci-regression-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   frontend-regression:
     runs-on: ubuntu-latest
@@ -47,9 +51,4 @@ jobs:
           node-version: 20
 
       - name: Run AWS Lambda unit tests
-        run: |
-          node --test \
-            AWS/test/coachingSystemPrompt.test.js \
-            AWS/test/swingRepository.test.js \
-            AWS/test/chatLoop.test.js \
-            AWS/test/aiAnalysisProcessor.test.js
+        run: npm run test:aws
