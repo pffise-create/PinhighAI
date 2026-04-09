@@ -463,7 +463,7 @@ const ChatScreen = ({ navigation }) => {
     <MessageBubble message={item} onVideoPress={handleVideoPress} />
   ), [handleVideoPress]);
 
-  const keyExtractor = useCallback((item) => item.id, []);
+  const keyExtractor = useCallback((item, index) => item?.id || `message-${index}`, []);
 
   // Typing/processing indicator sits in ListHeaderComponent (top of inverted list = visual bottom)
   const ListHeader = useMemo(() => (
@@ -499,6 +499,10 @@ const ChatScreen = ({ navigation }) => {
           onScroll={handleScroll}
           scrollEventThrottle={16}
           showsVerticalScrollIndicator={false}
+          initialNumToRender={12}
+          maxToRenderPerBatch={8}
+          windowSize={7}
+          removeClippedSubviews={Platform.OS === 'android'}
           ListHeaderComponent={ListHeader}
         />
 
