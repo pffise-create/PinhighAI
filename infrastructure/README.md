@@ -209,9 +209,32 @@ aws cloudformation wait stack-delete-complete \
 
 ## CloudWatch Alarm Stack (Lambda Reliability)
 
-Use `golf-cloudwatch-alarms.yaml` to provision baseline error/throttle/duration alarms for the core Lambda pipeline.
+Use `golf-cloudwatch-alarms.yaml` to provision Errors / Throttles / Duration p95 alarms for all 5 core Lambdas (15 alarms total). Per-Lambda p95 thresholds are configurable via parameters; defaults reflect the 4/7 launch posture (chat=3s, results=2s, upload=10s, frame=20s, ai=45s). Function names are required parameters (no defaults) so a typo in either the template or the running Lambda surfaces at deploy time instead of silently watching the wrong resource.
 
-### Deploy alarm stack
+> **Blind-spot caveat:** all alarms use `TreatMissingData: notBreaching`. If a Lambda is fully dead (zero invocations), the metric is "missing" rather than 0 and these alarms will not fire. Pair them with the API Gateway 5xx alarms or a synthetic ping if you need a heartbeat for a totally idle function.
+
+### Step 0: Capture the AWS account ID (one-time helper)
+```bash
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+echo "$ACCOUNT_ID"
+```
+Substitute `${ACCOUNT_ID}` into the SNS topic ARN below.
+
+### Step 1: Create the SNS topic + email subscription (one-time)
+```bash
+aws sns create-topic \
+  --name golf-coach-alarms-prod \
+  --region us-east-1
+
+aws sns subscribe \
+  --topic-arn arn:aws:sns:us-east-1:${ACCOUNT_ID}:golf-coach-alarms-prod \
+  --protocol email \
+  --notification-endpoint pffise@gmail.com \
+  --region us-east-1
+```
+Confirm the subscription email in the inbox before deploying — unconfirmed subscriptions silently drop notifications.
+
+### Step 2: Deploy the alarm stack
 ```bash
 aws cloudformation deploy \
   --stack-name golf-coach-cloudwatch-alarms \
@@ -219,16 +242,33 @@ aws cloudformation deploy \
   --parameter-overrides \
     ProjectName=golf-coach \
     Environment=prod \
-    AlarmTopicArn=<optional-sns-topic-arn> \
+    AlarmTopicArn=arn:aws:sns:us-east-1:${ACCOUNT_ID}:golf-coach-alarms-prod \
+    UploadHandlerFunctionName=golf-video-upload-handler \
+    FrameExtractorFunctionName=golf-frame-extractor-simple \
+    AiAnalysisFunctionName=golf-ai-analysis-processor \
+    ResultsApiFunctionName=golf-results-api-handler \
+    ChatApiFunctionName=golf-chat-api-handler \
+    ChatApiP95Ms=3000 \
+    ResultsApiP95Ms=2000 \
+    UploadP95Ms=10000 \
+    FrameExtractorP95Ms=20000 \
+    AiAnalysisP95Ms=45000 \
   --capabilities CAPABILITY_NAMED_IAM \
   --region us-east-1
 ```
+All 5 `*FunctionName` parameters are required. Verify the names match the actual deployed Lambdas (`aws lambda list-functions --query "Functions[?starts_with(FunctionName, 'golf-')].FunctionName"`) before deploying — a typo will create alarms that silently watch a non-existent resource. Omit `AlarmTopicArn` to deploy alarms without notifications (visible in CloudWatch console only). Omit any `*P95Ms` override to fall back to the default in the template.
 
-### Validate stack outputs
+### Step 3: Validate stack outputs and alarm states
 ```bash
 aws cloudformation describe-stacks \
   --stack-name golf-coach-cloudwatch-alarms \
   --query "Stacks[0].Outputs" \
+  --output table \
+  --region us-east-1
+
+aws cloudwatch describe-alarms \
+  --alarm-name-prefix golf-coach-prod \
+  --query "MetricAlarms[].{Name:AlarmName,State:StateValue}" \
   --output table \
   --region us-east-1
 ```

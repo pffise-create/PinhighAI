@@ -1,7 +1,7 @@
 // AWS Amplify Configuration for Golf Coach App
 import { Amplify } from 'aws-amplify';
 // Note: @aws-amplify/react-native doesn't export configureAmplify in newer versions
-import runtimeEnvConfig, { appEnv, isEnvConfigComplete } from './runtimeEnv';
+import runtimeEnvConfig, { appEnv, isEnvConfigComplete, getMissingEnvFields } from './runtimeEnv';
 
 // AUTHENTICATION STATUS: CONFIGURED AND READY
 // 
@@ -34,8 +34,9 @@ function getResolvedConfig() {
   const useFallback = appEnv === 'dev' && !envConfigComplete;
 
   if (!useFallback && !envConfigComplete) {
+    const missing = getMissingEnvFields().join(', ');
     throw new Error(
-      `Missing EXPO_PUBLIC_* config for app env "${appEnv}". Refusing partial fallback in non-dev environments.`
+      `Missing EXPO_PUBLIC_* config for app env "${appEnv}". Refusing partial fallback in non-dev environments. Missing: ${missing}. See docs/launch-env-vars.md.`
     );
   }
 

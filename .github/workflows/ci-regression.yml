@@ -5,7 +5,10 @@ on:
   push:
     branches:
       - main
-      - work
+
+concurrency:
+  group: ci-regression-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   frontend-regression:
@@ -33,3 +36,19 @@ jobs:
           EXPO_NO_TELEMETRY: '1'
           CI: '1'
         run: npx expo export --platform web --clear
+
+  aws-lambda-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run AWS Lambda unit tests
+        run: npm run test:aws

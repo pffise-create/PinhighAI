@@ -15,9 +15,17 @@ import {
   View,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
+import { Ionicons } from '@expo/vector-icons';
 import { signInWithRedirect } from 'aws-amplify/auth';
 import { useAuth } from '../context/AuthContext';
+import { authProviders } from '../config/runtimeEnv';
 import { colors, typography, spacing, borderRadius, shadows } from '../utils/theme';
+
+// Match amplifyConfig.js fallback: when no providers are configured via
+// EXPO_PUBLIC_AUTH_PROVIDERS, dev builds default to Google-only.
+const effectiveProviders = authProviders.length ? authProviders : ['Google'];
+const showGoogleButton = effectiveProviders.includes('Google');
+const showAppleButton = effectiveProviders.includes('Apple');
 
 const { height, width } = Dimensions.get('window');
 
@@ -171,6 +179,24 @@ const SignInScreen = () => {
     }
   };
 
+  const handleAppleSignIn = async () => {
+    try {
+      setIsLoading(true);
+      await signInWithRedirect({ provider: 'Apple' });
+      await checkAuthState();
+    } catch (error) {
+      if (isAlreadyAuthenticatedError(error)) {
+        await checkAuthState();
+        return;
+      }
+
+      console.error('Apple Sign-In error:', error);
+      Alert.alert('Sign-In Error', error.message || 'Unable to sign in with Apple.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   if (authLoading) {
     return (
       <View style={styles.loadingContainer}>
@@ -238,27 +264,48 @@ const SignInScreen = () => {
           </View>
 
           <View style={styles.card}>
-            <TouchableOpacity
-              style={[styles.primaryButton, isLoading && styles.buttonDisabled]}
-              onPress={handleGoogleSignIn}
-              activeOpacity={0.85}
-              disabled={isLoading}
-            >
-              {isLoading ? (
-                <ActivityIndicator color="#5F6368" size="small" />
-              ) : (
-                <>
-                  <View style={styles.googleIcon}>
-                    <Image
-                      source={require('../../assets/google/g-logo.png')}
-                      style={styles.googleMark}
-                      resizeMode="contain"
-                    />
-                  </View>
-                  <Text style={styles.primaryButtonLabel}>Continue with Google</Text>
-                </>
-              )}
-            </TouchableOpacity>
+            {showAppleButton && (
+              <TouchableOpacity
+                style={[
+                  styles.primaryButton,
+                  styles.appleButton,
+                  isLoading && styles.buttonDisabled,
+                  showGoogleButton && styles.buttonSpacing,
+                ]}
+                onPress={handleAppleSignIn}
+                activeOpacity={0.85}
+                disabled={isLoading}
+              >
+                {isLoading ? (
+                  <ActivityIndicator color={colors.white} size="small" />
+                ) : (
+                  <>
+                    <Ionicons name="logo-apple" size={20} color={colors.white} />
+                    <Text style={[styles.primaryButtonLabel, styles.appleButtonLabel]}>
+                      Continue with Apple
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            )}
+
+            {showGoogleButton && (
+              <TouchableOpacity
+                style={[styles.primaryButton, isLoading && styles.buttonDisabled]}
+                onPress={handleGoogleSignIn}
+                activeOpacity={0.85}
+                disabled={isLoading}
+              >
+                {isLoading ? (
+                  <ActivityIndicator color="#5F6368" size="small" />
+                ) : (
+                  <>
+                    <Ionicons name="logo-google" size={18} color="#4285F4" />
+                    <Text style={styles.primaryButtonLabel}>Continue with Google</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            )}
 
           </View>
 
@@ -381,16 +428,15 @@ const styles = StyleSheet.create({
   buttonDisabled: {
     opacity: 0.7,
   },
-  googleIcon: {
-    width: 18,
-    height: 18,
-    backgroundColor: colors.white,
-    alignItems: 'center',
-    justifyContent: 'center',
+  buttonSpacing: {
+    marginBottom: 12,
   },
-  googleMark: {
-    width: 18,
-    height: 18,
+  appleButton: {
+    backgroundColor: '#000000',
+    borderColor: '#000000',
+  },
+  appleButtonLabel: {
+    color: colors.white,
   },
   legal: {
     marginTop: 24,

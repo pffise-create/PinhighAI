@@ -38,25 +38,25 @@ const api = {
   baseUrl: readString(process.env.EXPO_PUBLIC_API_BASE_URL),
 };
 
-const authProviders = readList(process.env.EXPO_PUBLIC_AUTH_PROVIDERS);
+export const authProviders = readList(process.env.EXPO_PUBLIC_AUTH_PROVIDERS);
 
 // Minimum set of variables required to configure Amplify for staging/prod.
 // Identity pool is intentionally not required here — amplifyConfig.js does not
 // wire identityPoolId into Amplify.Auth, so a missing value should not block
 // the sign-in flow.
-const REQUIRED_COGNITO_FIELDS = [
-  cognito.userPoolId,
-  cognito.userPoolClientId,
-  cognito.domain,
+const REQUIRED_ENV_FIELDS = [
+  { key: 'EXPO_PUBLIC_COGNITO_USER_POOL_ID', value: cognito.userPoolId },
+  { key: 'EXPO_PUBLIC_COGNITO_USER_POOL_CLIENT_ID', value: cognito.userPoolClientId },
+  { key: 'EXPO_PUBLIC_COGNITO_DOMAIN', value: cognito.domain },
+  { key: 'EXPO_PUBLIC_AUTH_REDIRECT_SIGN_IN', value: cognito.redirectSignIn.length ? 'set' : '' },
+  { key: 'EXPO_PUBLIC_AUTH_REDIRECT_SIGN_OUT', value: cognito.redirectSignOut.length ? 'set' : '' },
+  { key: 'EXPO_PUBLIC_API_BASE_URL', value: api.baseUrl },
 ];
 
-export const isEnvConfigComplete = () => {
-  if (!api.baseUrl) return false;
-  if (REQUIRED_COGNITO_FIELDS.some((field) => !field)) return false;
-  if (cognito.redirectSignIn.length === 0) return false;
-  if (cognito.redirectSignOut.length === 0) return false;
-  return true;
-};
+export const getMissingEnvFields = () =>
+  REQUIRED_ENV_FIELDS.filter(({ value }) => !value).map(({ key }) => key);
+
+export const isEnvConfigComplete = () => getMissingEnvFields().length === 0;
 
 const runtimeEnvConfig = {
   appEnv,

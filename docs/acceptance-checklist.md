@@ -58,9 +58,11 @@ Use this checklist for launch-critical validation. It is intentionally biased to
 
 ## 7. Automated Checks
 
-- `npm test`
+- `npm run test:aws` — runs `node --test AWS/test/*.test.js` across all AWS Lambda unit test files. CI runs the same script in the `aws-lambda-tests` job.
+- `npm test -- --runInBand` — Jest frontend regression suite. CI runs the same in the `frontend-regression` job.
 - `npm run check:hygiene`
-- Targeted backend tests for any changed AWS handlers
+- Targeted backend tests for any changed AWS handlers.
+- If any automated check fails, address the regression before release.
 
 ## 8. Exit Criteria for TestFlight Beta
 
