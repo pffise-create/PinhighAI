@@ -56,9 +56,27 @@ Use this checklist to stand up a real staging auth flow for internal + small ext
 - [ ] Document any auth flow caveats (redirect timing, popup behavior, cookies/session persistence).
 
 ## 8) Apple Sign-In (Before Release)
-- [ ] Configure Apple provider in staging and production auth stacks.
-- [ ] Add `Apple` to `EXPO_PUBLIC_AUTH_PROVIDERS`.
-- [ ] Validate parity with Google sign-in UX and callback handling.
+
+See [`docs/apple-sign-in-setup.md`](./apple-sign-in-setup.md) for the full
+walkthrough — exact portal navigation, exact values to enter, common errors.
+
+- [ ] **Apple Developer portal** — enable Sign In with Apple on primary App ID
+      (`com.pinhighai.golfcoach`), create Services ID
+      (`com.pinhighai.golfcoach.web`) with both staging + prod return URLs,
+      create private key and download the `.p8` file (one-time download),
+      record Team ID + Key ID.
+- [ ] **Staging Cognito user pool** (`us-east-1_gquwrWOYG`) — add Apple as
+      federated identity provider, enable on staging app client.
+- [ ] **Production Cognito user pool** (`us-east-1_s9LDheoFF`) — same setup,
+      using the same 4 values as staging.
+- [ ] **EAS env vars** — change `EXPO_PUBLIC_AUTH_PROVIDERS` from `Google` to
+      `Google,Apple` on both preview and production environments.
+- [ ] **Device validation** — rebuild staging, tap "Continue with Apple",
+      confirm round-trip completes and lands in chat. Repeat for prod via
+      TestFlight before App Store submission.
+- [ ] **App Review risk** — if rejected under guideline 4.8, swap
+      `signInWithRedirect({ provider: 'Apple' })` for
+      `expo-apple-authentication` native flow. See risk note in the setup doc.
 
 ## Notes
 - For `staging` and `prod`, the app now refuses partial `EXPO_PUBLIC_*` config fallback. Populate all required values.
