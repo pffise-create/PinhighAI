@@ -15,40 +15,60 @@ Parameters:
 
   UploadHandlerFunctionName:
     Type: String
-    Default: golf-video-upload-handler
+    Description: Real Lambda function name for the video upload handler in the target account.
   FrameExtractorFunctionName:
     Type: String
-    Default: golf-frame-extractor-simple
+    Description: Real Lambda function name for the frame extractor in the target account.
   AiAnalysisFunctionName:
     Type: String
-    Default: golf-ai-analysis-processor
+    Description: Real Lambda function name for the AI analysis processor in the target account.
   ResultsApiFunctionName:
     Type: String
-    Default: golf-results-api-handler
+    Description: Real Lambda function name for the results API handler in the target account.
   ChatApiFunctionName:
     Type: String
-    Default: golf-chat-api-handler
+    Description: Real Lambda function name for the chat API handler in the target account.
 
   ErrorThreshold:
     Type: Number
     Default: 1
+    Description: Errors per minute that triggers an alarm (sum over 1 minute).
   ThrottleThreshold:
     Type: Number
     Default: 1
-  P95DurationMs:
+    Description: Throttles per minute that triggers an alarm (sum over 1 minute).
+
+  ChatApiP95Ms:
     Type: Number
-    Default: 15000
+    Default: 3000
+    Description: p95 duration alarm threshold for chat API (ms).
+  ResultsApiP95Ms:
+    Type: Number
+    Default: 2000
+    Description: p95 duration alarm threshold for results API (ms).
+  UploadP95Ms:
+    Type: Number
+    Default: 10000
+    Description: p95 duration alarm threshold for upload handler (ms).
+  FrameExtractorP95Ms:
+    Type: Number
+    Default: 20000
+    Description: p95 duration alarm threshold for frame extractor (ms).
+  AiAnalysisP95Ms:
+    Type: Number
+    Default: 45000
+    Description: p95 duration alarm threshold for AI analysis processor (ms).
 
 Conditions:
   HasAlarmTopic: !Not [!Equals [!Ref AlarmTopicArn, '']]
 
 Resources:
-  # Upload handler alarms
+  # ── Upload handler ────────────────────────────────────────────────────────
   UploadErrorsAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: !Sub '${ProjectName}-${Environment}-upload-errors'
-      AlarmDescription: !Sub 'Errors > ${ErrorThreshold} for ${UploadHandlerFunctionName}'
+      AlarmDescription: !Sub 'Lambda ${UploadHandlerFunctionName} returned >= ${ErrorThreshold} error(s) in 1 minute. Check CloudWatch Logs and recent deploys; uploads will silently fail until cleared.'
       Namespace: AWS/Lambda
       MetricName: Errors
       Dimensions:
@@ -62,11 +82,29 @@ Resources:
       TreatMissingData: notBreaching
       AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref AWS::NoValue]
 
+  UploadThrottlesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-upload-throttles'
+      AlarmDescription: !Sub 'Lambda ${UploadHandlerFunctionName} hit >= ${ThrottleThreshold} throttle(s) in 1 minute. Investigate concurrency limits or burst spikes; users will see upload failures.'
+      Namespace: AWS/Lambda
+      MetricName: Throttles
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref UploadHandlerFunctionName
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: !Ref ThrottleThreshold
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref AWS::NoValue]
+
   UploadDurationP95Alarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: !Sub '${ProjectName}-${Environment}-upload-duration-p95'
-      AlarmDescription: !Sub 'p95 duration > ${P95DurationMs}ms for ${UploadHandlerFunctionName}'
+      AlarmDescription: !Sub 'Lambda ${UploadHandlerFunctionName} p95 duration >= ${UploadP95Ms}ms over 3 minutes. Investigate slow S3 presigning or DynamoDB writes; uploads may time out client-side.'
       Namespace: AWS/Lambda
       MetricName: Duration
       Dimensions:
@@ -75,17 +113,17 @@ Resources:
       ExtendedStatistic: p95
       Period: 60
       EvaluationPeriods: 3
-      Threshold: !Ref P95DurationMs
+      Threshold: !Ref UploadP95Ms
       ComparisonOperator: GreaterThanOrEqualToThreshold
       TreatMissingData: notBreaching
       AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref AWS::NoValue]
 
-  # Frame extractor alarms
+  # ── Frame extractor ───────────────────────────────────────────────────────
   FrameExtractorErrorsAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: !Sub '${ProjectName}-${Environment}-frame-extractor-errors'
-      AlarmDescription: !Sub 'Errors > ${ErrorThreshold} for ${FrameExtractorFunctionName}'
+      AlarmDescription: !Sub 'Lambda ${FrameExtractorFunctionName} returned >= ${ErrorThreshold} error(s) in 1 minute. Pipeline stalls between upload and AI analysis; check ffmpeg layer and S3 read perms.'
       Namespace: AWS/Lambda
       MetricName: Errors
       Dimensions:
@@ -103,7 +141,7 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: !Sub '${ProjectName}-${Environment}-frame-extractor-throttles'
-      AlarmDescription: !Sub 'Throttles > ${ThrottleThreshold} for ${FrameExtractorFunctionName}'
+      AlarmDescription: !Sub 'Lambda ${FrameExtractorFunctionName} hit >= ${ThrottleThreshold} throttle(s) in 1 minute. Concurrency cap reached; new uploads will queue or fail.'
       Namespace: AWS/Lambda
       MetricName: Throttles
       Dimensions:
@@ -117,12 +155,30 @@ Resources:
       TreatMissingData: notBreaching
       AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref AWS::NoValue]
 
-  # AI analysis alarms
+  FrameExtractorDurationP95Alarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-frame-extractor-duration-p95'
+      AlarmDescription: !Sub 'Lambda ${FrameExtractorFunctionName} p95 duration >= ${FrameExtractorP95Ms}ms over 3 minutes. ffmpeg likely struggling; check video sizes and memory ceiling.'
+      Namespace: AWS/Lambda
+      MetricName: Duration
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref FrameExtractorFunctionName
+      ExtendedStatistic: p95
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: !Ref FrameExtractorP95Ms
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref AWS::NoValue]
+
+  # ── AI analysis processor ─────────────────────────────────────────────────
   AiAnalysisErrorsAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: !Sub '${ProjectName}-${Environment}-ai-analysis-errors'
-      AlarmDescription: !Sub 'Errors > ${ErrorThreshold} for ${AiAnalysisFunctionName}'
+      AlarmDescription: !Sub 'Lambda ${AiAnalysisFunctionName} returned >= ${ErrorThreshold} error(s) in 1 minute. AI analyses are failing; check OpenAI quota, prompt-template changes, and DynamoDB writes.'
       Namespace: AWS/Lambda
       MetricName: Errors
       Dimensions:
@@ -136,11 +192,29 @@ Resources:
       TreatMissingData: notBreaching
       AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref AWS::NoValue]
 
+  AiAnalysisThrottlesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-ai-analysis-throttles'
+      AlarmDescription: !Sub 'Lambda ${AiAnalysisFunctionName} hit >= ${ThrottleThreshold} throttle(s) in 1 minute. Reserved concurrency reached; analyses will queue or be dropped.'
+      Namespace: AWS/Lambda
+      MetricName: Throttles
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref AiAnalysisFunctionName
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: !Ref ThrottleThreshold
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref AWS::NoValue]
+
   AiAnalysisDurationP95Alarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: !Sub '${ProjectName}-${Environment}-ai-analysis-duration-p95'
-      AlarmDescription: !Sub 'p95 duration > ${P95DurationMs}ms for ${AiAnalysisFunctionName}'
+      AlarmDescription: !Sub 'Lambda ${AiAnalysisFunctionName} p95 duration >= ${AiAnalysisP95Ms}ms over 3 minutes. OpenAI is slow or prompt is bloated; results page will feel sluggish.'
       Namespace: AWS/Lambda
       MetricName: Duration
       Dimensions:
@@ -149,17 +223,17 @@ Resources:
       ExtendedStatistic: p95
       Period: 60
       EvaluationPeriods: 3
-      Threshold: !Ref P95DurationMs
+      Threshold: !Ref AiAnalysisP95Ms
       ComparisonOperator: GreaterThanOrEqualToThreshold
       TreatMissingData: notBreaching
       AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref AWS::NoValue]
 
-  # API handler alarms
+  # ── Results API handler ───────────────────────────────────────────────────
   ResultsApiErrorsAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: !Sub '${ProjectName}-${Environment}-results-api-errors'
-      AlarmDescription: !Sub 'Errors > ${ErrorThreshold} for ${ResultsApiFunctionName}'
+      AlarmDescription: !Sub 'Lambda ${ResultsApiFunctionName} returned >= ${ErrorThreshold} error(s) in 1 minute. Results page will not load; check DynamoDB read perms and recent schema changes.'
       Namespace: AWS/Lambda
       MetricName: Errors
       Dimensions:
@@ -173,11 +247,48 @@ Resources:
       TreatMissingData: notBreaching
       AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref AWS::NoValue]
 
+  ResultsApiThrottlesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-results-api-throttles'
+      AlarmDescription: !Sub 'Lambda ${ResultsApiFunctionName} hit >= ${ThrottleThreshold} throttle(s) in 1 minute. Concurrency limit reached; results page will return 5xx.'
+      Namespace: AWS/Lambda
+      MetricName: Throttles
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ResultsApiFunctionName
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: !Ref ThrottleThreshold
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref AWS::NoValue]
+
+  ResultsApiDurationP95Alarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-results-api-duration-p95'
+      AlarmDescription: !Sub 'Lambda ${ResultsApiFunctionName} p95 duration >= ${ResultsApiP95Ms}ms over 3 minutes. Investigate DynamoDB GSI performance and presigned-URL generation.'
+      Namespace: AWS/Lambda
+      MetricName: Duration
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ResultsApiFunctionName
+      ExtendedStatistic: p95
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: !Ref ResultsApiP95Ms
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref AWS::NoValue]
+
+  # ── Chat API handler ──────────────────────────────────────────────────────
   ChatApiErrorsAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: !Sub '${ProjectName}-${Environment}-chat-api-errors'
-      AlarmDescription: !Sub 'Errors > ${ErrorThreshold} for ${ChatApiFunctionName}'
+      AlarmDescription: !Sub 'Lambda ${ChatApiFunctionName} returned >= ${ErrorThreshold} error(s) in 1 minute. Chat is broken; check OpenAI quota, CHAT_LOOP_ENABLED toggle, and tool-call schema.'
       Namespace: AWS/Lambda
       MetricName: Errors
       Dimensions:
@@ -191,14 +302,70 @@ Resources:
       TreatMissingData: notBreaching
       AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref AWS::NoValue]
 
+  ChatApiThrottlesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-chat-api-throttles'
+      AlarmDescription: !Sub 'Lambda ${ChatApiFunctionName} hit >= ${ThrottleThreshold} throttle(s) in 1 minute. Concurrency limit reached; users will see chat send failures.'
+      Namespace: AWS/Lambda
+      MetricName: Throttles
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ChatApiFunctionName
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: !Ref ThrottleThreshold
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref AWS::NoValue]
+
+  ChatApiDurationP95Alarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-chat-api-duration-p95'
+      AlarmDescription: !Sub 'Lambda ${ChatApiFunctionName} p95 duration >= ${ChatApiP95Ms}ms over 3 minutes. Chat-loop p95 SLO at risk; check OpenAI latency and tool-call round-trips.'
+      Namespace: AWS/Lambda
+      MetricName: Duration
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ChatApiFunctionName
+      ExtendedStatistic: p95
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: !Ref ChatApiP95Ms
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref AWS::NoValue]
+
 Outputs:
   UploadErrorsAlarmName:
     Value: !Ref UploadErrorsAlarm
+  UploadThrottlesAlarmName:
+    Value: !Ref UploadThrottlesAlarm
+  UploadDurationP95AlarmName:
+    Value: !Ref UploadDurationP95Alarm
   FrameExtractorErrorsAlarmName:
     Value: !Ref FrameExtractorErrorsAlarm
+  FrameExtractorThrottlesAlarmName:
+    Value: !Ref FrameExtractorThrottlesAlarm
+  FrameExtractorDurationP95AlarmName:
+    Value: !Ref FrameExtractorDurationP95Alarm
   AiAnalysisErrorsAlarmName:
     Value: !Ref AiAnalysisErrorsAlarm
+  AiAnalysisThrottlesAlarmName:
+    Value: !Ref AiAnalysisThrottlesAlarm
+  AiAnalysisDurationP95AlarmName:
+    Value: !Ref AiAnalysisDurationP95Alarm
   ResultsApiErrorsAlarmName:
     Value: !Ref ResultsApiErrorsAlarm
+  ResultsApiThrottlesAlarmName:
+    Value: !Ref ResultsApiThrottlesAlarm
+  ResultsApiDurationP95AlarmName:
+    Value: !Ref ResultsApiDurationP95Alarm
   ChatApiErrorsAlarmName:
     Value: !Ref ChatApiErrorsAlarm
+  ChatApiThrottlesAlarmName:
+    Value: !Ref ChatApiThrottlesAlarm
+  ChatApiDurationP95AlarmName:
+    Value: !Ref ChatApiDurationP95Alarm

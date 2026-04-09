@@ -8,6 +8,7 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "test": "jest",
+    "test:aws": "node --test AWS/test/*.test.js",
     "test:e2e": "playwright test"
   },
   "jest": {
