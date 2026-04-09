@@ -19,7 +19,7 @@ describe('ChatApiService', () => {
   });
 
   describe('sendMessage', () => {
-    it('returns { response, timestamp } on success', async () => {
+    it('returns response, timestamp, and lock gating fields on success', async () => {
       global.fetch.mockResolvedValueOnce({
         ok: true,
         status: 200,
@@ -31,6 +31,10 @@ describe('ChatApiService', () => {
       expect(result).toEqual({
         response: 'Coach reply',
         timestamp: '2026-02-18T00:00:00.000Z',
+        locked: false,
+        locked_analysis: null,
+        lock_reason: null,
+        partial_result_available: false,
       });
       expect(global.fetch).toHaveBeenCalledTimes(1);
 
