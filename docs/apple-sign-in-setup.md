@@ -75,10 +75,12 @@ flow (not the native iOS sheet) asks Apple to authenticate a user.
 7. Check **Sign In with Apple** → click **Configure**
 8. In the "Web Authentication Configuration" modal:
    - **Primary App ID**: select `com.pinhighai.golfcoach` from the dropdown
-   - **Domains and Subdomains**, add **both**:
-     - `golf-coach-staging-auth-20260328.auth.us-east-1.amazoncognito.com`
-     - `golf-coach-auth-1755756500.auth.us-east-1.amazoncognito.com`
-   - **Return URLs**, add **both**:
+   - **Domains and Subdomains**: **comma-separated on a single entry**, no
+     `https://` prefix. If you paste each on its own line, Apple rejects with
+     "one or more domains are invalid." Enter exactly:
+     `golf-coach-staging-auth-20260328.auth.us-east-1.amazoncognito.com,golf-coach-auth-1755756500.auth.us-east-1.amazoncognito.com`
+   - **Return URLs**, add **both** (full URLs with `https://` and the
+     `/oauth2/idpresponse` path):
      - `https://golf-coach-staging-auth-20260328.auth.us-east-1.amazoncognito.com/oauth2/idpresponse`
      - `https://golf-coach-auth-1755756500.auth.us-east-1.amazoncognito.com/oauth2/idpresponse`
 9. Click **Next** → **Done** → **Continue** → **Save**
