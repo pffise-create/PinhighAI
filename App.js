@@ -19,7 +19,7 @@ export default function App() {
     return (
       <AuthProvider>
         <SubscriptionProvider>
-          <StatusBar style="light" backgroundColor="#2E8B57" />
+          <StatusBar style="light" backgroundColor="#1E3A2A" />
           <AppNavigator />
         </SubscriptionProvider>
       </AuthProvider>

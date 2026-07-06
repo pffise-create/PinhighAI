@@ -16,7 +16,7 @@ const readString = (value) => {
 export const REVENUECAT_API_KEY = readString(process.env.EXPO_PUBLIC_REVENUECAT_API_KEY);
 
 export const REVENUECAT_ENTITLEMENT_ID =
-  readString(process.env.EXPO_PUBLIC_REVENUECAT_ENTITLEMENT_ID) || 'DivotLab Unlimited';
+  readString(process.env.EXPO_PUBLIC_REVENUECAT_ENTITLEMENT_ID) || 'PinHigh Unlimited';
 
 // Optional — when set, SubscriptionContext will present that specific offering
 // instead of the project default. Leave empty to use RevenueCat's `current`.

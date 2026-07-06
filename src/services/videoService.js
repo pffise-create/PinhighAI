@@ -1,9 +1,12 @@
 // videoService.js - Video upload and analysis pipeline
 // Handles: presigned URL -> S3 upload -> trigger analysis -> poll for results
-const API_BASE_URL =
-  process.env.EXPO_PUBLIC_API_BASE_URL ||
-  process.env.EXPO_PUBLIC_API_URL ||
-  'https://t7y64hqkq0.execute-api.us-east-1.amazonaws.com/prod';
+const resolveBaseUrl = (value) => {
+  const base = value || 'https://t7y64hqkq0.execute-api.us-east-1.amazonaws.com/prod';
+  return base.endsWith('/') ? base.slice(0, -1) : base;
+};
+const API_BASE_URL = resolveBaseUrl(
+  process.env.EXPO_PUBLIC_API_BASE_URL || process.env.EXPO_PUBLIC_API_URL
+);
 const VIDEO_BUCKET = process.env.EXPO_PUBLIC_VIDEO_BUCKET || 'golf-coach-videos-1753203601';
 const DEFAULT_POLL_INTERVAL_MS = 1500;
 

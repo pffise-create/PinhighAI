@@ -256,7 +256,7 @@ const SignInScreen = () => {
             <View style={styles.logoBadge}>
               <Text style={styles.logoEmoji}>✨</Text>
             </View>
-            <Text style={styles.appTitle}>DivotLab AI</Text>
+            <Text style={styles.appTitle}>PinHigh AI</Text>
           </View>
 
           <View style={styles.headlineContainer}>

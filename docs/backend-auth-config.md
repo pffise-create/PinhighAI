@@ -6,14 +6,14 @@ These Lambda handlers now enforce verified Cognito JWTs and explicit HTTPS timeo
 
 Set the following on `golf-video-upload-handler` and `golf-chat-api-handler` (and any other caller that verifies JWTs):
 
-- `COGNITO_REGION` � e.g. `us-east-1`
-- `COGNITO_USER_POOL_ID` � Cognito user pool that issues the ID tokens
-- `COGNITO_APP_CLIENT_ID` � (Recommended) the app client audience that should be accepted
+- `COGNITO_REGION` — e.g. `us-east-1`
+- `COGNITO_USER_POOL_ID` — Cognito user pool that issues the ID tokens
+- `COGNITO_APP_CLIENT_ID` — (Recommended) the app client audience that should be accepted
 
 Optional tuning knobs that default to safe values:
 
-- `HTTP_REQUEST_TIMEOUT_MS` � overall HTTPS timeout for OpenAI calls (chat + AI analysis)
-- `JWKS_REQUEST_TIMEOUT_MS` � JWKS fetch timeout when present (defaults to 5s)
+- `HTTP_REQUEST_TIMEOUT_MS` — overall HTTPS timeout for OpenAI calls (chat + AI analysis)
+- `JWKS_REQUEST_TIMEOUT_MS` — JWKS fetch timeout when present (defaults to 5s)
 
 Without these variables the Lambdas will reject requests with 401-style fallbacks.
 

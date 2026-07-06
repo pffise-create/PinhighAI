@@ -10,6 +10,8 @@ web-build/
 .env
 .env.local
 .env.*.local
+.env.staging
+.env.production
 
 # OS files
 .DS_Store
@@ -61,6 +63,10 @@ deployed-code/
 *.apk
 *.aab
 *.ipa
+
+# Expo managed workflow generated native dirs
+ios/
+android/
 
 # AWS Lambda deployment artifacts (keep source in AWS/src/)
 AWS/lambda-deployment/node_modules/

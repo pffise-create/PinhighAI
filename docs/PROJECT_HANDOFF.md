@@ -1,8 +1,8 @@
-# GolfCoachExpoFixed - Engineering Handoff
+# PinHigh AI - Engineering Handoff
 
 ## Overview
 
-**DivotLab AI** is a React Native / Expo mobile app for AI-powered golf swing coaching. Users authenticate, upload swing videos, receive AI analysis, and continue with conversational follow-up coaching.
+**PinHigh AI** is a React Native / Expo mobile app for AI-powered golf swing coaching. Users authenticate, upload swing videos, receive AI analysis, and continue with conversational follow-up coaching.
 
 Current product direction:
 - `iOS first`

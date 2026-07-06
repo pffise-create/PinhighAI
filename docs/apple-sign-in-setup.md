@@ -155,7 +155,7 @@ At this point you should have all 4 values. Proceed to Cognito.
 ### 2.4 Rebuild and test on device
 
 ```
-cd ~/GolfCoachExpoFixed
+cd ~/PinhighAI
 git pull origin main
 eas build --profile preview --platform ios
 ```

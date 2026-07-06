@@ -181,6 +181,13 @@ export const shadows = {
     shadowRadius: 32,
     elevation: 12,
   },
+  base: {
+    shadowColor: '#10271E',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 12,
+    elevation: 3,
+  },
 };
 
 export const gradients = {
@@ -191,6 +198,15 @@ export const gradients = {
 export const overlays = {
   topFade: ['rgba(0,0,0,0.55)', 'rgba(0,0,0,0.25)', 'transparent'],
   bottomFade: ['rgba(0,0,0,0.65)', 'rgba(0,0,0,0.3)', 'transparent'],
+};
+
+export const globalStyles = {
+  coachingCard: {
+    backgroundColor: colors.surfaceBase,
+    borderRadius: radius.lg,
+    padding: spacing.lg,
+    ...shadows.base,
+  },
 };
 
 export const tokens = {

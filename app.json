@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "GolfCoachExpoFixed",
-    "slug": "GolfCoachExpoFixed",
+    "name": "PinHigh AI",
+    "slug": "PinHighAI",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -12,11 +12,15 @@
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
+    "scheme": "golfcoach",
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.pinhighai.golfcoach",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSCameraUsageDescription": "PinHigh AI needs camera access to record your golf swing for analysis.",
+        "NSPhotoLibraryUsageDescription": "PinHigh AI needs photo library access to select swing videos for analysis.",
+        "NSMicrophoneUsageDescription": "PinHigh AI may capture audio when recording swing videos."
       }
     },
     "android": {
