@@ -66,3 +66,9 @@ deployed-code/
 AWS/lambda-deployment/node_modules/
 AWS/lambda-deployment/*.zip
 AWS/archive/
+
+# Root scratch/debug files
+/_*.json
+
+# Stray screenshots
+Screenshot*.png
