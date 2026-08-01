@@ -24,6 +24,7 @@ import * as ImagePicker from 'expo-image-picker';
 import * as VideoThumbnails from 'expo-video-thumbnails';
 
 import { useAuth } from '../context/AuthContext';
+import { useSubscriptions } from '../context/SubscriptionContext';
 import ChatHistoryManager from '../services/chatHistoryManager';
 import chatApiService from '../services/chatApiService';
 import videoService from '../services/videoService';
@@ -55,6 +56,8 @@ const createMessage = ({
   videoThumbnail,
   videoDuration,
   videoTrimData,
+  lockedAnalysis,
+  jobId,
 }) => ({
   id: id || `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
   sender,
@@ -65,6 +68,8 @@ const createMessage = ({
   videoThumbnail,
   videoDuration,
   videoTrimData: videoTrimData || null,
+  lockedAnalysis: lockedAnalysis || null,
+  jobId: jobId || null,
 });
 
 // ─── Storage Helpers ────────────────────────────────────────────────────────
@@ -83,6 +88,8 @@ const normalizeStoredMessages = (stored = []) =>
         videoThumbnail: msg.videoThumbnail,
         videoDuration: msg.videoDuration,
         videoTrimData: msg.videoTrimData || null,
+        lockedAnalysis: msg.lockedAnalysis || null,
+        jobId: msg.jobId || null,
       })
     )
     .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
@@ -103,6 +110,7 @@ const mergeMessageLists = (current = [], incoming = []) => {
 // ─── ChatScreen Component ───────────────────────────────────────────────────
 const ChatScreen = ({ navigation }) => {
   const { user, isAuthenticated, getAuthHeaders } = useAuth();
+  const { presentPaywall, refreshCustomerInfo, entitlementActive } = useSubscriptions();
   const userId = user?.id;
 
   // Core state
@@ -222,9 +230,56 @@ const ChatScreen = ({ navigation }) => {
         videoThumbnail: message.videoThumbnail,
         videoDuration: message.videoDuration,
         videoTrimData: message.videoTrimData || null,
+        lockedAnalysis: message.lockedAnalysis || null,
+        jobId: message.jobId || null,
       }).catch((err) => console.warn('Failed to persist message', err));
     }
   }, [userId]);
+
+  // Replace a message in place (state + persisted copy)
+  const replaceMessage = useCallback((messageId, updater) => {
+    setMessages((prev) =>
+      prev.map((msg) => (msg.id === messageId ? updater(msg) : msg))
+    );
+  }, []);
+
+  // ─── Paywall Unlock Flow ───────────────────────────────────────────────
+  // CTA on a locked teaser: present the RevenueCat paywall; on purchase or
+  // restore, refetch gated results so teasers become full analyses.
+  const handleUnlockRequest = useCallback(async (message) => {
+    try {
+      const result = await presentPaywall();
+      if (!result?.purchasedOrRestored) return;
+
+      if (message.jobId) {
+        const headers = await getAuthHeaders();
+        const fullResult = await videoService.getAnalysisResults(message.jobId, headers);
+        const fullText =
+          fullResult?.coaching_response || fullResult?.analysis?.coaching_response;
+        if (fullText && !fullResult?.locked) {
+          replaceMessage(message.id, (msg) => ({
+            ...msg,
+            text: fullText,
+            type: 'analysis',
+            lockedAnalysis: null,
+          }));
+          return;
+        }
+      }
+
+      // Chat teasers (no jobId) just drop the CTA; future replies are full.
+      replaceMessage(message.id, (msg) => ({ ...msg, lockedAnalysis: null }));
+    } catch (error) {
+      if (error?.code === 'REVENUECAT_UNAVAILABLE') {
+        Alert.alert(
+          'Subscriptions unavailable',
+          'Purchases need a development or TestFlight build.'
+        );
+        return;
+      }
+      console.error('Unlock flow failed:', error);
+    }
+  }, [presentPaywall, getAuthHeaders, replaceMessage]);
 
   // ─── Send Text Message ─────────────────────────────────────────────────
   const sendTextMessage = useCallback(async () => {
@@ -252,6 +307,7 @@ const ChatScreen = ({ navigation }) => {
         createMessage({
           sender: 'coach',
           text: result.response || 'I had trouble processing that. Please try again.',
+          lockedAnalysis: result.locked ? result.locked_analysis : null,
         })
       );
     } catch (error) {
@@ -408,11 +464,14 @@ const ChatScreen = ({ navigation }) => {
       setProcessingMessage('');
 
       const aiResponse = analysisResult?.coaching_response || analysisResult?.analysis?.coaching_response;
+      const isLocked = Boolean(analysisResult?.locked);
       appendMessage(
         createMessage({
           sender: 'coach',
           text: aiResponse || 'Your swing has been processed, but I was unable to retrieve the analysis. Please try again.',
-          type: aiResponse ? 'analysis' : 'error',
+          type: aiResponse ? (isLocked ? 'locked_analysis' : 'analysis') : 'error',
+          lockedAnalysis: isLocked ? analysisResult.locked_analysis : null,
+          jobId: isLocked ? uploadResult.jobId : null,
         })
       );
     } catch (error) {
@@ -463,8 +522,12 @@ const ChatScreen = ({ navigation }) => {
   }, []);
 
   const renderMessage = useCallback(({ item }) => (
-    <MessageBubble message={item} onVideoPress={handleVideoPress} />
-  ), [handleVideoPress]);
+    <MessageBubble
+      message={item}
+      onVideoPress={handleVideoPress}
+      onUnlock={entitlementActive ? null : handleUnlockRequest}
+    />
+  ), [handleVideoPress, entitlementActive, handleUnlockRequest]);
 
   const keyExtractor = useCallback((item, index) => item?.id || `message-${index}`, []);
 

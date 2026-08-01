@@ -2,6 +2,7 @@
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient, GetCommand, UpdateCommand } = require('@aws-sdk/lib-dynamodb');
 const { LambdaClient, InvokeCommand } = require('@aws-sdk/client-lambda');
+const { buildLockedContent, evaluateAccessForLockedResult } = require('../access/entitlementGate');
 
 // Initialize clients
 let dynamodb = null;
@@ -174,6 +175,45 @@ async function handleGetResults(jobId) {
       response.analysis_results = result.Item.analysis_results;
     }
     
+    // Subscription gating: non-entitled users get a teaser instead of the
+    // full analysis. Evaluated against the record owner's user_id.
+    if (response.ai_analysis_completed && response.ai_analysis) {
+      let accessDecision;
+      try {
+        accessDecision = await evaluateAccessForLockedResult({
+          userId: result.Item.user_id,
+          client: dynamodb,
+          previewType: 'video_analysis',
+          resultRef: jobId,
+        });
+      } catch (gatingError) {
+        // Fail open on gate errors: a broken gate must not take down results
+        // for paying users. Locked-state correctness is restored next poll.
+        console.error('RESULTS_GATING_CHECK_ERROR:', gatingError);
+        accessDecision = { allowFullResult: true };
+      }
+
+      if (!accessDecision.allowFullResult) {
+        const lockedAnalysis = accessDecision.allowLockedResult
+          ? buildLockedContent({ aiAnalysis: result.Item.ai_analysis })
+          : {
+              locked: true,
+              lock_context: 'video_analysis',
+              headline: 'See the full swing breakdown',
+              body: 'Start your 7-day free trial to unlock the complete analysis.',
+              cta_label: 'Start 7-Day Free Trial',
+              cta_action: 'start_trial',
+            };
+
+        delete response.ai_analysis;
+        delete response.analysis_results;
+        response.locked = true;
+        response.lock_reason = 'subscription_required';
+        response.partial_result_available = !!accessDecision.allowLockedResult;
+        response.locked_analysis = lockedAnalysis;
+      }
+    }
+
     // Include user context for tracking
     if (result.Item.user_id) {
       response.user_id = result.Item.user_id;
