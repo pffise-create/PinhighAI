@@ -63,6 +63,20 @@ Privacy and Terms are optional during beta. When unset, the corresponding Settin
 | `EXPO_PUBLIC_TERMS_URL` | no (required at public launch) | Full `https://` URL. |
 | `EXPO_PUBLIC_SUPPORT_EMAIL` | no | Plain email address override. Defaults to `support@divotlab.ai`; the app wraps it in `mailto:`. |
 
+## Backend (Lambda) environment variables — subscription gating
+
+These are **Lambda** env vars, not `EXPO_PUBLIC_*`. Set them on
+`golf-chat-api-handler` and `golf-results-api-handler` (the two gated
+endpoints). The RevenueCat **secret** key must never appear in the app bundle.
+
+| Var | Required? | Value at launch | Notes |
+|---|---|---|---|
+| `SUBSCRIPTION_GATING_ENABLED` | yes | `"true"` | Master switch. Off = everyone gets full results (current beta behavior). |
+| `ONE_TIME_LOCKED_RESULT_ENABLED` | no | unset | Leave unset for launch: every non-entitled result is a teaser. Set `"true"` to switch to the stricter one-teaser-ever mode. |
+| `REVENUECAT_SECRET_API_KEY` | yes (for unlock) | `sk_...` | RevenueCat secret API key. Enables server-side entitlement lookup so purchases unlock without webhook delivery. Without it, only DynamoDB access records grant access. |
+| `SUBSCRIPTION_ENTITLEMENT_KEY` | no | `"DivotLab Unlimited"` | Must match the RevenueCat entitlement ID and the app's `EXPO_PUBLIC_REVENUECAT_ENTITLEMENT_ID`. |
+| `USER_ACCESS_TABLE` | no | defaults to `DYNAMODB_TABLE` | Table holding `access#<userId>` entitlement records. |
+
 ## Launch checklist: EAS dashboard environment variables
 
 Before the first `eas build --profile preview` for staging QA, set these on the **preview** environment via EAS dashboard (or `eas env:create`):

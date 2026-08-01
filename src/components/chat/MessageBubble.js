@@ -8,6 +8,7 @@ import { Ionicons } from '@expo/vector-icons';
 import Markdown from 'react-native-markdown-display';
 import { colors, typography, spacing, borderRadius } from '../../utils/theme';
 import VideoPlayer from './VideoPlayer';
+import LockedAnalysisCard from './LockedAnalysisCard';
 
 // Markdown rendering styles for coach messages
 const markdownStyles = {
@@ -52,10 +53,11 @@ const formatMessageTime = (createdAt) => {
   return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 };
 
-const MessageBubble = ({ message, onVideoPress }) => {
+const MessageBubble = ({ message, onVideoPress, onUnlock }) => {
   const isUser = message.sender === 'user';
   const hasVideo = message.type === 'video' && message.videoUri;
   const timeLabel = formatMessageTime(message.createdAt);
+  const showLockedCard = Boolean(!isUser && message.lockedAnalysis && onUnlock);
 
   if (isUser) {
     return (
@@ -91,6 +93,12 @@ const MessageBubble = ({ message, onVideoPress }) => {
         <View style={styles.coachBubble}>
           <Markdown style={markdownStyles}>{message.text || ''}</Markdown>
         </View>
+        {showLockedCard ? (
+          <LockedAnalysisCard
+            lockedAnalysis={message.lockedAnalysis}
+            onUnlock={() => onUnlock(message)}
+          />
+        ) : null}
         {timeLabel ? <Text style={styles.coachMeta}>{timeLabel}</Text> : null}
       </View>
     </View>
