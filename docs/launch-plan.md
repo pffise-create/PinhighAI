@@ -1,6 +1,14 @@
 # Feature Implementation Plan
 
-**Overall Progress:** `55%`
+**Overall Progress:** `70%`
+
+> **2026-08-01 update:** Backend fully deployed from main (see
+> `DEPLOYMENT-TRACKER.md`). Teaser paywall gating implemented end-to-end
+> (PR #8) with server-side RevenueCat entitlement lookup — the webhook is now
+> optional hardening, not a launch blocker. Branding normalized to
+> **Alki DivotLab** (Alki Golf Co.), iOS launch config fixed (URL scheme,
+> photo-library permission, buildNumber) in PR #7. Remaining work is almost
+> entirely the external punch list below.
 
 ## TLDR
 Prepare the app for the fastest credible launch path: `TestFlight beta -> iOS soft launch`. Focus only on the remaining launch blockers we explicitly identified: staging/beta setup, repeatable first-run QA, Apple Sign In, RevenueCat/store wiring, legal/support surfaces, and final production readiness.
@@ -55,7 +63,8 @@ Prepare the app for the fastest credible launch path: `TestFlight beta -> iOS so
   - [ ] 🟥 Configure RevenueCat entitlement and offering for launch (dashboard).
   - [ ] 🟥 Create App Store products for `monthly` and `annual`.
   - [ ] 🟥 Configure the `7-day free trial`.
-  - [ ] 🟥 Connect webhook-based entitlement sync.
+  - [x] 🟩 Server-side entitlement sync: lambdas verify entitlements against the RevenueCat REST API with DynamoDB write-through (`AWS/src/access/entitlementGate.js`). Webhook-based sync is now **optional hardening** (faster revocation), not a blocker.
+  - [x] 🟩 Teaser-only gating implemented: analysis + chat return locked teasers for non-subscribers; app renders trial CTA and unlocks in place after purchase (PR #8). Inert until `SUBSCRIPTION_GATING_ENABLED=true` on the lambdas.
   - [ ] 🟥 Validate paywall, trial, purchase, restore, and manage-subscription behavior on device.
 
 - [ ] 🟨 **Step 6: Finish Legal, Support, and Settings Surfaces**
@@ -112,7 +121,13 @@ Everything below needs a human to do it — either because it requires console/p
 - [ ] Create entitlement `DivotLab Unlimited` (or update the env var to match whatever name you pick).
 - [ ] Create an offering containing the monthly + yearly packages.
 - [ ] Configure the **7-day free trial** on both products.
-- [ ] Set up the webhook for entitlement sync to the backend.
+- [ ] Copy the **secret** API key (`sk_...`) and set it as `REVENUECAT_SECRET_API_KEY` on `golf-chat-api-handler` + `golf-results-api-handler` (see `launch-env-vars.md` § Backend). This is what lets purchases unlock server-side.
+- [ ] *(Optional hardening, post-launch OK)* Set up the webhook for push-based entitlement sync — speeds up revocation; unlocking already works without it.
+
+### 4b. Lambda gating flags (Step 5) — flip when billing is live
+- [ ] Set `SUBSCRIPTION_GATING_ENABLED=true` on `golf-chat-api-handler` + `golf-results-api-handler` **only after** the RevenueCat entitlement + products exist and a sandbox purchase has been validated. Until then everyone gets full results (current behavior).
+- [ ] When deploying the gated results handler (PR #8), change that function's Handler config to `api-handlers/results-api-handler.handler` and zip in src-tree layout (see `DEPLOYMENT-TRACKER.md`).
+- [ ] **Cost watch:** non-subscribers can upload unlimited videos; each costs a gpt-5.2 analysis. If beta shows abuse, add a per-user upload cap.
 
 ### 5. App Store Connect (Steps 5, 8)
 - [ ] Create auto-renewable subscription products with IDs matching `EXPO_PUBLIC_REVENUECAT_MONTHLY_PRODUCT_ID` and `EXPO_PUBLIC_REVENUECAT_YEARLY_PRODUCT_ID` (defaults: `monthly`, `yearly`).
@@ -122,9 +137,10 @@ Everything below needs a human to do it — either because it requires console/p
 - [ ] Complete business entity, banking, tax, and payout setup.
 
 ### 6. Legal / support content (Step 6)
-- [ ] Review and finalize [`docs/legal/privacy-policy.md`](./legal/privacy-policy.md), then host it at a stable URL.
+- [ ] Review and finalize [`docs/legal/privacy-policy.md`](./legal/privacy-policy.md) (now branded Alki DivotLab / Alki Golf Co.), then host it at a stable URL.
 - [ ] Review and finalize [`docs/legal/terms-of-service.md`](./legal/terms-of-service.md), then host it at a stable URL.
-- [ ] Confirm the `support@divotlab.ai` mailbox is receiving messages.
+- [ ] Confirm the `support@divotlab.ai` mailbox is receiving messages — or pick an Alki-branded address and set `EXPO_PUBLIC_SUPPORT_EMAIL`.
+- [ ] **Brand decision (before first App Store submission, irreversible after):** bundle ID is `com.pinhighai.golfcoach`. If you want `com.alkigolf.*`, say so before the first upload to App Store Connect — it cannot change afterwards.
 - [ ] Set `EXPO_PUBLIC_PRIVACY_POLICY_URL` and `EXPO_PUBLIC_TERMS_URL` in the EAS environments once hosted — **no code change needed**, rows auto-flip to live links once set.
 - [ ] Audit paywall + settings copy against the real offer (price, trial length, billing cadence) before launch.
 
