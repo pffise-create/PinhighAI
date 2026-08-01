@@ -5,6 +5,7 @@ import {
   Animated,
   Dimensions,
   Image,
+  Linking,
   Platform,
   SafeAreaView,
   ScrollView,
@@ -51,8 +52,15 @@ const isAlreadyAuthenticatedError = (error) =>
   error?.code === 'UserAlreadyAuthenticatedException' ||
   String(error?.message || '').includes('already a signed in user');
 
+const readEnvUrl = (value) => (typeof value === 'string' ? value.trim() : '');
+const PRIVACY_POLICY_URL = readEnvUrl(process.env.EXPO_PUBLIC_PRIVACY_POLICY_URL);
+const TERMS_OF_SERVICE_URL = readEnvUrl(process.env.EXPO_PUBLIC_TERMS_URL);
+
 const SignInScreen = () => {
-  const [isLoading, setIsLoading] = useState(false);
+  // Which provider is mid-sign-in ('Google' | 'Apple' | null). Only that
+  // button shows a spinner; both stay disabled while any sign-in runs.
+  const [loadingProvider, setLoadingProvider] = useState(null);
+  const isLoading = loadingProvider !== null;
   const { isLoading: authLoading, checkAuthState } = useAuth();
   const [headlineIndex, setHeadlineIndex] = useState(0);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
@@ -61,6 +69,7 @@ const SignInScreen = () => {
 
   const currentOpacity = useRef(new Animated.Value(1)).current;
   const nextOpacity = useRef(new Animated.Value(0)).current;
+  const headlineOpacity = useRef(new Animated.Value(1)).current;
   const scaleAnim = useRef(new Animated.Value(1)).current;
   const translateXAnim = useRef(new Animated.Value(0)).current;
   const translateYAnim = useRef(new Animated.Value(0)).current;
@@ -90,11 +99,23 @@ const SignInScreen = () => {
 
   useEffect(() => {
     const headlineTimer = setInterval(() => {
-      setHeadlineIndex((prev) => (prev + 1) % inspirationalHeadlines.length);
+      // Fade out, swap copy, fade back in — no hard text swaps
+      Animated.timing(headlineOpacity, {
+        toValue: 0,
+        duration: 250,
+        useNativeDriver: true,
+      }).start(() => {
+        setHeadlineIndex((prev) => (prev + 1) % inspirationalHeadlines.length);
+        Animated.timing(headlineOpacity, {
+          toValue: 1,
+          duration: 250,
+          useNativeDriver: true,
+        }).start();
+      });
     }, 5000);
 
     return () => clearInterval(headlineTimer);
-  }, []);
+  }, [headlineOpacity]);
 
   // Smooth Ken Burns effect animation
   useEffect(() => {
@@ -166,10 +187,10 @@ const SignInScreen = () => {
     return () => clearInterval(imageTimer);
   }, [imagesPreloaded, currentOpacity, nextOpacity, scaleAnim, translateXAnim, translateYAnim]);
 
-  const handleGoogleSignIn = async () => {
+  const handleSignIn = async (provider) => {
     try {
-      setIsLoading(true);
-      await signInWithRedirect({ provider: 'Google' });
+      setLoadingProvider(provider);
+      await signInWithRedirect({ provider });
       await checkAuthState();
     } catch (error) {
       if (isAlreadyAuthenticatedError(error)) {
@@ -177,29 +198,19 @@ const SignInScreen = () => {
         return;
       }
 
-      console.error('Google Sign-In error:', error);
-      Alert.alert('Sign-In Error', error.message || 'Unable to sign in with Google.');
+      console.error(`${provider} Sign-In error:`, error);
+      Alert.alert('Sign-In Error', `Unable to sign in with ${provider}. Please try again.`);
     } finally {
-      setIsLoading(false);
+      setLoadingProvider(null);
     }
   };
 
-  const handleAppleSignIn = async () => {
-    try {
-      setIsLoading(true);
-      await signInWithRedirect({ provider: 'Apple' });
-      await checkAuthState();
-    } catch (error) {
-      if (isAlreadyAuthenticatedError(error)) {
-        await checkAuthState();
-        return;
-      }
+  const handleGoogleSignIn = () => handleSignIn('Google');
+  const handleAppleSignIn = () => handleSignIn('Apple');
 
-      console.error('Apple Sign-In error:', error);
-      Alert.alert('Sign-In Error', error.message || 'Unable to sign in with Apple.');
-    } finally {
-      setIsLoading(false);
-    }
+  const openLegalUrl = (url) => {
+    if (!url) return;
+    Linking.openURL(url).catch(() => {});
   };
 
   if (authLoading) {
@@ -265,7 +276,9 @@ const SignInScreen = () => {
           </View>
 
           <View style={styles.headlineContainer}>
-            <Text style={styles.headline}>{inspirationalHeadlines[headlineIndex]}</Text>
+            <Animated.Text style={[styles.headline, { opacity: headlineOpacity }]}>
+              {inspirationalHeadlines[headlineIndex]}
+            </Animated.Text>
           </View>
 
           <View style={styles.card}>
@@ -280,8 +293,11 @@ const SignInScreen = () => {
                 onPress={handleAppleSignIn}
                 activeOpacity={0.85}
                 disabled={isLoading}
+                accessibilityRole="button"
+                accessibilityLabel="Continue with Apple"
+                accessibilityState={{ disabled: isLoading, busy: loadingProvider === 'Apple' }}
               >
-                {isLoading ? (
+                {loadingProvider === 'Apple' ? (
                   <ActivityIndicator color={colors.white} size="small" />
                 ) : (
                   <>
@@ -300,8 +316,11 @@ const SignInScreen = () => {
                 onPress={handleGoogleSignIn}
                 activeOpacity={0.85}
                 disabled={isLoading}
+                accessibilityRole="button"
+                accessibilityLabel="Continue with Google"
+                accessibilityState={{ disabled: isLoading, busy: loadingProvider === 'Google' }}
               >
-                {isLoading ? (
+                {loadingProvider === 'Google' ? (
                   <ActivityIndicator color="#5F6368" size="small" />
                 ) : (
                   <>
@@ -315,7 +334,23 @@ const SignInScreen = () => {
           </View>
 
           <Text style={styles.legal}>
-            By continuing, you agree to our Terms of Service and Privacy Policy.
+            By continuing, you agree to our{' '}
+            <Text
+              style={TERMS_OF_SERVICE_URL ? styles.legalLink : undefined}
+              onPress={() => openLegalUrl(TERMS_OF_SERVICE_URL)}
+              accessibilityRole={TERMS_OF_SERVICE_URL ? 'link' : undefined}
+            >
+              Terms of Service
+            </Text>
+            {' '}and{' '}
+            <Text
+              style={PRIVACY_POLICY_URL ? styles.legalLink : undefined}
+              onPress={() => openLegalUrl(PRIVACY_POLICY_URL)}
+              accessibilityRole={PRIVACY_POLICY_URL ? 'link' : undefined}
+            >
+              Privacy Policy
+            </Text>
+            .
           </Text>
         </ScrollView>
       </SafeAreaView>
@@ -442,6 +477,11 @@ const styles = StyleSheet.create({
   },
   appleButtonLabel: {
     color: colors.white,
+  },
+  legalLink: {
+    color: colors.white,
+    fontWeight: typography.fontWeights.semibold,
+    textDecorationLine: 'underline',
   },
   legal: {
     marginTop: 24,

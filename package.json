@@ -16,7 +16,8 @@
     "testPathIgnorePatterns": [
       "/node_modules/",
       "/tests/",
-      "/AWS/"
+      "/AWS/",
+      "/.claude/"
     ]
   },
   "dependencies": {

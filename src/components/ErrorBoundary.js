@@ -162,71 +162,42 @@ class ErrorBoundary extends React.Component {
         <SafeAreaView style={styles.container}>
           <View style={styles.content}>
             <View style={styles.errorIcon}>
-              <Ionicons name="warning" size={80} color={colors.error} />
+              <Ionicons name="warning-outline" size={48} color={colors.error} />
             </View>
-            
-            <Text style={styles.title}>Oops! Something went wrong</Text>
-            
+
+            <Text style={styles.title}>Something went wrong</Text>
+
             <Text style={styles.description}>
-              We encountered an unexpected error. Don't worry, your data is safe and this usually resolves with a simple retry.
+              Your data is safe. Try again, and if it keeps happening, message support.
             </Text>
-            
-            <View style={styles.errorStats}>
-              <View style={styles.statItem}>
-                <Text style={styles.statValue}>{this.state.retryCount}</Text>
-                <Text style={styles.statLabel}>Retry Attempts</Text>
-              </View>
-              <View style={styles.statItem}>
-                <Text style={styles.statValue}>{new Date().toLocaleTimeString()}</Text>
-                <Text style={styles.statLabel}>Error Time</Text>
-              </View>
-            </View>
-            
+
             {this.renderErrorDetails()}
-            
+
             <View style={styles.actions}>
-              <TouchableOpacity 
+              <TouchableOpacity
                 style={styles.primaryButton}
                 onPress={this.handleRetry}
                 activeOpacity={0.8}
+                accessibilityRole="button"
+                accessibilityLabel="Try again"
               >
                 <Ionicons name="refresh" size={20} color={colors.surface} />
                 <Text style={styles.primaryButtonText}>Try Again</Text>
               </TouchableOpacity>
-              
-              <TouchableOpacity 
-                style={styles.secondaryButton}
-                onPress={this.handleGoHome}
-                activeOpacity={0.8}
-              >
-                <Ionicons name="home" size={20} color={colors.primary} />
-                <Text style={styles.secondaryButtonText}>Go Home</Text>
-              </TouchableOpacity>
             </View>
-            
+
             <View style={styles.supportActions}>
-              <TouchableOpacity 
-                style={styles.supportButton}
-                onPress={this.handleReportError}
-                activeOpacity={0.8}
-              >
-                <Ionicons name="bug" size={16} color={colors.textSecondary} />
-                <Text style={styles.supportButtonText}>Report Error</Text>
-              </TouchableOpacity>
-              
-              <TouchableOpacity 
+              <TouchableOpacity
                 style={styles.supportButton}
                 onPress={this.handleOpenSupport}
                 activeOpacity={0.8}
+                accessibilityRole="button"
+                accessibilityLabel="Contact support"
               >
                 <Ionicons name="help-circle" size={16} color={colors.textSecondary} />
-                <Text style={styles.supportButtonText}>Get Help</Text>
+                <Text style={styles.supportButtonText}>Contact Support</Text>
               </TouchableOpacity>
             </View>
-            
-            <Text style={styles.footer}>
-              If this problem persists, please contact support with the error details above.
-            </Text>
           </View>
         </SafeAreaView>
       );

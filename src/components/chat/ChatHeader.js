@@ -7,13 +7,7 @@ import { colors, typography, spacing, borderRadius } from '../../utils/theme';
 const ChatHeader = ({ onSettingsPress }) => (
   <View style={styles.container}>
     <View style={styles.header}>
-      <View>
-        <Text style={styles.title}>Coach</Text>
-        <View style={styles.statusRow}>
-          <View style={styles.statusDot} />
-          <Text style={styles.statusText}>Online</Text>
-        </View>
-      </View>
+      <Text style={styles.title}>Coach</Text>
       <TouchableOpacity
         style={styles.settingsButton}
         onPress={onSettingsPress}
@@ -46,22 +40,6 @@ const styles = StyleSheet.create({
     fontWeight: typography.fontWeights.semibold,
     color: colors.primary,
     letterSpacing: -0.3,
-  },
-  statusRow: {
-    marginTop: spacing.xs,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: colors.success,
-    marginRight: spacing.xs,
-  },
-  statusText: {
-    color: colors.textSecondary,
-    fontSize: typography.fontSizes.sm,
   },
   settingsButton: {
     width: 44,
