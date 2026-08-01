@@ -59,12 +59,18 @@ Prepare the app for the fastest credible launch path: `TestFlight beta -> iOS so
   - [ ] 🟥 Validate paywall, trial, purchase, restore, and manage-subscription behavior on device.
 
 - [ ] 🟨 **Step 6: Finish Legal, Support, and Settings Surfaces**
-  - [ ] 🟥 Write real `Privacy Policy` copy + host it.
-  - [ ] 🟥 Write real `Terms of Service` copy + host it.
+  - [ ] 🟨 Write real `Privacy Policy` copy + host it.
+    - [x] 🟩 Draft created at `docs/legal/privacy-policy.md`.
+    - [ ] 🟥 Legal review + final business details.
+    - [ ] 🟥 Host at stable URL.
+  - [ ] 🟨 Write real `Terms of Service` copy + host it.
+    - [x] 🟩 Draft created at `docs/legal/terms-of-service.md`.
+    - [ ] 🟥 Legal review + final business/dispute details.
+    - [ ] 🟥 Host at stable URL.
   - [x] 🟩 Replace placeholder support and legal actions in settings.
     - [x] 🟩 Added the missing Terms of Service row alongside Privacy Policy in `SettingsModal.js`.
     - [x] 🟩 Removed literal "(placeholder)" suffix from the support copy.
-    - [x] 🟩 URL opens pre-wired: `EXPO_PUBLIC_PRIVACY_POLICY_URL`, `EXPO_PUBLIC_TERMS_URL`, `EXPO_PUBLIC_SUPPORT_EMAIL` (mailto). When unset, rows fall back to the neutral "coming before public launch" alert — set the env vars in eas.json/build env to flip them live with no code change.
+    - [x] 🟩 URL opens pre-wired: `EXPO_PUBLIC_PRIVACY_POLICY_URL`, `EXPO_PUBLIC_TERMS_URL`. Support opens an in-app composer that emails `support@divotlab.ai` by default; set `EXPO_PUBLIC_SUPPORT_EMAIL` only if overriding the destination.
   - [ ] 🟥 Ensure paywall and settings copy matches the real offer.
 
 - [ ] 🟥 **Step 7: Validate Beta Build**
@@ -116,10 +122,10 @@ Everything below needs a human to do it — either because it requires console/p
 - [ ] Complete business entity, banking, tax, and payout setup.
 
 ### 6. Legal / support content (Step 6)
-- [ ] Write Privacy Policy copy and host it at a stable URL.
-- [ ] Write Terms of Service copy and host it at a stable URL.
-- [ ] Stand up a real support mailbox.
-- [ ] Set `EXPO_PUBLIC_PRIVACY_POLICY_URL`, `EXPO_PUBLIC_TERMS_URL`, `EXPO_PUBLIC_SUPPORT_EMAIL` in the EAS environments — **no code change needed**, rows auto-flip to live links once set.
+- [ ] Review and finalize [`docs/legal/privacy-policy.md`](./legal/privacy-policy.md), then host it at a stable URL.
+- [ ] Review and finalize [`docs/legal/terms-of-service.md`](./legal/terms-of-service.md), then host it at a stable URL.
+- [ ] Confirm the `support@divotlab.ai` mailbox is receiving messages.
+- [ ] Set `EXPO_PUBLIC_PRIVACY_POLICY_URL` and `EXPO_PUBLIC_TERMS_URL` in the EAS environments once hosted — **no code change needed**, rows auto-flip to live links once set.
 - [ ] Audit paywall + settings copy against the real offer (price, trial length, billing cadence) before launch.
 
 ### 7. QA identities (Step 3)

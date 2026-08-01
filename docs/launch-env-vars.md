@@ -55,13 +55,13 @@ Missing `EXPO_PUBLIC_REVENUECAT_API_KEY` causes `SubscriptionContext` to warn + 
 | `EXPO_PUBLIC_REVENUECAT_YEARLY_PRODUCT_ID` | no (defaults to `"yearly"`) | `"yearly"` | Same. |
 
 ### Legal / support (`src/screens/SettingsModal.js`)
-All three are optional. When unset, the corresponding Settings row shows the neutral "coming before public launch" alert. When set, the row opens via `Linking.openURL`.
+Privacy and Terms are optional during beta. When unset, the corresponding Settings row shows the neutral "coming before public launch" alert. Support opens an in-app message composer and defaults to `support@divotlab.ai`; set `EXPO_PUBLIC_SUPPORT_EMAIL` only if the destination should change.
 
 | Var | Required? | Notes |
 |---|---|---|
 | `EXPO_PUBLIC_PRIVACY_POLICY_URL` | no (required at public launch) | Full `https://` URL. |
 | `EXPO_PUBLIC_TERMS_URL` | no (required at public launch) | Full `https://` URL. |
-| `EXPO_PUBLIC_SUPPORT_EMAIL` | no (required at public launch) | Plain email address; the app wraps it in `mailto:`. |
+| `EXPO_PUBLIC_SUPPORT_EMAIL` | no | Plain email address override. Defaults to `support@divotlab.ai`; the app wraps it in `mailto:`. |
 
 ## Launch checklist: EAS dashboard environment variables
 
@@ -83,7 +83,7 @@ Before the first `eas build --profile production`, repeat on the **production** 
 - [ ] `EXPO_PUBLIC_REVENUECAT_YEARLY_PRODUCT_ID`
 - [ ] `EXPO_PUBLIC_PRIVACY_POLICY_URL`
 - [ ] `EXPO_PUBLIC_TERMS_URL`
-- [ ] `EXPO_PUBLIC_SUPPORT_EMAIL`
+- [ ] `EXPO_PUBLIC_SUPPORT_EMAIL` only if overriding `support@divotlab.ai`
 
 ## Quick smoke test
 
