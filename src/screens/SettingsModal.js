@@ -105,16 +105,13 @@ const SettingsModal = ({ navigation }) => {
     if (!subscriptionsNativeAvailable || !subscriptionsConfigured) {
       Alert.alert(
         'Subscriptions Unavailable',
-        'RevenueCat is not available in this runtime. Use an iOS/Android development build or TestFlight build to manage subscriptions.'
+        'Subscriptions need the full app build. Please try again from TestFlight or the App Store version.'
       );
       return;
     }
 
     if (!identityReady) {
-      Alert.alert(
-        'Still Connecting',
-        'RevenueCat is still connecting this signed-in user. Wait a moment, then try again.'
-      );
+      Alert.alert('One Moment', 'Your account is still connecting. Try again in a few seconds.');
       return;
     }
 
@@ -124,8 +121,7 @@ const SettingsModal = ({ navigation }) => {
       console.error('Customer Center launch failed:', error);
       Alert.alert(
         'Manage Subscription',
-        error.message ||
-          'Customer Center could not be opened. Confirm Customer Center is enabled in RevenueCat, then try again.'
+        'Subscription management could not be opened. Please try again.'
       );
     }
   };
@@ -134,27 +130,24 @@ const SettingsModal = ({ navigation }) => {
     if (!subscriptionsNativeAvailable || !subscriptionsConfigured) {
       Alert.alert(
         'Subscriptions Unavailable',
-        'RevenueCat paywalls require an iOS/Android development build or TestFlight build.'
+        'Subscriptions need the full app build. Please try again from TestFlight or the App Store version.'
       );
       return;
     }
 
     if (!identityReady) {
-      Alert.alert(
-        'Still Connecting',
-        'RevenueCat is still connecting this signed-in user. Wait a moment, then try again.'
-      );
+      Alert.alert('One Moment', 'Your account is still connecting. Try again in a few seconds.');
       return;
     }
 
     try {
       const result = await presentPaywall();
       if (result.purchasedOrRestored) {
-        Alert.alert('Subscription Active', 'RevenueCat says this account now has access.');
+        Alert.alert('You’re In', 'Your subscription is active.');
       }
     } catch (error) {
       console.error('Paywall launch failed:', error);
-      Alert.alert('Paywall Failed', error.message || 'RevenueCat paywall could not be opened.');
+      Alert.alert('Something Went Wrong', 'The subscription screen could not be opened. Please try again.');
     }
   };
 
@@ -168,7 +161,7 @@ const SettingsModal = ({ navigation }) => {
       }
     } catch (error) {
       console.error('Restore purchases failed:', error);
-      Alert.alert('Restore Failed', error.message || 'Unable to restore purchases right now.');
+      Alert.alert('Restore Failed', 'Unable to restore purchases right now. Please try again.');
     }
   };
 
@@ -198,18 +191,26 @@ const SettingsModal = ({ navigation }) => {
   };
 
   const settingsActions = [
-    {
-      id: 'subscription',
-      icon: 'card-outline',
-      title: 'Manage Subscription',
-      subtitle: 'Opens RevenueCat Customer Center once configured',
-      onPress: handleManageSubscription,
-    },
+    entitlementActive
+      ? {
+          id: 'subscription',
+          icon: 'card-outline',
+          title: 'Manage Subscription',
+          subtitle: 'Plan, billing, and cancellation',
+          onPress: handleManageSubscription,
+        }
+      : {
+          id: 'upgrade',
+          icon: 'sparkles-outline',
+          title: 'Start 7-Day Free Trial',
+          subtitle: 'Unlock full swing analysis and coaching',
+          onPress: handleShowPaywall,
+        },
     {
       id: 'restore',
       icon: 'refresh-outline',
       title: 'Restore Purchases',
-      subtitle: 'For sandbox/TestFlight purchase recovery',
+      subtitle: 'Already subscribed? Bring it to this device',
       onPress: handleRestorePurchases,
     },
     {
@@ -261,6 +262,8 @@ const SettingsModal = ({ navigation }) => {
                 style={styles.actionRow}
                 activeOpacity={0.8}
                 onPress={item.onPress}
+                accessibilityRole="button"
+                accessibilityLabel={item.title}
               >
                 <View style={styles.actionIcon}>
                   <Ionicons name={item.icon} size={18} color={colors.brandFern} />
