@@ -363,7 +363,9 @@ def main():
             rec['source'] = vid_id
             assignment = rec.pop('assignment')
             meta_f.write(json.dumps(rec) + '\n')
+            meta_f.flush()
             ub_f.write(json.dumps({'video_id': rec['video_id'], **assignment}) + '\n')
+            ub_f.flush()
             done += 1
             if done % 20 == 0:
                 print(f'processed {done}/{len(videos)}', flush=True)
