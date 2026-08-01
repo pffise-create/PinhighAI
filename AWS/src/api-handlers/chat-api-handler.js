@@ -476,7 +476,7 @@ async function callChatCompletions(payload) {
     throw new Error('OPENAI_API_KEY is not configured');
   }
 
-  const requestBody = JSON.stringify(payload);
+  const requestBody = JSON.stringify(applyModelSpecificControls(payload));
   const responseBody = await makeHttpsRequest({
     hostname: 'api.openai.com',
     path: '/v1/chat/completions',
@@ -492,6 +492,23 @@ async function callChatCompletions(payload) {
   } catch (error) {
     throw new Error('Failed to parse OpenAI chat response: ' + error.message);
   }
+}
+
+function applyModelSpecificControls(payload) {
+  if (!payload || typeof payload !== 'object') {
+    return payload;
+  }
+
+  const request = { ...payload };
+  const model = typeof request.model === 'string' ? request.model : '';
+  if (model.startsWith('gpt-5.1') || model.startsWith('gpt-5.2')) {
+    delete request.temperature;
+    request.reasoning_effort = request.reasoning_effort || 'low';
+  } else if (model.startsWith('gpt-5')) {
+    delete request.temperature;
+    request.reasoning_effort = request.reasoning_effort || 'minimal';
+  }
+  return request;
 }
 
 function selectVisualFrames(frames, maxFrames = CHAT_VISUAL_TOOL_MAX_FRAMES) {
@@ -555,7 +572,78 @@ function extractFramesFromAnalysis(analysis) {
     }));
 }
 
-async function answerVisualQuestionWithFrames({ userId, question, analysisId, dynamoClient, logger }) {
+function compactText(value, maxLength = 1400) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (!normalized) {
+    return null;
+  }
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}...` : normalized;
+}
+
+function buildAnalysisPromptContext(analysis, label) {
+  return {
+    label,
+    analysis_id: analysis?.analysisId || null,
+    created_at: analysis?.createdAt || null,
+    captured_at: analysis?.capturedAt || null,
+    summary: compactText(analysis?.summary || analysis?.aiAnalysis?.coaching_response || analysis?.aiAnalysis?.response, 1800),
+    visual_observations: Array.isArray(analysis?.visualObservations)
+      ? analysis.visualObservations.slice(0, 8).map((obs) => ({
+          phase: obs.phase || null,
+          observation: compactText(obs.observation, 350),
+          confidence: typeof obs.confidence === 'number' ? obs.confidence : null,
+          impact: obs.impact || null,
+        }))
+      : [],
+    video: {
+      duration_seconds: analysis?.analysisResults?.video_duration || null,
+      fps: analysis?.analysisResults?.fps || null,
+      frames_extracted: analysis?.analysisResults?.frames_extracted || analysis?.analysisResults?.total_frames || null,
+    },
+    uncertainties: Array.isArray(analysis?.aiAnalysis?.vision_facts?.uncertainties)
+      ? analysis.aiAnalysis.vision_facts.uncertainties.slice(0, 5)
+      : [],
+  };
+}
+
+async function loadFrameImagesForAnalysis(analysis, label, logger) {
+  const frames = extractFramesFromAnalysis(analysis);
+  const selectedFrames = selectVisualFrames(frames, CHAT_VISUAL_TOOL_MAX_FRAMES);
+  const frameImages = [];
+
+  for (const frame of selectedFrames) {
+    try {
+      const payload = await downloadFrameAsDataUrl(frame.url);
+      frameImages.push({
+        label,
+        phase: frame.phase,
+        image: payload.dataUrl,
+        bytes: payload.bytes,
+        analysis_id: analysis.analysisId,
+      });
+    } catch (error) {
+      (logger || console).warn('CHAT_LOOP_WARN visual frame download failed', label, frame.phase, error.message);
+    }
+  }
+
+  return {
+    selectedFrames,
+    frameImages,
+  };
+}
+
+async function answerVisualQuestionWithFrames({
+  userId,
+  question,
+  analysisId,
+  responseMode = 'visual_fact_check',
+  compareCount = 1,
+  dynamoClient,
+  logger
+}) {
   const safeLog = logger || console;
 
   if (!CHAT_VISUAL_TOOL_ENABLED) {
@@ -566,11 +654,15 @@ async function answerVisualQuestionWithFrames({ userId, question, analysisId, dy
     };
   }
 
-  const analysis = analysisId
-    ? await swingRepository.getSwingAnalysis({ analysisId, client: dynamoClient })
-    : (await swingRepository.getLastAnalyzedSwings({ userId, limit: 1, client: dynamoClient }))[0];
+  const analyses = analysisId
+    ? [await swingRepository.getSwingAnalysis({ analysisId, client: dynamoClient })].filter(Boolean)
+    : await swingRepository.getLastAnalyzedSwings({
+        userId,
+        limit: responseMode === 'swing_comparison' ? Math.max(2, compareCount || 2) : 1,
+        client: dynamoClient,
+      });
 
-  if (!analysis) {
+  if (!Array.isArray(analyses) || analyses.length === 0) {
     return {
       status: 'not_found',
       answer: null,
@@ -578,54 +670,60 @@ async function answerVisualQuestionWithFrames({ userId, question, analysisId, dy
     };
   }
 
-  const frames = extractFramesFromAnalysis(analysis);
-  const selectedFrames = selectVisualFrames(frames, CHAT_VISUAL_TOOL_MAX_FRAMES);
-  if (selectedFrames.length === 0) {
-    return {
-      status: 'frames_unavailable',
-      answer: null,
-      message: 'Frames are unavailable for this swing.',
-      analysis_id: analysis.analysisId,
-    };
+  const contexts = analyses
+    .slice(0, responseMode === 'swing_comparison' ? 2 : 1)
+    .map((analysis, index) => buildAnalysisPromptContext(
+      analysis,
+      index === 0 ? 'latest_uploaded_swing' : 'previous_uploaded_swing'
+    ));
+  const frameSets = [];
+  for (let index = 0; index < contexts.length; index += 1) {
+    frameSets.push(await loadFrameImagesForAnalysis(analyses[index], contexts[index].label, safeLog));
   }
-
-  const frameImages = [];
-  for (const frame of selectedFrames) {
-    try {
-      const payload = await downloadFrameAsDataUrl(frame.url);
-      frameImages.push({ phase: frame.phase, image: payload.dataUrl, bytes: payload.bytes });
-    } catch (error) {
-      safeLog.warn('CHAT_LOOP_WARN visual frame download failed', frame.phase, error.message);
-    }
-  }
+  const frameImages = frameSets.flatMap((set) => set.frameImages);
+  const selectedFrames = frameSets.flatMap((set) => set.selectedFrames);
 
   if (frameImages.length === 0) {
     return {
       status: 'frames_unavailable',
       answer: null,
       message: 'Frames could not be loaded for this swing.',
-      analysis_id: analysis.analysisId,
+      analysis_id: contexts[0]?.analysis_id || null,
     };
   }
 
+  const isComparison = responseMode === 'swing_comparison';
   const visualPrompt = [
     {
       type: 'text',
       text:
         buildCoachRenderPrompt({
-          responseMode: 'visual_fact_check',
+          responseMode: isComparison ? 'technical_breakdown' : 'visual_fact_check',
           tone: COACH_TONE_PROFILE,
           hasQuestion: true,
-        }) + ' Only use what you can infer from the provided swing images. Do not invent details.',
+        }) +
+        ' You are reviewing frames from the user’s uploaded swing video context below. ' +
+        'Do not say you cannot access the uploaded video when frames or stored analysis context are present. ' +
+        'You may say that a specific detail is not visible or cannot be confirmed. ' +
+        (isComparison
+          ? 'Compare latest_uploaded_swing against previous_uploaded_swing using both stored analysis and visible frames. '
+          : 'Answer using the latest uploaded swing context and visible frames. ') +
+        'Do not invent details.',
     },
     {
       type: 'text',
-      text: `User question: ${question}`,
+      text: `User question: ${question}\n\nLoaded video context JSON: ${JSON.stringify({
+        response_mode: responseMode,
+        videos: contexts,
+      })}`,
     },
   ];
 
   frameImages.forEach((frame) => {
-    visualPrompt.push({ type: 'text', text: `Reference frame phase: ${frame.phase}` });
+    visualPrompt.push({
+      type: 'text',
+      text: `${frame.label} reference frame phase: ${frame.phase} (analysis_id: ${frame.analysis_id})`,
+    });
     visualPrompt.push({ type: 'image_url', image_url: { url: frame.image } });
   });
 
@@ -636,14 +734,14 @@ async function answerVisualQuestionWithFrames({ userId, question, analysisId, dy
       { role: 'system', content: SYSTEM_PROMPT },
       { role: 'user', content: visualPrompt },
     ],
-    max_completion_tokens: 320,
+    max_completion_tokens: isComparison ? 900 : 650,
     temperature: 0.35,
   });
   const durationMs = Date.now() - startedAt;
 
   const answer = response?.choices?.[0]?.message?.content?.trim() || '';
   safeLog.debug?.('VISUAL_TOOL_RESULT', {
-    analysisId: analysis.analysisId,
+    analysisId: contexts.map((context) => context.analysis_id).filter(Boolean).join(','),
     framesRequested: selectedFrames.length,
     framesLoaded: frameImages.length,
     bytesLoaded: frameImages.reduce((sum, frame) => sum + (frame.bytes || 0), 0),
@@ -653,8 +751,9 @@ async function answerVisualQuestionWithFrames({ userId, question, analysisId, dy
   return {
     status: 'ok',
     answer,
-    analysis_id: analysis.analysisId,
-    frames_used: frameImages.map((frame) => frame.phase),
+    analysis_id: contexts[0]?.analysis_id || null,
+    analysis_ids: contexts.map((context) => context.analysis_id).filter(Boolean),
+    frames_used: frameImages.map((frame) => `${frame.label}:${frame.phase}`),
     duration_ms: durationMs,
   };
 }

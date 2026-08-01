@@ -5,20 +5,65 @@ const { unmarshall } = require('@aws-sdk/util-dynamodb');
 const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
 const { SecretsManagerClient, GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');
 const https = require('https');
-const swingRepository = require('../data/swingRepository');
-const { SYSTEM_PROMPT, buildDeveloperContext } = require('../prompts/coachingSystemPrompt');
-const swingProfileRepository = require('../data/swingProfileRepository');
+const {
+  SYSTEM_PROMPT,
+  SYSTEM_PROMPT_VERSION,
+  buildAnalysisNaturalContractPrompt,
+  buildVisionFactExtractionPrompt,
+  buildCoachRenderPrompt,
+  buildDeveloperContext,
+} = require('./prompts/coachingSystemPrompt');
+const swingRepository = require('./data/swingRepository');
+const swingProfileRepository = require('./data/swingProfileRepository');
 // Initialize clients
 let dynamodb = null;
 let s3Client = null;
 let secretsManager = null;
 let cachedOpenAIKey = null;
 const HTTP_REQUEST_TIMEOUT_MS = parseInt(process.env.HTTP_REQUEST_TIMEOUT_MS || '45000', 10);
-const AI_ANALYSIS_MODEL = process.env.AI_ANALYSIS_MODEL || 'gpt-4o-mini';
+const AI_ANALYSIS_MODEL = process.env.AI_ANALYSIS_MODEL || 'gpt-5.2';
+const AI_ANALYSIS_TEMPERATURE = Math.max(0, Math.min(parseFloat(process.env.AI_ANALYSIS_TEMPERATURE || '0.35'), 1));
+const OPENAI_FACT_MAX_COMPLETION_TOKENS = Math.max(900, parseInt(process.env.OPENAI_FACT_MAX_COMPLETION_TOKENS || '1400', 10));
+const OPENAI_RENDER_MAX_COMPLETION_TOKENS = Math.max(1200, parseInt(process.env.OPENAI_RENDER_MAX_COMPLETION_TOKENS || '1800', 10));
+const OPENAI_RENDER_RETRY_MAX_COMPLETION_TOKENS = Math.max(
+  OPENAI_RENDER_MAX_COMPLETION_TOKENS,
+  parseInt(process.env.OPENAI_RENDER_RETRY_MAX_COMPLETION_TOKENS || '2600', 10)
+);
 const MAX_ANALYSIS_FRAMES = Math.max(6, Math.min(parseInt(process.env.MAX_ANALYSIS_FRAMES || '12', 10), 20));
 const IN_FLIGHT_LOCK_MS = Math.max(60_000, parseInt(process.env.AI_ANALYSIS_IN_FLIGHT_LOCK_MS || '600000', 10));
 const PRIOR_SWING_CONTEXT_LIMIT = Math.max(1, Math.min(parseInt(process.env.AI_ANALYSIS_CONTEXT_SWINGS || '3', 10), 5));
+const GENERIC_GATE_MONITOR_ONLY = process.env.GENERIC_GATE_MONITOR_ONLY !== 'false';
+const COACH_TONE_PROFILE = (process.env.COACH_TONE_PROFILE || 'wry').toLowerCase();
+const POST_ANALYSIS_TO_ASSISTANT_THREAD = process.env.POST_ANALYSIS_TO_ASSISTANT_THREAD !== 'false';
 const DYNAMO_ATTRIBUTE_KEYS = new Set(['S', 'N', 'BOOL', 'NULL', 'M', 'L', 'SS', 'NS', 'BS', 'B']);
+const GENERIC_PHRASES = [
+  'grip pressure',
+  'body rotation',
+  'follow-through',
+  'swing with a pause',
+  'stay balanced',
+  'keep your head down',
+  'slow it down',
+  'great work keep it up',
+  'your setup looks solid',
+  'fully rotating your hips and shoulders',
+  'ball striking and direction'
+];
+const EVIDENCE_PATTERNS = [
+  /\b(backswing|downswing|transition|impact|follow[- ]?through)\b/i,
+  /\b(clubface|path|shaft|lead wrist|trail wrist|hip|shoulder|pelvis|torso)\b/i,
+  /\b(open|closed|inside|outside|steep|shallow|early extension|cast|release)\b/i,
+  /\b(face-to-path|start line|launch|spin|curve|push|pull|slice|hook)\b/i,
+  /\b\d+(\.\d+)?\b/,
+];
+const PHASE_HINTS = [
+  { phase: 'setup', pattern: /\b(setup|address|stance|posture|grip at address)\b/i },
+  { phase: 'backswing', pattern: /\b(backswing|takeaway|top of swing)\b/i },
+  { phase: 'transition', pattern: /\b(transition)\b/i },
+  { phase: 'downswing', pattern: /\b(downswing|delivery|slot|shallowing)\b/i },
+  { phase: 'impact', pattern: /\b(impact|strike|contact)\b/i },
+  { phase: 'follow_through', pattern: /\b(follow[- ]?through|finish)\b/i },
+];
 
 function getDynamoClient() {
   if (!dynamodb) {
@@ -233,7 +278,11 @@ async function downloadAndCompressImage(imageUrl) {
     
     console.log(`Successfully converted ${key} to base64 (${buffer.length} bytes)`);
     
-    return dataUrl;
+    return {
+      dataUrl,
+      sourceBytes: buffer.length,
+      payloadBytes: Buffer.byteLength(dataUrl, 'utf8'),
+    };
     
   } catch (error) {
     console.error(`Error downloading image ${imageUrl}:`, error);
@@ -411,6 +460,177 @@ function readAssistantMessageContent(message) {
   return '';
 }
 
+function extractJsonObjectFromText(input) {
+  if (typeof input !== 'string' || !input.trim()) {
+    return null;
+  }
+
+  const text = input.trim();
+  const fencedMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  const candidate = fencedMatch ? fencedMatch[1].trim() : text;
+
+  try {
+    return JSON.parse(candidate);
+  } catch (firstError) {
+    const start = candidate.indexOf('{');
+    const end = candidate.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+      try {
+        return JSON.parse(candidate.slice(start, end + 1));
+      } catch (_) {
+        return null;
+      }
+    }
+    return null;
+  }
+}
+
+function normalizeFactExtractionResult(raw) {
+  const input = raw && typeof raw === 'object' ? raw : {};
+  const observations = Array.isArray(input.key_observations) ? input.key_observations : [];
+  const keyObservations = observations
+    .filter((obs) => obs && typeof obs === 'object' && typeof obs.observation === 'string')
+    .slice(0, 8)
+    .map((obs, index) => ({
+      id: typeof obs.id === 'string' ? obs.id : `fact_${index + 1}`,
+      phase: typeof obs.phase === 'string' ? obs.phase : 'swing_general',
+      observation: obs.observation.trim().slice(0, 500),
+      confidence: typeof obs.confidence === 'number' && Number.isFinite(obs.confidence)
+        ? Math.max(0.2, Math.min(Number(obs.confidence.toFixed(2)), 0.95))
+        : 0.65,
+      impact: ['positive', 'negative', 'neutral'].includes(obs.impact) ? obs.impact : 'neutral',
+      evidence_markers: Array.isArray(obs.evidence_markers)
+        ? obs.evidence_markers.filter((m) => typeof m === 'string').slice(0, 5)
+        : [],
+    }));
+
+  const uncertainties = Array.isArray(input.uncertainties)
+    ? input.uncertainties.filter((entry) => typeof entry === 'string').slice(0, 5)
+    : [];
+
+  return {
+    visibility_summary: typeof input.visibility_summary === 'string' ? input.visibility_summary.slice(0, 500) : null,
+    key_observations: keyObservations,
+    uncertainties,
+    question_relevance: typeof input.question_relevance === 'string' ? input.question_relevance.slice(0, 300) : null,
+  };
+}
+
+function buildVisualObservationsFromFacts(facts) {
+  return (Array.isArray(facts?.key_observations) ? facts.key_observations : []).map((obs, index) => ({
+    id: typeof obs.id === 'string' ? obs.id : `obs_${index + 1}`,
+    phase: obs.phase || 'swing_general',
+    observation: obs.observation,
+    evidence: {
+      source: 'vision_fact_extraction',
+      markers: Array.isArray(obs.evidence_markers) ? obs.evidence_markers.slice(0, 5) : [],
+    },
+    confidence: typeof obs.confidence === 'number' ? obs.confidence : 0.65,
+    impact: obs.impact || 'neutral',
+  }));
+}
+
+function applyModelSpecificControls(request, { temperature } = {}) {
+  if (!request || typeof request !== 'object') {
+    return request;
+  }
+
+  const model = typeof request.model === 'string' ? request.model : '';
+  if (model.startsWith('gpt-5.1') || model.startsWith('gpt-5.2')) {
+    if (Object.prototype.hasOwnProperty.call(request, 'temperature')) {
+      delete request.temperature;
+    }
+    // GPT-5.1+/5.2 use none|low|medium|high enums in this endpoint path.
+    request.reasoning_effort = request.reasoning_effort || 'low';
+    return request;
+  }
+
+  if (model.startsWith('gpt-5')) {
+    if (Object.prototype.hasOwnProperty.call(request, 'temperature')) {
+      delete request.temperature;
+    }
+    request.reasoning_effort = request.reasoning_effort || 'minimal';
+    return request;
+  }
+
+  if (typeof temperature === 'number') {
+    request.temperature = temperature;
+  }
+  return request;
+}
+
+async function callOpenAiChatCompletions(payload) {
+  const response = await makeHttpsRequest({
+    hostname: 'api.openai.com',
+    path: '/v1/chat/completions',
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+      'Content-Type': 'application/json'
+    }
+  }, JSON.stringify(payload));
+
+  return JSON.parse(response);
+}
+
+function getOpenAiChoiceDiagnostics(responseBody) {
+  const choice = responseBody?.choices?.[0] || {};
+  return {
+    finishReason: choice.finish_reason || null,
+    messageKeys: choice.message ? Object.keys(choice.message) : [],
+    usage: responseBody?.usage || null,
+    model: responseBody?.model || null,
+  };
+}
+
+function createOpenAiRetryPayload(request, maxCompletionTokens) {
+  const retryPayload = {
+    ...request,
+    max_completion_tokens: maxCompletionTokens,
+  };
+
+  if (
+    typeof retryPayload.model === 'string' &&
+    (retryPayload.model.startsWith('gpt-5.1') || retryPayload.model.startsWith('gpt-5.2'))
+  ) {
+    retryPayload.reasoning_effort = 'none';
+  }
+
+  return retryPayload;
+}
+
+async function callOpenAiForRequiredText(request, { operation, retryMaxCompletionTokens = null } = {}) {
+  const responseBody = await callOpenAiChatCompletions(request);
+  const text = readAssistantMessageContent(responseBody?.choices?.[0]?.message);
+
+  if (text) {
+    return { text, rawResponse: responseBody, retryUsed: false };
+  }
+
+  console.warn(
+    `OpenAI returned empty ${operation || 'assistant'} text; diagnostics:`,
+    JSON.stringify(getOpenAiChoiceDiagnostics(responseBody))
+  );
+
+  if (!retryMaxCompletionTokens) {
+    throw new Error(`Model returned empty ${operation || 'assistant'} text`);
+  }
+
+  const retryPayload = createOpenAiRetryPayload(request, retryMaxCompletionTokens);
+  const retryResponseBody = await callOpenAiChatCompletions(retryPayload);
+  const retryText = readAssistantMessageContent(retryResponseBody?.choices?.[0]?.message);
+
+  if (!retryText) {
+    console.warn(
+      `OpenAI retry also returned empty ${operation || 'assistant'} text; diagnostics:`,
+      JSON.stringify(getOpenAiChoiceDiagnostics(retryResponseBody))
+    );
+    throw new Error(`Model returned empty ${operation || 'assistant'} text after retry`);
+  }
+
+  return { text: retryText, rawResponse: retryResponseBody, retryUsed: true };
+}
+
 async function gatherDeveloperContext({ userId, analysisId, dynamoClient }) {
   if (!userId) {
     return null;
@@ -445,6 +665,277 @@ async function gatherDeveloperContext({ userId, analysisId, dynamoClient }) {
   });
 }
 
+function tokenizeWords(input) {
+  if (typeof input !== 'string') {
+    return [];
+  }
+
+  const matches = input.toLowerCase().match(/[a-z0-9']+/g);
+  return Array.isArray(matches) ? matches : [];
+}
+
+function scoreGenericCoachingResponse(responseText) {
+  const text = typeof responseText === 'string' ? responseText.trim() : '';
+  if (!text) {
+    return {
+      genericScore: 100,
+      evidenceHits: 0,
+      boilerplateHits: 0,
+      tokenCount: 0,
+      uniqueTokenRatio: 0,
+      looksGeneric: true,
+    };
+  }
+
+  const lower = text.toLowerCase();
+  const tokens = tokenizeWords(lower);
+  const uniqueTokenRatio = tokens.length > 0
+    ? new Set(tokens).size / tokens.length
+    : 0;
+
+  const evidenceHits = EVIDENCE_PATTERNS.reduce((count, pattern) => {
+    return count + (pattern.test(text) ? 1 : 0);
+  }, 0);
+
+  const boilerplateHits = GENERIC_PHRASES.reduce((count, phrase) => {
+    return count + (lower.includes(phrase) ? 1 : 0);
+  }, 0);
+
+  let score = 0;
+  if (tokens.length < 70) score += 20;
+  if (uniqueTokenRatio < 0.45) score += 15;
+  if (evidenceHits < 2) score += 30;
+  if (evidenceHits < 3) score += 10;
+  if (boilerplateHits >= 2) score += 30;
+  if (boilerplateHits >= 4) score += 10;
+  if (/\byour setup looks solid\b/i.test(text) && /\bswing path\b/i.test(text) && /\bfollow[- ]?through\b/i.test(text)) {
+    score += 25;
+  }
+
+  const genericScore = Math.max(0, Math.min(score, 100));
+  return {
+    genericScore,
+    evidenceHits,
+    boilerplateHits,
+    tokenCount: tokens.length,
+    uniqueTokenRatio: Number(uniqueTokenRatio.toFixed(4)),
+    looksGeneric: genericScore >= 55,
+  };
+}
+
+function splitIntoSentences(text) {
+  if (typeof text !== 'string') {
+    return [];
+  }
+
+  return text
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => sentence.length >= 20);
+}
+
+function inferObservationPhase(sentence, fallbackPhases) {
+  for (const hint of PHASE_HINTS) {
+    if (hint.pattern.test(sentence)) {
+      return hint.phase;
+    }
+  }
+
+  if (Array.isArray(fallbackPhases) && fallbackPhases.length > 0) {
+    return fallbackPhases[0];
+  }
+
+  return 'swing_general';
+}
+
+function detectObservationImpact(sentence) {
+  if (!sentence) return 'neutral';
+  if (/\b(better|improved|solid|good|well|strong)\b/i.test(sentence)) return 'positive';
+  if (/\b(issue|problem|open|steep|stuck|early extension|cast|loss|poor)\b/i.test(sentence)) return 'negative';
+  return 'neutral';
+}
+
+function estimateObservationConfidence(sentence) {
+  let confidence = 0.65;
+  if (/\b(clearly|definitely|consistently|noticeably)\b/i.test(sentence)) confidence += 0.15;
+  if (/\b(likely|maybe|appears|seems|probably)\b/i.test(sentence)) confidence -= 0.15;
+  if (EVIDENCE_PATTERNS.some((pattern) => pattern.test(sentence))) confidence += 0.1;
+  return Math.max(0.2, Math.min(Number(confidence.toFixed(2)), 0.95));
+}
+
+// Legacy fallback-only heuristic parser. Do not use as primary visual memory.
+function buildHeuristicVisualObservations({ responseText, selectedFrames }) {
+  const sentences = splitIntoSentences(responseText);
+  const fallbackPhases = Array.isArray(selectedFrames)
+    ? selectedFrames.map((frame) => frame.phase).filter(Boolean).slice(0, 6)
+    : [];
+
+  const candidateSentences = sentences.filter((sentence) => (
+    /\b(you|your|club|face|path|wrist|hip|shoulder|rotation|impact|transition|backswing|downswing|finish|setup)\b/i.test(sentence)
+  ));
+
+  const picked = candidateSentences.slice(0, 6);
+
+  return picked.map((sentence, index) => ({
+    id: `obs_${index + 1}`,
+    phase: inferObservationPhase(sentence, fallbackPhases.slice(index, index + 1)),
+    observation: sentence,
+    evidence: {
+      source: 'coaching_response_heuristic',
+      markers: EVIDENCE_PATTERNS
+        .map((pattern, patternIndex) => ({ pattern, patternIndex }))
+        .filter(({ pattern }) => pattern.test(sentence))
+        .map(({ patternIndex }) => `evidence_pattern_${patternIndex + 1}`)
+        .slice(0, 3),
+    },
+    confidence: estimateObservationConfidence(sentence),
+    impact: detectObservationImpact(sentence),
+  }));
+}
+
+async function extractSwingFactsWithVision({ selectedFrameImages, userQuestion }) {
+  const promptText = buildVisionFactExtractionPrompt({ userQuestion });
+  const messageContent = [
+    {
+      type: 'text',
+      text: `${promptText}\n\nDo not mention frames or internal references in the JSON values.`,
+    },
+  ];
+
+  selectedFrameImages.forEach((frame, index) => {
+    messageContent.push({
+      type: 'text',
+      text: `Internal frame reference ${index + 1}: ${frame.phase}`,
+    });
+    messageContent.push({
+      type: 'image_url',
+      image_url: { url: frame.image },
+    });
+  });
+
+  const request = {
+    model: AI_ANALYSIS_MODEL,
+    messages: [
+      {
+        role: 'system',
+        content: 'You extract visible swing facts from images and return strict JSON only.',
+      },
+      {
+        role: 'user',
+        content: messageContent,
+      },
+    ],
+    max_completion_tokens: OPENAI_FACT_MAX_COMPLETION_TOKENS,
+    response_format: { type: 'json_object' },
+  };
+  applyModelSpecificControls(request, { temperature: 0.15 });
+
+  const responseBody = await callOpenAiChatCompletions(request);
+  const message = responseBody?.choices?.[0]?.message;
+  const text = readAssistantMessageContent(message);
+  const parsed = extractJsonObjectFromText(text);
+  if (!parsed) {
+    throw new Error('Fact extraction model returned non-JSON output');
+  }
+
+  return {
+    facts: normalizeFactExtractionResult(parsed),
+    rawResponse: responseBody,
+    rawText: text,
+  };
+}
+
+async function renderCoachResponseFromFacts({
+  facts,
+  userQuestion,
+  rewriteHint = null,
+}) {
+  const renderPrompt = buildCoachRenderPrompt({
+    responseMode: 'analysis',
+    tone: COACH_TONE_PROFILE,
+    hasQuestion: typeof userQuestion === 'string' && userQuestion.trim().length > 0,
+  });
+  const analysisContractPrompt = buildAnalysisNaturalContractPrompt();
+
+  const userContent = [
+    {
+      type: 'text',
+      text:
+        `${analysisContractPrompt}\n\n${renderPrompt}\n` +
+        (rewriteHint ? `Rewrite guidance: ${rewriteHint}\n` : '') +
+        'Use the structured facts below as the evidence source. ' +
+        'Do not pretend to have seen details that are not in the facts. ' +
+        'Do not mention JSON, schemas, or internal fields.\n\n' +
+        `Attached player question: ${typeof userQuestion === 'string' && userQuestion.trim() ? userQuestion.trim() : 'None'}\n` +
+        `Structured swing facts: ${JSON.stringify(facts)}`,
+    },
+  ];
+
+  const request = {
+    model: AI_ANALYSIS_MODEL,
+    messages: [
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'user', content: userContent },
+    ],
+    max_completion_tokens: OPENAI_RENDER_MAX_COMPLETION_TOKENS,
+  };
+  applyModelSpecificControls(request, { temperature: AI_ANALYSIS_TEMPERATURE });
+
+  const { text: finalAnalysis, rawResponse, retryUsed } = await callOpenAiForRequiredText(request, {
+    operation: 'coaching analysis',
+    retryMaxCompletionTokens: OPENAI_RENDER_RETRY_MAX_COMPLETION_TOKENS,
+  });
+
+  return {
+    text: finalAnalysis,
+    rawResponse,
+    retryUsed,
+  };
+}
+
+async function renderCoachResponseDirectFromFrames({ selectedFrameImages, userQuestion }) {
+  const analysisContractPrompt = buildAnalysisNaturalContractPrompt();
+  const messageContent = [
+    {
+      type: 'text',
+      text:
+        `${analysisContractPrompt}\n\n` +
+        buildCoachRenderPrompt({
+          responseMode: 'analysis',
+          tone: COACH_TONE_PROFILE,
+          hasQuestion: typeof userQuestion === 'string' && userQuestion.trim().length > 0,
+        }) + '\n' +
+        'You are a professional golf coach reviewing sequential images from one short swing video. ' +
+        'Treat these as one continuous motion and provide one cohesive coaching response. ' +
+        'Do not mention frames, image order, or internal references. ' +
+        'Default to best-effort coaching when the golfer and club are visible in most images. ' +
+        'Only say footage is insufficient if visibility is truly unusable. ' +
+        'If visibility is partial, state assumptions briefly and still give a useful best-effort coaching response. ' +
+        `Attached player question: ${typeof userQuestion === 'string' && userQuestion.trim() ? userQuestion.trim() : 'None'}`,
+    },
+  ];
+
+  selectedFrameImages.forEach((frame, index) => {
+    messageContent.push({ type: 'text', text: `Internal frame reference ${index + 1}: ${frame.phase}` });
+    messageContent.push({ type: 'image_url', image_url: { url: frame.image } });
+  });
+
+  const request = {
+    model: AI_ANALYSIS_MODEL,
+    messages: [
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'user', content: messageContent },
+    ],
+    max_completion_tokens: OPENAI_RENDER_MAX_COMPLETION_TOKENS,
+  };
+  applyModelSpecificControls(request, { temperature: AI_ANALYSIS_TEMPERATURE });
+  const { text: finalAnalysis, rawResponse, retryUsed } = await callOpenAiForRequiredText(request, {
+    operation: 'coaching analysis',
+    retryMaxCompletionTokens: OPENAI_RENDER_RETRY_MAX_COMPLETION_TOKENS,
+  });
+  return { text: finalAnalysis, rawResponse, retryUsed };
+}
+
 // Main AI analysis function using OpenAI GPT-5
 async function analyzeSwingWithGPT5(frameData, swingData) {
   try {
@@ -452,6 +943,7 @@ async function analyzeSwingWithGPT5(frameData, swingData) {
 
     const analysisId = swingData.analysis_id;
     const userId = swingData.user_id;
+    const userQuestion = typeof swingData.user_question === 'string' ? swingData.user_question.trim() : '';
 
     const allFrameUrls = frameData.frame_urls || {};
     const allFrames = Object.keys(allFrameUrls).sort().map(frameKey => ({
@@ -473,10 +965,12 @@ async function analyzeSwingWithGPT5(frameData, swingData) {
     for (const frame of selectedFrames) {
       try {
         console.log(`Processing frame: ${frame.phase}`);
-        const base64Image = await downloadAndCompressImage(frame.url);
+        const imagePayload = await downloadAndCompressImage(frame.url);
         selectedFrameImages.push({
           phase: frame.phase,
-          image: base64Image
+          image: imagePayload.dataUrl,
+          sourceBytes: imagePayload.sourceBytes,
+          payloadBytes: imagePayload.payloadBytes,
         });
       } catch (error) {
         console.error(`Failed to process frame ${frame.phase}:`, error.message);
@@ -487,81 +981,83 @@ async function analyzeSwingWithGPT5(frameData, swingData) {
       throw new Error('No frame images could be converted');
     }
 
-    const developerContext = await gatherDeveloperContext({
-      userId,
-      analysisId,
-      dynamoClient: getDynamoClient(),
-    });
-
-    const promptPrelude = developerContext
-      ? `Historical swing context JSON (use this to reference improvements/regressions when relevant): ${developerContext}`
-      : 'No prior swing context is available for this golfer.';
-
-    const messageContent = [
-      {
-        type: 'text',
-        text:
-          `${promptPrelude}\n\n` +
-          'You are a professional golf coach reviewing sequential images from one short swing video. ' +
-          'Treat these as one continuous motion and provide one cohesive coaching response. ' +
-          'Do not mention frames, image order, or internal references. ' +
-          'Default to best-effort coaching when the golfer and club are visible in most images. ' +
-          'Only say footage is insufficient if visibility is truly unusable (for example: golfer or club missing in most images, severe blur, or motion cannot be read). ' +
-          'If visibility is partial, state assumptions briefly and still provide: (1) likely root cause, (2) 1-3 precise fixes, (3) one drill/feel. ' +
-          'Keep it concise and practical.',
-      },
-    ];
-
-    selectedFrameImages.forEach((frame, index) => {
-      messageContent.push({
-        type: 'text',
-        text: `Internal frame reference ${index + 1}: ${frame.phase}`,
+    const factStartedAt = Date.now();
+    let factResult = null;
+    let factsDurationMs = 0;
+    let factExtractionFallbackUsed = false;
+    try {
+      factResult = await extractSwingFactsWithVision({
+        selectedFrameImages,
+        userQuestion,
       });
-      messageContent.push({
-        type: 'image_url',
-        image_url: { url: frame.image },
-      });
-    });
+      factsDurationMs = Date.now() - factStartedAt;
+    } catch (factError) {
+      factsDurationMs = Date.now() - factStartedAt;
+      factExtractionFallbackUsed = true;
+      console.warn('Fact extraction failed, falling back to direct frame coaching render:', factError.message);
+    }
 
-    const openaiRequest = {
+    const visualObservations = factResult
+      ? buildVisualObservationsFromFacts(factResult.facts)
+      : [];
+
+    const renderStartedAt = Date.now();
+    let renderResult = factResult
+      ? await renderCoachResponseFromFacts({
+          facts: factResult.facts,
+          userQuestion,
+        })
+      : await renderCoachResponseDirectFromFrames({
+          selectedFrameImages,
+          userQuestion,
+        });
+    let finalAnalysis = renderResult.text;
+    let quality = scoreGenericCoachingResponse(finalAnalysis);
+    let rewriteAttempted = false;
+    let renderRetryUsed = Boolean(renderResult.retryUsed);
+
+    if (quality.looksGeneric && factResult) {
+      rewriteAttempted = true;
+      renderResult = await renderCoachResponseFromFacts({
+        facts: factResult.facts,
+        userQuestion,
+        rewriteHint:
+          'The previous draft sounded generic. Use the specific observed details from the structured facts and avoid default setup/path/follow-through boilerplate. Vary cadence and avoid repeated do-X-so-Y phrasing.',
+      });
+      finalAnalysis = renderResult.text;
+      renderRetryUsed = renderRetryUsed || Boolean(renderResult.retryUsed);
+      quality = scoreGenericCoachingResponse(finalAnalysis);
+    }
+    const renderDurationMs = Date.now() - renderStartedAt;
+    const frameTelemetry = {
+      promptVersion: SYSTEM_PROMPT_VERSION,
       model: AI_ANALYSIS_MODEL,
-      messages: [
-        {
-          role: 'system',
-          content: SYSTEM_PROMPT,
-        },
-        {
-          role: 'user',
-          content: messageContent,
-        },
-      ],
-      max_completion_tokens: 900,
-      temperature: 0.2,
+      toneProfile: COACH_TONE_PROFILE,
+      temperature: AI_ANALYSIS_TEMPERATURE,
+      framesSelected: selectedFrames.length,
+      framesAnalyzed: selectedFrameImages.length,
+      frameSourceBytesTotal: selectedFrameImages.reduce((total, frame) => total + (frame.sourceBytes || 0), 0),
+      framePayloadBytesTotal: selectedFrameImages.reduce((total, frame) => total + (frame.payloadBytes || 0), 0),
+      genericGateMonitorOnly: GENERIC_GATE_MONITOR_ONLY,
+      genericScore: quality.genericScore,
+      looksGeneric: quality.looksGeneric,
+      evidenceHits: quality.evidenceHits,
+      boilerplateHits: quality.boilerplateHits,
+      factsExtracted: visualObservations.length,
+      factsDurationMs,
+      factExtractionFallbackUsed,
+      renderDurationMs,
+      renderRetryUsed,
+      rewriteAttempted,
+      userQuestionAttached: !!userQuestion,
+      visualObservationCount: visualObservations.length,
     };
 
-    if (AI_ANALYSIS_MODEL.startsWith('gpt-5')) {
-      openaiRequest.reasoning_effort = 'minimal';
+    console.log('AI_ANALYSIS_TELEMETRY', JSON.stringify(frameTelemetry));
+
+    if (POST_ANALYSIS_TO_ASSISTANT_THREAD && userId) {
+      await addAnalysisToUserThread(userId, finalAnalysis, analysisId);
     }
-
-    const response = await makeHttpsRequest({
-      hostname: 'api.openai.com',
-      path: '/v1/chat/completions',
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json'
-      }
-    }, JSON.stringify(openaiRequest));
-
-    const responseBody = JSON.parse(response);
-    const message = responseBody?.choices?.[0]?.message;
-    const finalAnalysis = readAssistantMessageContent(message);
-
-    if (!finalAnalysis) {
-      throw new Error('Model returned empty coaching analysis');
-    }
-
-    await addAnalysisToUserThread(userId, finalAnalysis, analysisId);
 
     return {
       success: true,
@@ -572,9 +1068,26 @@ async function analyzeSwingWithGPT5(frameData, swingData) {
       fallback_triggered: false,
       fallback_reason: null,
       skipped_frames: [],
-      tokens_used: responseBody?.usage?.total_tokens || 0,
+      tokens_used: (factResult?.rawResponse?.usage?.total_tokens || 0) + (renderResult.rawResponse?.usage?.total_tokens || 0),
       batches_processed: 1,
       model_used: AI_ANALYSIS_MODEL,
+      prompt_version: SYSTEM_PROMPT_VERSION,
+      visual_observations: visualObservations,
+      vision_facts: factResult ? factResult.facts : null,
+      user_question: userQuestion || null,
+      quality_gate: {
+        generic_score: quality.genericScore,
+        evidence_hits: quality.evidenceHits,
+        boilerplate_hits: quality.boilerplateHits,
+        token_count: quality.tokenCount,
+        unique_token_ratio: quality.uniqueTokenRatio,
+        looks_generic: quality.looksGeneric,
+        mode: GENERIC_GATE_MONITOR_ONLY ? 'monitor' : 'enforce',
+        decision: quality.looksGeneric ? 'flagged' : 'passed',
+        rewrite_attempted: rewriteAttempted,
+        fact_extraction_fallback_used: factExtractionFallbackUsed,
+        render_retry_used: renderRetryUsed,
+      },
     };
     
   } catch (error) {
@@ -793,8 +1306,11 @@ exports.handler = async (event) => {
     userThreadsTable: process.env.USER_THREADS_TABLE,
     swingProfileTable: process.env.SWING_PROFILE_TABLE || 'golf-coach-swing-profiles',
     model: AI_ANALYSIS_MODEL,
+    temperature: AI_ANALYSIS_TEMPERATURE,
+    promptVersion: SYSTEM_PROMPT_VERSION,
     maxAnalysisFrames: MAX_ANALYSIS_FRAMES,
     timeoutMs: HTTP_REQUEST_TIMEOUT_MS,
+    genericGateMode: GENERIC_GATE_MONITOR_ONLY ? 'monitor' : 'enforce',
   });
   
   try {
@@ -890,9 +1406,10 @@ exports.handler = async (event) => {
 };
 
 exports.__private = {
-  gatherDeveloperContext,
   selectFramesForAnalysis,
   readAssistantMessageContent,
+  gatherDeveloperContext,
+  scoreGenericCoachingResponse,
   normalizeDynamoItem,
   extractFrameData,
 };
