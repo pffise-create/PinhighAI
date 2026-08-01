@@ -104,7 +104,7 @@ class ErrorBoundary extends React.Component {
   };
 
   handleOpenSupport = () => {
-    const subject = encodeURIComponent('DivotLab Support');
+    const subject = encodeURIComponent('Alki DivotLab Support');
     Linking.openURL(`mailto:${SUPPORT_EMAIL_ADDRESS}?subject=${subject}`).catch((error) => {
       console.error('Failed to open support email:', error);
       Alert.alert('Help & Support', `Please email us at ${SUPPORT_EMAIL_ADDRESS}.`);

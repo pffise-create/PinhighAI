@@ -13,7 +13,7 @@ export default function ProgressiveOnboardingMessage({
       case 'firstTime':
         return {
           emoji: '👋',
-          title: 'Welcome to Pin High!',
+          title: 'Welcome to Alki DivotLab!',
           message: customMessage || "Hi! I'm your AI golf coach. Ready to analyze your swing? Tap 📹 above to start!",
           actionText: 'Upload First Video',
           celebratory: false,

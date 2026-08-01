@@ -8,7 +8,7 @@ const ChatHeader = ({ onSettingsPress }) => (
   <View style={styles.container}>
     <View style={styles.header}>
       <View>
-        <Text style={styles.title}>PinHigh Coach</Text>
+        <Text style={styles.title}>Coach</Text>
         <View style={styles.statusRow}>
           <View style={styles.statusDot} />
           <Text style={styles.statusText}>Online</Text>

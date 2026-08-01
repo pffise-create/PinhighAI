@@ -23,7 +23,7 @@ describe('supportService', () => {
     });
 
     expect(draft.to).toBe('support@divotlab.ai');
-    expect(draft.subject).toBe('DivotLab Support: Bug report');
+    expect(draft.subject).toBe('Alki DivotLab Support: Bug report');
     expect(draft.body).toContain('The swing upload failed after processing.');
     expect(draft.body).toContain('User email: golfer@example.com');
     expect(draft.body).toContain('User id: user-123');
@@ -32,7 +32,7 @@ describe('supportService', () => {
     expect(draft.body).toContain('RevenueCat user: rc-user-123');
     expect(draft.body).toContain('Entitlement active: yes');
     expect(draft.url).toContain('mailto:support@divotlab.ai?');
-    expect(draft.url).toContain('subject=DivotLab+Support%3A+Bug+report');
+    expect(draft.url).toContain('subject=Alki+DivotLab+Support%3A+Bug+report');
   });
 
   it('allows the support email address to be overridden by environment', () => {

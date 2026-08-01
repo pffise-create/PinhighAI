@@ -133,7 +133,7 @@ export default function AppSettings({
   };
 
   const handleOpenSupport = () => {
-    const subject = encodeURIComponent('DivotLab Support');
+    const subject = encodeURIComponent('Alki DivotLab Support');
     Linking.openURL(`mailto:${SUPPORT_EMAIL_ADDRESS}?subject=${subject}`).catch((error) => {
       console.error('Failed to open support email:', error);
       Alert.alert('Help & Support', `Please email us at ${SUPPORT_EMAIL_ADDRESS}.`);
@@ -363,9 +363,9 @@ export default function AppSettings({
 
         {/* App Information */}
         <View style={styles.appInfo}>
-          <Text style={styles.appName}>Pin High Golf Coach</Text>
+          <Text style={styles.appName}>Alki DivotLab</Text>
           <Text style={styles.appVersion}>Version 1.0.0 (Build 1)</Text>
-          <Text style={styles.appCopyright}>© 2025 Pin High. All rights reserved.</Text>
+          <Text style={styles.appCopyright}>© 2026 Alki Golf Co. All rights reserved.</Text>
         </View>
       </ScrollView>
 
