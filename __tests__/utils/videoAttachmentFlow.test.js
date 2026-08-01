@@ -1,5 +1,6 @@
 const {
   MAX_VIDEO_LENGTH_SECONDS,
+  MIN_VIDEO_LENGTH_SECONDS,
   createVideoPickerOptions,
   resolveVideoAttachment,
 } = require('../../src/utils/videoAttachmentFlow');
@@ -36,8 +37,9 @@ describe('videoAttachmentFlow', () => {
     expect(result).toEqual({
       cancelled: false,
       rejectedTooLong: false,
+      rejectedTooShort: false,
       uri: 'file://trimmed.mov',
-      durationSeconds: MAX_VIDEO_LENGTH_SECONDS,
+      durationSeconds: 12,
       trimData: null,
     });
   });
@@ -63,6 +65,7 @@ describe('videoAttachmentFlow', () => {
     expect(result).toEqual({
       cancelled: false,
       rejectedTooLong: false,
+      rejectedTooShort: false,
       uri: 'file://trimmed.mov',
       durationSeconds: 3.8,
       trimData: {
@@ -106,7 +109,7 @@ describe('videoAttachmentFlow', () => {
   it('does not reject long metadata in system editor mode, clamps duration, and adds safety trim data', async () => {
     const pickVideo = jest.fn().mockResolvedValue({
       canceled: false,
-      assets: [{ uri: 'file://ios-too-long.mov', duration: 6200 }],
+      assets: [{ uri: 'file://ios-too-long.mov', duration: 65000 }],
     });
     const trimVideo = jest.fn();
 
@@ -136,7 +139,7 @@ describe('videoAttachmentFlow', () => {
       .fn()
       .mockResolvedValueOnce({
         canceled: false,
-        assets: [{ uri: 'file://original.mov', duration: 12000 }],
+        assets: [{ uri: 'file://original.mov', duration: 70000 }],
       })
       .mockResolvedValueOnce({
         canceled: false,
@@ -155,6 +158,7 @@ describe('videoAttachmentFlow', () => {
     expect(result).toEqual({
       cancelled: false,
       rejectedTooLong: false,
+      rejectedTooShort: false,
       uri: 'file://fallback-trimmed.mov',
       durationSeconds: 4.2,
       trimData: null,
@@ -164,7 +168,7 @@ describe('videoAttachmentFlow', () => {
   it('rejects long clips when no trim path is available', async () => {
     const pickVideo = jest.fn().mockResolvedValue({
       canceled: false,
-      assets: [{ uri: 'file://original.mov', duration: 12000 }],
+      assets: [{ uri: 'file://original.mov', duration: 70000 }],
     });
     const trimVideo = jest.fn();
 
@@ -196,10 +200,61 @@ describe('videoAttachmentFlow', () => {
     expect(result).toEqual({
       cancelled: false,
       rejectedTooLong: false,
+      rejectedTooShort: false,
       uri: 'file://short.mov',
       durationSeconds: 3.8,
       trimData: null,
     });
+  });
+
+  it('rejects clips below the minimum useful length', async () => {
+    const pickVideo = jest.fn().mockResolvedValue({
+      canceled: false,
+      assets: [{ uri: 'file://blink.mov', duration: 1500 }],
+    });
+    const trimVideo = jest.fn();
+
+    const result = await resolveVideoAttachment({
+      isTrimAvailable: false,
+      trimVideo,
+      pickVideo,
+    });
+
+    expect(result).toEqual({ rejectedTooShort: true, durationSeconds: 1.5 });
+  });
+
+  it('accepts a clip exactly at the minimum length', async () => {
+    const pickVideo = jest.fn().mockResolvedValue({
+      canceled: false,
+      assets: [{ uri: 'file://exact.mov', duration: MIN_VIDEO_LENGTH_SECONDS * 1000 }],
+    });
+    const trimVideo = jest.fn();
+
+    const result = await resolveVideoAttachment({
+      isTrimAvailable: false,
+      trimVideo,
+      pickVideo,
+    });
+
+    expect(result.rejectedTooShort).toBe(false);
+    expect(result.durationSeconds).toBe(MIN_VIDEO_LENGTH_SECONDS);
+  });
+
+  it('accepts a long clip now that extraction is event-anchored', async () => {
+    const pickVideo = jest.fn().mockResolvedValue({
+      canceled: false,
+      assets: [{ uri: 'file://range-session.mov', duration: 45000 }],
+    });
+    const trimVideo = jest.fn();
+
+    const result = await resolveVideoAttachment({
+      isTrimAvailable: false,
+      trimVideo,
+      pickVideo,
+    });
+
+    expect(result.rejectedTooLong).toBe(false);
+    expect(result.durationSeconds).toBe(45);
   });
 
   it('returns cancelled when picker is cancelled', async () => {

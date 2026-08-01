@@ -1,4 +1,12 @@
-const MAX_VIDEO_LENGTH_SECONDS = 5;
+// The extractor locates the swing itself (event-anchored extraction, see
+// docs/frame-bakeoff-2026-08-01.md), so clip length no longer dilutes the
+// frames the model sees — users don't have to trim to the swing anymore.
+// The ceiling is now about upload size and lambda budget, not frame quality.
+const MAX_VIDEO_LENGTH_SECONDS = 60;
+
+// Below this there isn't enough room around impact for setup/top context,
+// so coverage degrades even though extraction still succeeds.
+const MIN_VIDEO_LENGTH_SECONDS = 3;
 
 const createVideoPickerOptions = ({ allowsEditing }) => {
   return {
@@ -144,9 +152,14 @@ const resolveVideoAttachment = async ({
     return { rejectedTooLong: true };
   }
 
+  if (durationSeconds > 0 && durationSeconds < MIN_VIDEO_LENGTH_SECONDS) {
+    return { rejectedTooShort: true, durationSeconds };
+  }
+
   return {
     cancelled: false,
     rejectedTooLong: false,
+    rejectedTooShort: false,
     uri: trimmedUri,
     durationSeconds,
     trimData,
@@ -155,6 +168,7 @@ const resolveVideoAttachment = async ({
 
 export {
   MAX_VIDEO_LENGTH_SECONDS,
+  MIN_VIDEO_LENGTH_SECONDS,
   createVideoPickerOptions,
   getDurationSecondsFromAsset,
   resolveVideoAttachment,

@@ -32,6 +32,7 @@ import {
   createVideoPickerOptions,
   getDurationSecondsFromAsset,
   MAX_VIDEO_LENGTH_SECONDS,
+  MIN_VIDEO_LENGTH_SECONDS,
 } from '../utils/videoAttachmentFlow';
 
 import ChatHeader from '../components/chat/ChatHeader';
@@ -342,7 +343,11 @@ const ChatScreen = ({ navigation }) => {
       if (Platform.OS === 'ios') {
         // Expo iOS can return the original full-size asset when export preset is passthrough.
         // Force a real export so edited (trimmed) media is materialized to a new file URI.
-        const exportPreset = ImagePicker.VideoExportPreset?.HighestQuality;
+        // Cap at 1080p: clips can now run to 60s, and a 4K minute-long upload is
+        // hundreds of MB on cellular for no analysis benefit (frames render at 720p).
+        const exportPreset =
+          ImagePicker.VideoExportPreset?.Preset1920x1080 ??
+          ImagePicker.VideoExportPreset?.HighestQuality;
         if (exportPreset !== undefined) {
           pickerOptions.videoExportPreset = exportPreset;
         }
@@ -385,18 +390,22 @@ const ChatScreen = ({ navigation }) => {
     const displayDuration = Number.isFinite(durationSeconds) ? durationSeconds.toFixed(1) : 'unknown';
     Alert.alert(
       'Clip too long',
-      `This clip is ${displayDuration}s. Please trim it to ${MAX_VIDEO_LENGTH_SECONDS}s or less in the iOS trimmer, then upload again.`,
+      `This clip is ${displayDuration}s. Please keep it under ${MAX_VIDEO_LENGTH_SECONDS}s.`,
       [
-        {
-          text: 'Trim Again',
-          onPress: () => {
-            handleAttachmentPress();
-          },
-        },
-        {
-          text: 'Cancel',
-          style: 'cancel',
-        },
+        { text: 'Choose Another', onPress: () => handleAttachmentPress() },
+        { text: 'Cancel', style: 'cancel' },
+      ]
+    );
+  }, [handleAttachmentPress]);
+
+  const showTooShortVideoAlert = useCallback((durationSeconds) => {
+    const displayDuration = Number.isFinite(durationSeconds) ? durationSeconds.toFixed(1) : 'unknown';
+    Alert.alert(
+      'Clip too short',
+      `This clip is ${displayDuration}s. Aim for at least ${MIN_VIDEO_LENGTH_SECONDS}s so your setup and finish are in frame.`,
+      [
+        { text: 'Choose Another', onPress: () => handleAttachmentPress() },
+        { text: 'Cancel', style: 'cancel' },
       ]
     );
   }, [handleAttachmentPress]);
@@ -408,12 +417,15 @@ const ChatScreen = ({ navigation }) => {
   // ─── Send Video Message ────────────────────────────────────────────────
   const sendVideoMessage = useCallback(async () => {
     if (!selectedVideo) return;
-    if (
-      Number.isFinite(selectedVideo.duration) &&
-      selectedVideo.duration > MAX_VIDEO_LENGTH_SECONDS
-    ) {
-      showTooLongVideoAlert(selectedVideo.duration);
-      return;
+    if (Number.isFinite(selectedVideo.duration) && selectedVideo.duration > 0) {
+      if (selectedVideo.duration > MAX_VIDEO_LENGTH_SECONDS) {
+        showTooLongVideoAlert(selectedVideo.duration);
+        return;
+      }
+      if (selectedVideo.duration < MIN_VIDEO_LENGTH_SECONDS) {
+        showTooShortVideoAlert(selectedVideo.duration);
+        return;
+      }
     }
 
     // Capture values before clearing state to avoid stale closure reads
@@ -494,6 +506,7 @@ const ChatScreen = ({ navigation }) => {
   }, [
     selectedVideo,
     showTooLongVideoAlert,
+    showTooShortVideoAlert,
     inputText,
     videoThumbnail,
     userId,
