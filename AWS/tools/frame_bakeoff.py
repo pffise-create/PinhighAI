@@ -344,9 +344,13 @@ def main():
     meta_path = os.path.join(args.out, 'bakeoff-metadata.jsonl')
     unblind_path = os.path.join(args.out, 'UNBLINDING-do-not-read-before-judging.jsonl')
     done = failed = 0
-    with open(meta_path, 'w') as meta_f, open(unblind_path, 'w') as ub_f:
+    with open(meta_path, 'a') as meta_f, open(unblind_path, 'a') as ub_f:
         for i, video in enumerate(videos):
             vid_id = os.path.splitext(os.path.basename(video))[0][:60]
+            # Resume support: skip videos whose montages already exist
+            if os.path.exists(os.path.join(args.out, 'montages', f'v{i:03d}_B.jpg')):
+                rng.random()  # keep the A/B assignment stream aligned
+                continue
             try:
                 rec = process_video(video, args.out, f'v{i:03d}', rng)
             except Exception as e:  # noqa: BLE001 — log and continue the corpus
