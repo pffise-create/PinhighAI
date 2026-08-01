@@ -15,7 +15,7 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.pinhighai.golfcoach",
+      "bundleIdentifier": "com.alkigolf.divotlab",
       "buildNumber": "1",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
@@ -27,7 +27,7 @@
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.pinhighai.golfcoach"
+      "package": "com.alkigolf.divotlab"
     },
     "web": {
       "favicon": "./assets/favicon.png"

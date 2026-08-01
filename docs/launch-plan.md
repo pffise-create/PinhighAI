@@ -140,7 +140,7 @@ Everything below needs a human to do it — either because it requires console/p
 - [ ] Review and finalize [`docs/legal/privacy-policy.md`](./legal/privacy-policy.md) (now branded Alki DivotLab / Alki Golf Co.), then host it at a stable URL.
 - [ ] Review and finalize [`docs/legal/terms-of-service.md`](./legal/terms-of-service.md), then host it at a stable URL.
 - [ ] Confirm the `support@divotlab.ai` mailbox is receiving messages — or pick an Alki-branded address and set `EXPO_PUBLIC_SUPPORT_EMAIL`.
-- [ ] **Brand decision (before first App Store submission, irreversible after):** bundle ID is `com.pinhighai.golfcoach`. If you want `com.alkigolf.*`, say so before the first upload to App Store Connect — it cannot change afterwards.
+- [x] **Brand decision (2026-08-01):** bundle ID changed to `com.alkigolf.divotlab` (iOS + Android). Create the App Store Connect app record, App ID, and RevenueCat iOS app config with THIS id. EAS will regenerate provisioning on next build.
 - [ ] Set `EXPO_PUBLIC_PRIVACY_POLICY_URL` and `EXPO_PUBLIC_TERMS_URL` in the EAS environments once hosted — **no code change needed**, rows auto-flip to live links once set.
 - [ ] Audit paywall + settings copy against the real offer (price, trial length, billing cadence) before launch.
 
