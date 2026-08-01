@@ -113,6 +113,7 @@ const ChatScreen = ({ navigation }) => {
   const [processingMessage, setProcessingMessage] = useState('');
   const [selectedVideo, setSelectedVideo] = useState(null);
   const [videoThumbnail, setVideoThumbnail] = useState(null);
+  const [inputResetKey, setInputResetKey] = useState(0);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [playbackVideoUri, setPlaybackVideoUri] = useState(null);
   const [playbackTrimData, setPlaybackTrimData] = useState(null);
@@ -237,6 +238,7 @@ const ChatScreen = ({ navigation }) => {
     const userMessage = createMessage({ sender: 'user', text: trimmed });
     appendMessage(userMessage);
     setInputText('');
+    setInputResetKey((key) => key + 1);
     setIsSending(true);
 
     requestAnimationFrame(() => {
@@ -375,6 +377,7 @@ const ChatScreen = ({ navigation }) => {
       })
     );
     setInputText('');
+    setInputResetKey((key) => key + 1);
     clearSelectedVideo();
 
     // Process upload + analysis pipeline
@@ -527,6 +530,7 @@ const ChatScreen = ({ navigation }) => {
           selectedVideo={selectedVideo}
           videoThumbnail={videoThumbnail}
           onClearVideo={clearSelectedVideo}
+          inputResetKey={inputResetKey}
         />
 
         {/* Single video playback modal — shared across all messages */}

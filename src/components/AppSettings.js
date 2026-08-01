@@ -12,6 +12,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { colors, typography, spacing, borderRadius, shadows } from '../utils/theme';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { SUPPORT_EMAIL_ADDRESS } from '../services/supportService';
 
 export default function AppSettings({ 
   profile, 
@@ -128,6 +129,14 @@ export default function AppSettings({
     Linking.openURL(url).catch(err => {
       console.error('Failed to open link:', err);
       Alert.alert('Error', 'Could not open link');
+    });
+  };
+
+  const handleOpenSupport = () => {
+    const subject = encodeURIComponent('DivotLab Support');
+    Linking.openURL(`mailto:${SUPPORT_EMAIL_ADDRESS}?subject=${subject}`).catch((error) => {
+      console.error('Failed to open support email:', error);
+      Alert.alert('Help & Support', `Please email us at ${SUPPORT_EMAIL_ADDRESS}.`);
     });
   };
 
@@ -319,7 +328,7 @@ export default function AppSettings({
               'Send Feedback',
               'Help us improve by sharing your thoughts',
               'chatbubble-outline',
-              () => Alert.alert('Feedback', 'Feedback form would open here'),
+              handleOpenSupport,
               colors.primary
             )}
           </>
@@ -345,9 +354,9 @@ export default function AppSettings({
             
             {renderActionItem(
               'Help & Support',
-              'Get help using the app',
+              `Message us at ${SUPPORT_EMAIL_ADDRESS}`,
               'help-circle-outline',
-              () => Alert.alert('Help', 'Help documentation would open here')
+              handleOpenSupport
             )}
           </>
         )}

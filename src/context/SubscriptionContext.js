@@ -6,6 +6,7 @@ import React, {
   useMemo,
   useState,
 } from 'react';
+import { Platform } from 'react-native';
 import Purchases from 'react-native-purchases';
 import RevenueCatUI, { PAYWALL_RESULT } from 'react-native-purchases-ui';
 
@@ -42,8 +43,9 @@ const isMissingNativeModuleError = (error) => {
 
 const createUnavailableError = () => ({
   code: 'REVENUECAT_UNAVAILABLE',
-  message:
-    'Subscriptions are unavailable in Expo Go. Use an iOS/Android development build to test purchases.',
+  message: Platform.OS === 'web'
+    ? 'Subscriptions are unavailable on web preview. Use an iOS/Android development build to test purchases.'
+    : 'Subscriptions are unavailable in Expo Go. Use an iOS/Android development build to test purchases.',
 });
 
 const isAnonymousRevenueCatUser = (customerInfo) => {
@@ -100,6 +102,14 @@ export const SubscriptionProvider = ({ children }) => {
   }, []);
 
   useEffect(() => {
+    if (Platform.OS === 'web') {
+      setIsNativeAvailable(false);
+      setIsConfigured(false);
+      setLastError(createUnavailableError());
+      console.log('RevenueCat disabled on web preview. Use an iOS/Android development build to test purchases.');
+      return undefined;
+    }
+
     if (!REVENUECAT_API_KEY) {
       console.warn('RevenueCat API key is missing; subscriptions are disabled.');
       return undefined;
@@ -308,14 +318,17 @@ export const SubscriptionProvider = ({ children }) => {
       throw unavailableError;
     }
 
+    setIsLoading(true);
     try {
       await RevenueCatUI.presentCustomerCenter();
     } catch (error) {
       const normalized = normalizeError(error);
       setLastError(normalized);
       throw normalized;
+    } finally {
+      setIsLoading(false);
     }
-  }, []);
+  }, [isConfigured]);
 
   const resetSubscriptionIdentityForQa = useCallback(async () => {
     if (!isConfigured) {

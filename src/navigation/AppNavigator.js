@@ -8,6 +8,7 @@ import { Ionicons } from '@expo/vector-icons';
 import SignInScreen from '../screens/SignInScreen';
 import ChatScreen from '../screens/ChatScreen';
 import SettingsModal from '../screens/SettingsModal';
+import HelpSupportScreen from '../screens/HelpSupportScreen';
 import { colors, typography, spacing } from '../utils/theme';
 import ErrorBoundary from '../components/ErrorBoundary';
 import PerformanceOptimizer from '../utils/performanceOptimizer';
@@ -87,6 +88,15 @@ export default function AppNavigator() {
                   title: 'Settings',
                 }}
               />
+
+              <Stack.Screen
+                name="HelpSupport"
+                component={HelpSupportScreen}
+                options={{
+                  presentation: 'modal',
+                  title: 'Help & Support',
+                }}
+              />
             </>
           )}
         </Stack.Navigator>
@@ -94,4 +104,3 @@ export default function AppNavigator() {
     </ErrorBoundary>
   );
 }
-

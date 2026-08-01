@@ -67,11 +67,16 @@ const SignInScreen = () => {
 
   // Preload all images on mount
   useEffect(() => {
+    if (Platform.OS === 'web') {
+      setImagesPreloaded(true);
+      return;
+    }
+
     const preloadImages = async () => {
       try {
         await Promise.all(
           backgroundImages.map((image) =>
-            Image.prefetch(Image.resolveAssetSource(image).uri)
+            Image.prefetch(Image.resolveAssetSource?.(image)?.uri)
           )
         );
         setImagesPreloaded(true);
@@ -463,7 +468,6 @@ const styles = StyleSheet.create({
 });
 
 export default SignInScreen;
-
 
 
 

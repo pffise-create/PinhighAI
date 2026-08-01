@@ -6,10 +6,12 @@ import {
   TouchableOpacity,
   SafeAreaView,
   ScrollView,
-  Alert
+  Alert,
+  Linking
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, typography, spacing, borderRadius, shadows } from '../utils/theme';
+import { SUPPORT_EMAIL_ADDRESS } from '../services/supportService';
 
 class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -99,6 +101,14 @@ class ErrorBoundary extends React.Component {
     if (this.props.navigation) {
       this.props.navigation.navigate('Chat');
     }
+  };
+
+  handleOpenSupport = () => {
+    const subject = encodeURIComponent('DivotLab Support');
+    Linking.openURL(`mailto:${SUPPORT_EMAIL_ADDRESS}?subject=${subject}`).catch((error) => {
+      console.error('Failed to open support email:', error);
+      Alert.alert('Help & Support', `Please email us at ${SUPPORT_EMAIL_ADDRESS}.`);
+    });
   };
 
   renderErrorDetails = () => {
@@ -206,7 +216,7 @@ class ErrorBoundary extends React.Component {
               
               <TouchableOpacity 
                 style={styles.supportButton}
-                onPress={() => Alert.alert('Help', 'Help documentation would be shown here')}
+                onPress={this.handleOpenSupport}
                 activeOpacity={0.8}
               >
                 <Ionicons name="help-circle" size={16} color={colors.textSecondary} />

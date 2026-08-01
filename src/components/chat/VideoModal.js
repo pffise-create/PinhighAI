@@ -7,6 +7,8 @@ import {
   SafeAreaView,
   TouchableOpacity,
   StyleSheet,
+  Text,
+  View,
 } from 'react-native';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { Ionicons } from '@expo/vector-icons';
@@ -62,24 +64,54 @@ const VideoModalInner = ({ videoUri, onClose, trimData }) => {
     player.currentTime = clipBounds.startSeconds;
   }, [clipBounds, player]);
 
+  const handleClose = React.useCallback(() => {
+    player?.pause?.();
+    onClose?.();
+  }, [onClose, player]);
+
   return (
     <SafeAreaView style={styles.container}>
-      <TouchableOpacity
-        style={styles.closeButton}
-        onPress={onClose}
-        accessibilityLabel="Close video"
-        accessibilityRole="button"
-      >
-        <Ionicons name="close" size={28} color={colors.white} />
-      </TouchableOpacity>
-      {player && (
-        <VideoView
-          player={player}
-          style={styles.videoView}
-          allowsFullscreen
-          nativeControls
-        />
-      )}
+      <View style={styles.header}>
+        <TouchableOpacity
+          style={styles.headerCloseButton}
+          onPress={handleClose}
+          accessibilityLabel="Back to chat"
+          accessibilityRole="button"
+          hitSlop={{ top: 12, right: 12, bottom: 12, left: 12 }}
+        >
+          <Ionicons name="chevron-back" size={20} color={colors.white} />
+          <Text style={styles.headerCloseText}>Back to chat</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.closeButton}
+          onPress={handleClose}
+          accessibilityLabel="Close video"
+          accessibilityRole="button"
+          hitSlop={{ top: 12, right: 12, bottom: 12, left: 12 }}
+        >
+          <Ionicons name="close" size={28} color={colors.white} />
+        </TouchableOpacity>
+      </View>
+      <View style={styles.videoShell}>
+        {player && (
+          <VideoView
+            player={player}
+            style={styles.videoView}
+            nativeControls
+          />
+        )}
+      </View>
+      <View style={styles.footer}>
+        <TouchableOpacity
+          style={styles.backButton}
+          onPress={handleClose}
+          accessibilityLabel="Back to chat"
+          accessibilityRole="button"
+        >
+          <Ionicons name="chevron-back" size={18} color={colors.white} />
+          <Text style={styles.backButtonText}>Back to chat</Text>
+        </TouchableOpacity>
+      </View>
     </SafeAreaView>
   );
 };
@@ -101,13 +133,31 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: colors.black,
+  },
+  header: {
+    minHeight: 64,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: colors.black,
+  },
+  headerCloseButton: {
+    minHeight: 44,
+    borderRadius: 22,
+    paddingHorizontal: spacing.base,
+    backgroundColor: colors.overlayMedium,
+    flexDirection: 'row',
+    alignItems: 'center',
     justifyContent: 'center',
   },
+  headerCloseText: {
+    color: colors.white,
+    marginLeft: spacing.xs,
+    fontWeight: '600',
+  },
   closeButton: {
-    position: 'absolute',
-    top: spacing.xl,
-    right: spacing.lg,
-    zIndex: 10,
     width: 44,
     height: 44,
     borderRadius: 22,
@@ -115,9 +165,35 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  videoShell: {
+    flex: 1,
+    backgroundColor: colors.black,
+  },
   videoView: {
     width: '100%',
     height: '100%',
+  },
+  footer: {
+    minHeight: 72,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    justifyContent: 'center',
+    alignItems: 'flex-start',
+    backgroundColor: colors.black,
+  },
+  backButton: {
+    minHeight: 44,
+    borderRadius: 22,
+    paddingHorizontal: spacing.base,
+    backgroundColor: colors.overlayMedium,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  backButtonText: {
+    color: colors.white,
+    marginLeft: spacing.xs,
+    fontWeight: '600',
   },
 });
 

@@ -15,6 +15,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth } from '../context/AuthContext';
 import { useSubscriptions } from '../context/SubscriptionContext';
 import { appEnv } from '../config/runtimeEnv';
+import { SUPPORT_EMAIL_ADDRESS } from '../services/supportService';
 import { colors, spacing, typography, borderRadius, shadows } from '../utils/theme';
 
 // Launch-time URL/email wiring. Populate these via EXPO_PUBLIC_* env vars in
@@ -24,21 +25,23 @@ import { colors, spacing, typography, borderRadius, shadows } from '../utils/the
 const readEnv = (value) => (typeof value === 'string' ? value.trim() : '');
 const PRIVACY_POLICY_URL = readEnv(process.env.EXPO_PUBLIC_PRIVACY_POLICY_URL);
 const TERMS_OF_SERVICE_URL = readEnv(process.env.EXPO_PUBLIC_TERMS_URL);
-const SUPPORT_EMAIL = readEnv(process.env.EXPO_PUBLIC_SUPPORT_EMAIL);
 
-const SUPPORT_PLACEHOLDER_MESSAGE = 'Support email is not configured yet.';
 const showQaTools = __DEV__ || appEnv !== 'prod';
 
 const SettingsModal = ({ navigation }) => {
   const { user, signOut } = useAuth();
   const {
     restorePurchases,
+    presentPaywall,
     presentCustomerCenter,
     resetSubscriptionIdentityForQa,
     entitlementActive,
     customerInfo,
     identityReady,
+    isLoading: subscriptionsLoading,
+    isConfigured: subscriptionsConfigured,
     isNativeAvailable: subscriptionsNativeAvailable,
+    lastError: subscriptionLastError,
   } = useSubscriptions();
   const [showSignOutConfirm, setShowSignOutConfirm] = useState(false);
 
@@ -96,22 +99,62 @@ const SettingsModal = ({ navigation }) => {
       'The Terms of Service will be available before public launch.'
     );
 
-  const handleOpenSupport = () =>
-    openExternalUrl(
-      SUPPORT_EMAIL ? `mailto:${SUPPORT_EMAIL}` : '',
-      'Help & Support',
-      SUPPORT_PLACEHOLDER_MESSAGE
-    );
+  const handleOpenSupport = () => navigation.navigate('HelpSupport');
 
   const handleManageSubscription = async () => {
+    if (!subscriptionsNativeAvailable || !subscriptionsConfigured) {
+      Alert.alert(
+        'Subscriptions Unavailable',
+        'RevenueCat is not available in this runtime. Use an iOS/Android development build or TestFlight build to manage subscriptions.'
+      );
+      return;
+    }
+
+    if (!identityReady) {
+      Alert.alert(
+        'Still Connecting',
+        'RevenueCat is still connecting this signed-in user. Wait a moment, then try again.'
+      );
+      return;
+    }
+
     try {
       await presentCustomerCenter();
     } catch (error) {
       console.error('Customer Center launch failed:', error);
       Alert.alert(
         'Manage Subscription',
-        'Customer Center could not be opened. Please try again.'
+        error.message ||
+          'Customer Center could not be opened. Confirm Customer Center is enabled in RevenueCat, then try again.'
       );
+    }
+  };
+
+  const handleShowPaywall = async () => {
+    if (!subscriptionsNativeAvailable || !subscriptionsConfigured) {
+      Alert.alert(
+        'Subscriptions Unavailable',
+        'RevenueCat paywalls require an iOS/Android development build or TestFlight build.'
+      );
+      return;
+    }
+
+    if (!identityReady) {
+      Alert.alert(
+        'Still Connecting',
+        'RevenueCat is still connecting this signed-in user. Wait a moment, then try again.'
+      );
+      return;
+    }
+
+    try {
+      const result = await presentPaywall();
+      if (result.purchasedOrRestored) {
+        Alert.alert('Subscription Active', 'RevenueCat says this account now has access.');
+      }
+    } catch (error) {
+      console.error('Paywall launch failed:', error);
+      Alert.alert('Paywall Failed', error.message || 'RevenueCat paywall could not be opened.');
     }
   };
 
@@ -159,30 +202,35 @@ const SettingsModal = ({ navigation }) => {
       id: 'subscription',
       icon: 'card-outline',
       title: 'Manage Subscription',
+      subtitle: 'Opens RevenueCat Customer Center once configured',
       onPress: handleManageSubscription,
     },
     {
       id: 'restore',
       icon: 'refresh-outline',
       title: 'Restore Purchases',
+      subtitle: 'For sandbox/TestFlight purchase recovery',
       onPress: handleRestorePurchases,
     },
     {
       id: 'privacy',
       icon: 'shield-checkmark-outline',
       title: 'Privacy Policy',
+      subtitle: PRIVACY_POLICY_URL ? 'Open policy' : 'Coming before public launch',
       onPress: handleOpenPrivacyPolicy,
     },
     {
       id: 'terms',
       icon: 'document-text-outline',
       title: 'Terms of Service',
+      subtitle: TERMS_OF_SERVICE_URL ? 'Open terms' : 'Coming before public launch',
       onPress: handleOpenTerms,
     },
     {
       id: 'help',
       icon: 'help-circle-outline',
       title: 'Help & Support',
+      subtitle: `Message us at ${SUPPORT_EMAIL_ADDRESS}`,
       onPress: handleOpenSupport,
     },
   ];
@@ -219,6 +267,9 @@ const SettingsModal = ({ navigation }) => {
                 </View>
                 <View style={styles.actionCopy}>
                   <Text style={styles.actionTitle}>{item.title}</Text>
+                  {item.subtitle ? (
+                    <Text style={styles.actionSubtitle}>{item.subtitle}</Text>
+                  ) : null}
                 </View>
                 <Ionicons name="chevron-forward" size={16} color={colors.textSecondary} />
               </TouchableOpacity>
@@ -240,11 +291,23 @@ const SettingsModal = ({ navigation }) => {
                   Entitlement: {entitlementActive ? 'active' : 'inactive'}
                 </Text>
                 <Text style={styles.qaMeta}>
-                  RevenueCat: {subscriptionsNativeAvailable ? 'native available' : 'native unavailable'} / {identityReady ? 'identity ready' : 'identity pending'}
+                  RevenueCat: {subscriptionsNativeAvailable ? 'native available' : 'native unavailable'} / {subscriptionsConfigured ? 'configured' : 'not configured'} / {identityReady ? 'identity ready' : 'identity pending'} / {subscriptionsLoading ? 'busy' : 'idle'}
                 </Text>
                 <Text style={styles.qaMeta}>
                   RC User: {customerInfo?.originalAppUserId || customerInfo?.appUserID || 'none'}
                 </Text>
+                {subscriptionLastError?.message ? (
+                  <Text style={styles.qaError}>
+                    RC Error: {subscriptionLastError.message}
+                  </Text>
+                ) : null}
+                <TouchableOpacity
+                  style={styles.qaPaywallButton}
+                  activeOpacity={0.85}
+                  onPress={handleShowPaywall}
+                >
+                  <Text style={styles.qaPaywallButtonText}>Show RevenueCat paywall</Text>
+                </TouchableOpacity>
                 <TouchableOpacity
                   style={styles.qaResetButton}
                   activeOpacity={0.85}
@@ -387,6 +450,13 @@ const styles = StyleSheet.create({
     fontFamily: typography.fontFamily,
     fontWeight: typography.fontWeights.medium,
   },
+  actionSubtitle: {
+    marginTop: spacing.xs,
+    color: colors.textSecondary,
+    fontSize: typography.fontSizes.xs,
+    fontFamily: typography.fontFamily,
+    lineHeight: typography.fontSizes.sm,
+  },
   separator: {
     height: 1,
     backgroundColor: colors.borderSubtle,
@@ -415,6 +485,28 @@ const styles = StyleSheet.create({
     fontSize: typography.fontSizes.xs,
     fontFamily: typography.fontFamilyMono,
     marginTop: spacing.xs,
+  },
+  qaError: {
+    color: colors.statusError,
+    fontSize: typography.fontSizes.xs,
+    fontFamily: typography.fontFamilyMono,
+    marginTop: spacing.xs,
+  },
+  qaPaywallButton: {
+    marginTop: spacing.base,
+    minHeight: 40,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: colors.brandFern,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(60,141,90,0.1)',
+  },
+  qaPaywallButtonText: {
+    color: colors.brandFern,
+    fontSize: typography.fontSizes.sm,
+    fontFamily: typography.fontFamily,
+    fontWeight: typography.fontWeights.medium,
   },
   qaResetButton: {
     marginTop: spacing.base,

@@ -22,6 +22,7 @@ const ComposerBar = ({
   selectedVideo,
   videoThumbnail,
   onClearVideo,
+  inputResetKey,
 }) => {
   const hasContent = inputText.trim().length > 0 || !!selectedVideo;
   const isDisabled = !hasContent || isSending;
@@ -70,6 +71,7 @@ const ComposerBar = ({
         </TouchableOpacity>
 
         <TextInput
+          key={`composer-input-${inputResetKey || 0}`}
           style={styles.input}
           value={inputText}
           placeholder={
