@@ -1,4 +1,4 @@
-// ChatScreen.js - Primary chat interface for PinHigh AI golf coaching
+// ChatScreen.js - Primary chat interface for Alki DivotLab golf coaching
 // Claude/ChatGPT-style: borderless coach messages, user bubbles, inverted FlatList.
 // Composes: ChatHeader, MessageBubble, TypingIndicator, ComposerBar, VideoPlayer.
 import React, {
@@ -151,7 +151,7 @@ const ChatScreen = ({ navigation }) => {
       try {
         const headers = await getAuthHeaders();
         const result = await chatApiService.sendMessage(
-          'Hello! I just joined PinHigh AI. Please introduce yourself as my golf coach.',
+          'Hello! I just joined Alki DivotLab. Please introduce yourself as my golf coach.',
           userId,
           headers,
         );
@@ -159,7 +159,7 @@ const ChatScreen = ({ navigation }) => {
         appendMessage(
           createMessage({
             sender: 'coach',
-            text: result.response || "Welcome to PinHigh AI! I'm your personal golf coach. Upload a swing video or ask me anything about your game.",
+            text: result.response || "Welcome to Alki DivotLab! I'm your personal golf coach. Upload a swing video or ask me anything about your game.",
           })
         );
       } catch {
@@ -167,7 +167,7 @@ const ChatScreen = ({ navigation }) => {
         appendMessage(
           createMessage({
             sender: 'coach',
-            text: "Welcome to PinHigh AI! I'm your personal golf coach. Upload a swing video or ask me anything about improving your game.",
+            text: "Welcome to Alki DivotLab! I'm your personal golf coach. Upload a swing video or ask me anything about improving your game.",
           })
         );
       } finally {

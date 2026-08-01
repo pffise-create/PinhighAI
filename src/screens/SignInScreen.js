@@ -261,7 +261,7 @@ const SignInScreen = () => {
             <View style={styles.logoBadge}>
               <Text style={styles.logoEmoji}>✨</Text>
             </View>
-            <Text style={styles.appTitle}>DivotLab AI</Text>
+            <Text style={styles.appTitle}>Alki DivotLab</Text>
           </View>
 
           <View style={styles.headlineContainer}>

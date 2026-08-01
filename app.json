@@ -1,7 +1,8 @@
 {
   "expo": {
-    "name": "GolfCoachExpoFixed",
+    "name": "Alki DivotLab",
     "slug": "GolfCoachExpoFixed",
+    "scheme": "golfcoach",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -15,6 +16,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.pinhighai.golfcoach",
+      "buildNumber": "1",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
@@ -31,6 +33,14 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Alki DivotLab needs access to your photo library so you can select swing videos for analysis.",
+          "cameraPermission": false,
+          "microphonePermission": false
+        }
+      ],
       "expo-video",
       "expo-secure-store",
       "expo-web-browser",

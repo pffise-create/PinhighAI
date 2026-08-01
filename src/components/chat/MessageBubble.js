@@ -84,7 +84,7 @@ const MessageBubble = ({ message, onVideoPress }) => {
   // Coach message: avatar + surfaced assistant card
   return (
     <View style={styles.coachRow}>
-      <View style={styles.coachAvatar} accessibilityLabel="PinHigh coach">
+      <View style={styles.coachAvatar} accessibilityLabel="Coach">
         <Ionicons name="sparkles" size={14} color={colors.coachAccent} />
       </View>
       <View style={styles.coachContent}>

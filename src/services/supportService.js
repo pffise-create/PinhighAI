@@ -20,7 +20,7 @@ export const buildSupportEmail = ({
 }) => {
   const trimmedMessage = String(message || '').trim();
   const normalizedCategory = String(category || 'General question').trim();
-  const subject = `DivotLab Support: ${normalizedCategory}`;
+  const subject = `Alki DivotLab Support: ${normalizedCategory}`;
   const body = [
     trimmedMessage,
     '',

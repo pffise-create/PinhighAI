@@ -1,14 +1,14 @@
-# DivotLab Terms of Service
+# Alki DivotLab Terms of Service
 
 Effective date: TBD
 
-These Terms of Service ("Terms") govern your access to and use of the DivotLab mobile application and related services (the "Service"). By using the Service, you agree to these Terms.
+These Terms of Service ("Terms") govern your access to and use of the Alki DivotLab mobile application and related services (the "Service"). By using the Service, you agree to these Terms.
 
 This draft is intended for product and launch preparation. Have qualified legal counsel review it before public release.
 
 ## 1. Who We Are
 
-DivotLab provides AI-powered golf swing coaching tools. Users can upload golf swing videos, receive AI-generated analysis, and ask follow-up coaching questions.
+Alki DivotLab is a product of Alki Golf Co. Alki DivotLab provides AI-powered golf swing coaching tools. Users can upload golf swing videos, receive AI-generated analysis, and ask follow-up coaching questions.
 
 Business/legal entity: TBD  
 Contact: support@divotlab.ai
@@ -19,13 +19,13 @@ You must be at least 13 years old to use the Service. If a higher minimum age ap
 
 ## 3. Accounts and Sign-In
 
-You may need an account to use some or all features. You are responsible for maintaining access to your sign-in provider account and for activity under your DivotLab account.
+You may need an account to use some or all features. You are responsible for maintaining access to your sign-in provider account and for activity under your Alki DivotLab account.
 
 You agree to provide accurate information and to notify us if you believe your account has been compromised.
 
 ## 4. Coaching and Health Disclaimer
 
-DivotLab provides general golf swing feedback for educational and informational purposes only. DivotLab is not a substitute for an in-person golf coach, medical professional, physical therapist, trainer, or other qualified professional.
+Alki DivotLab provides general golf swing feedback for educational and informational purposes only. Alki DivotLab is not a substitute for an in-person golf coach, medical professional, physical therapist, trainer, or other qualified professional.
 
 AI-generated analysis may be incomplete, inaccurate, delayed, or not appropriate for your body, skill level, equipment, course conditions, or injury history. You are responsible for using judgment before acting on any recommendation.
 
@@ -41,7 +41,7 @@ You should independently evaluate AI-generated feedback and use it as one input 
 
 "User Content" means videos, messages, feedback, support requests, profile information, and other content you submit to the Service.
 
-You retain ownership of your User Content. You grant DivotLab a worldwide, non-exclusive, royalty-free license to host, store, reproduce, process, analyze, display, transmit, and use your User Content as needed to provide, maintain, secure, support, and improve the Service.
+You retain ownership of your User Content. You grant Alki DivotLab a worldwide, non-exclusive, royalty-free license to host, store, reproduce, process, analyze, display, transmit, and use your User Content as needed to provide, maintain, secure, support, and improve the Service.
 
 You represent that you have the rights necessary to upload and submit User Content. Do not upload content that violates someone else's rights, contains illegal material, or includes people who have not consented to being recorded or submitted to the Service.
 
@@ -65,7 +65,7 @@ Some features may require a paid subscription. Subscription options may include 
 
 Purchases on iOS are processed through Apple. By purchasing a subscription, you agree to Apple's payment terms and any subscription terms shown at the time of purchase.
 
-Unless cancelled, subscriptions renew automatically at the end of each billing period. You can manage or cancel your subscription through your Apple account settings. Deleting the app or deleting your DivotLab account does not automatically cancel an App Store subscription.
+Unless cancelled, subscriptions renew automatically at the end of each billing period. You can manage or cancel your subscription through your Apple account settings. Deleting the app or deleting your Alki DivotLab account does not automatically cancel an App Store subscription.
 
 Prices, billing periods, trial terms, renewal dates, and included features will be shown in the app or App Store purchase flow. We may change subscription offerings in the future as permitted by law and platform rules.
 
@@ -97,13 +97,13 @@ We may release updates that change features, models, paywalls, subscription offe
 
 ## 14. Intellectual Property
 
-DivotLab, the Service, software, designs, text, graphics, logos, and other materials are owned by DivotLab or its licensors and are protected by intellectual property laws.
+Alki DivotLab, the Service, software, designs, text, graphics, logos, and other materials are owned by Alki DivotLab or its licensors and are protected by intellectual property laws.
 
 Except for your User Content, these Terms do not grant you ownership of any part of the Service. You may use the Service only as permitted by these Terms.
 
 ## 15. Feedback
 
-If you submit ideas, suggestions, bug reports, or feedback, you grant DivotLab the right to use them without restriction or compensation.
+If you submit ideas, suggestions, bug reports, or feedback, you grant Alki DivotLab the right to use them without restriction or compensation.
 
 ## 16. Account Termination
 
@@ -115,21 +115,21 @@ Termination does not automatically cancel an App Store subscription. You must ca
 
 ## 17. Disclaimers
 
-The Service is provided "as is" and "as available." To the maximum extent permitted by law, DivotLab disclaims all warranties, express or implied, including warranties of merchantability, fitness for a particular purpose, title, non-infringement, accuracy, availability, and reliability.
+The Service is provided "as is" and "as available." To the maximum extent permitted by law, Alki DivotLab disclaims all warranties, express or implied, including warranties of merchantability, fitness for a particular purpose, title, non-infringement, accuracy, availability, and reliability.
 
 We do not warrant that the Service will improve your golf performance, prevent injury, diagnose swing issues correctly, or produce any particular result.
 
 ## 18. Limitation of Liability
 
-To the maximum extent permitted by law, DivotLab and its affiliates, officers, employees, contractors, and service providers will not be liable for indirect, incidental, special, consequential, exemplary, or punitive damages, or for lost profits, lost data, personal injury, property damage, or loss of goodwill arising from or related to the Service.
+To the maximum extent permitted by law, Alki DivotLab and its affiliates, officers, employees, contractors, and service providers will not be liable for indirect, incidental, special, consequential, exemplary, or punitive damages, or for lost profits, lost data, personal injury, property damage, or loss of goodwill arising from or related to the Service.
 
-To the maximum extent permitted by law, DivotLab's total liability for all claims related to the Service will not exceed the greater of: (a) the amount you paid to DivotLab for the Service in the three months before the claim arose, or (b) USD $50.
+To the maximum extent permitted by law, Alki DivotLab's total liability for all claims related to the Service will not exceed the greater of: (a) the amount you paid to Alki DivotLab for the Service in the three months before the claim arose, or (b) USD $50.
 
 Some jurisdictions do not allow certain limitations, so some of the above may not apply to you.
 
 ## 19. Indemnity
 
-You agree to defend, indemnify, and hold harmless DivotLab and its affiliates, officers, employees, contractors, and service providers from claims, damages, liabilities, losses, costs, and expenses, including reasonable attorneys' fees, arising from your use of the Service, your User Content, your violation of these Terms, or your violation of another person's rights.
+You agree to defend, indemnify, and hold harmless Alki DivotLab and its affiliates, officers, employees, contractors, and service providers from claims, damages, liabilities, losses, costs, and expenses, including reasonable attorneys' fees, arising from your use of the Service, your User Content, your violation of these Terms, or your violation of another person's rights.
 
 ## 20. Governing Law and Disputes
 

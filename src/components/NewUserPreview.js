@@ -9,7 +9,7 @@ export default function NewUserPreview({ onStartJourney }) {
       <View style={styles.welcomeCard}>
         <View style={styles.header}>
           <Text style={styles.welcomeEmoji}>👋</Text>
-          <Text style={styles.welcomeTitle}>Welcome to Pin High!</Text>
+          <Text style={styles.welcomeTitle}>Welcome to Alki DivotLab!</Text>
           <Text style={styles.welcomeSubtitle}>
             Your personalized golf coaching journey is about to begin
           </Text>
