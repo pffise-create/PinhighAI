@@ -13,6 +13,10 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { colors, typography, spacing, borderRadius } from '../../utils/theme';
 
+// Long clips may hold several swings; the extractor anchors on the clearest
+// one, so nudge only when that's actually likely rather than on every upload.
+const MULTI_SWING_HINT_SECONDS = 15;
+
 const ComposerBar = ({
   inputText,
   onChangeText,
@@ -44,6 +48,9 @@ const ComposerBar = ({
               <Text style={styles.videoTitle}>Swing clip ready</Text>
               <Text style={styles.videoSubtitle}>
                 {selectedVideo.duration?.toFixed(1)}s
+                {selectedVideo.duration > MULTI_SWING_HINT_SECONDS
+                  ? ' · one swing per clip works best'
+                  : ''}
               </Text>
             </View>
             <TouchableOpacity

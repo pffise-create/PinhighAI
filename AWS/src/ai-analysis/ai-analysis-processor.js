@@ -21,7 +21,11 @@ let s3Client = null;
 let secretsManager = null;
 let cachedOpenAIKey = null;
 const HTTP_REQUEST_TIMEOUT_MS = parseInt(process.env.HTTP_REQUEST_TIMEOUT_MS || '45000', 10);
-const AI_ANALYSIS_MODEL = process.env.AI_ANALYSIS_MODEL || 'gpt-5.2';
+const DEFAULT_AI_ANALYSIS_MODEL = process.env.AI_ANALYSIS_MODEL || 'gpt-5.2';
+// Mutable so offline model benchmarks can override per invocation via
+// event.model_override. ALWAYS reset at the top of the handler — Lambda
+// reuses containers, so a benchmark run must never leak into a real one.
+let AI_ANALYSIS_MODEL = DEFAULT_AI_ANALYSIS_MODEL;
 const AI_ANALYSIS_TEMPERATURE = Math.max(0, Math.min(parseFloat(process.env.AI_ANALYSIS_TEMPERATURE || '0.35'), 1));
 const OPENAI_FACT_MAX_COMPLETION_TOKENS = Math.max(900, parseInt(process.env.OPENAI_FACT_MAX_COMPLETION_TOKENS || '1400', 10));
 const OPENAI_RENDER_MAX_COMPLETION_TOKENS = Math.max(1200, parseInt(process.env.OPENAI_RENDER_MAX_COMPLETION_TOKENS || '1800', 10));
@@ -530,26 +534,28 @@ function buildVisualObservationsFromFacts(facts) {
   }));
 }
 
+// Returns the GPT-5 minor version (gpt-5 -> 0, gpt-5.6-terra -> 6), or null
+// for non-GPT-5 models. Version-aware rather than prefix-matched so newer
+// releases don't silently fall into the wrong reasoning_effort branch.
+function getGpt5Minor(model) {
+  const match = /^gpt-5(?:\.(\d+))?\b/.exec(typeof model === 'string' ? model : '');
+  if (!match) return null;
+  return match[1] ? parseInt(match[1], 10) : 0;
+}
+
 function applyModelSpecificControls(request, { temperature } = {}) {
   if (!request || typeof request !== 'object') {
     return request;
   }
 
-  const model = typeof request.model === 'string' ? request.model : '';
-  if (model.startsWith('gpt-5.1') || model.startsWith('gpt-5.2')) {
+  const minor = getGpt5Minor(request.model);
+  if (minor !== null) {
     if (Object.prototype.hasOwnProperty.call(request, 'temperature')) {
       delete request.temperature;
     }
-    // GPT-5.1+/5.2 use none|low|medium|high enums in this endpoint path.
-    request.reasoning_effort = request.reasoning_effort || 'low';
-    return request;
-  }
-
-  if (model.startsWith('gpt-5')) {
-    if (Object.prototype.hasOwnProperty.call(request, 'temperature')) {
-      delete request.temperature;
-    }
-    request.reasoning_effort = request.reasoning_effort || 'minimal';
+    // Only the original gpt-5 accepts 'minimal'. Every 5.1+ release uses the
+    // none|low|medium|high|xhigh enum and 400s on 'minimal'.
+    request.reasoning_effort = request.reasoning_effort || (minor >= 1 ? 'low' : 'minimal');
     return request;
   }
 
@@ -589,10 +595,8 @@ function createOpenAiRetryPayload(request, maxCompletionTokens) {
     max_completion_tokens: maxCompletionTokens,
   };
 
-  if (
-    typeof retryPayload.model === 'string' &&
-    (retryPayload.model.startsWith('gpt-5.1') || retryPayload.model.startsWith('gpt-5.2'))
-  ) {
+  const retryMinor = getGpt5Minor(retryPayload.model);
+  if (retryMinor !== null && retryMinor >= 1) {
     retryPayload.reasoning_effort = 'none';
   }
 
@@ -1069,6 +1073,14 @@ async function analyzeSwingWithGPT5(frameData, swingData) {
       fallback_reason: null,
       skipped_frames: [],
       tokens_used: (factResult?.rawResponse?.usage?.total_tokens || 0) + (renderResult.rawResponse?.usage?.total_tokens || 0),
+      // Input and output tokens are priced very differently, so keep the
+      // split for cost attribution across the two-stage pipeline.
+      token_usage: {
+        prompt: (factResult?.rawResponse?.usage?.prompt_tokens || 0) + (renderResult.rawResponse?.usage?.prompt_tokens || 0),
+        completion: (factResult?.rawResponse?.usage?.completion_tokens || 0) + (renderResult.rawResponse?.usage?.completion_tokens || 0),
+        cached: (factResult?.rawResponse?.usage?.prompt_tokens_details?.cached_tokens || 0)
+          + (renderResult.rawResponse?.usage?.prompt_tokens_details?.cached_tokens || 0),
+      },
       batches_processed: 1,
       model_used: AI_ANALYSIS_MODEL,
       prompt_version: SYSTEM_PROMPT_VERSION,
@@ -1295,6 +1307,15 @@ async function updateAnalysisStatus(analysisId, status, progressMessage = null) 
 
 // Main Lambda handler
 exports.handler = async (event) => {
+  // Reset first so a prior benchmark invocation in this warm container can
+  // never affect a real one.
+  AI_ANALYSIS_MODEL = typeof event?.model_override === 'string' && event.model_override.trim()
+    ? event.model_override.trim()
+    : DEFAULT_AI_ANALYSIS_MODEL;
+  if (AI_ANALYSIS_MODEL !== DEFAULT_AI_ANALYSIS_MODEL) {
+    console.log(`MODEL OVERRIDE ACTIVE: ${AI_ANALYSIS_MODEL} (default ${DEFAULT_AI_ANALYSIS_MODEL})`);
+  }
+
   console.log('AI ANALYSIS PROCESSOR - Event summary:', {
     hasAnalysisId: !!event?.analysis_id,
     hasRecords: Array.isArray(event?.Records),
@@ -1412,5 +1433,8 @@ exports.__private = {
   scoreGenericCoachingResponse,
   normalizeDynamoItem,
   extractFrameData,
+  getGpt5Minor,
+  applyModelSpecificControls,
+  createOpenAiRetryPayload,
 };
 

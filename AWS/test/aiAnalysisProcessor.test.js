@@ -158,3 +158,57 @@ test('normalizeDynamoItem and extractFrameData handle DynamoDB-typed analysis_re
   assert.equal(frames[0].phase, 'frame_000');
   assert.equal(frames[0].url, 'https://example.com/frame_000.jpg');
 });
+
+// ── Model-family controls ─────────────────────────────────────────────────
+// Regression guard: reasoning_effort used to be chosen by prefix-matching
+// gpt-5.1/gpt-5.2, so every newer release fell through to 'minimal' and the
+// API rejected it with a 400. Any model the app might be upgraded to must
+// produce a value that model actually accepts.
+const {
+  getGpt5Minor,
+  applyModelSpecificControls,
+  createOpenAiRetryPayload,
+} = processor.__private;
+
+test('getGpt5Minor parses the GPT-5 minor version across naming styles', () => {
+  assert.equal(getGpt5Minor('gpt-5'), 0);
+  assert.equal(getGpt5Minor('gpt-5.1'), 1);
+  assert.equal(getGpt5Minor('gpt-5.2'), 2);
+  assert.equal(getGpt5Minor('gpt-5.4-mini'), 4);
+  assert.equal(getGpt5Minor('gpt-5.6-terra'), 6);
+  assert.equal(getGpt5Minor('gpt-5.6-luna'), 6);
+  assert.equal(getGpt5Minor('gpt-4o'), null);
+  assert.equal(getGpt5Minor('gpt-4o-mini'), null);
+  assert.equal(getGpt5Minor(undefined), null);
+});
+
+test('only the original gpt-5 gets reasoning_effort "minimal"', () => {
+  const original = applyModelSpecificControls({ model: 'gpt-5', temperature: 0.4 });
+  assert.equal(original.reasoning_effort, 'minimal');
+  assert.equal('temperature' in original, false, 'gpt-5 family rejects temperature');
+
+  for (const model of ['gpt-5.1', 'gpt-5.2', 'gpt-5.4-mini', 'gpt-5.6-terra', 'gpt-5.6-luna']) {
+    const request = applyModelSpecificControls({ model, temperature: 0.4 });
+    assert.equal(request.reasoning_effort, 'low', `${model} must not use 'minimal'`);
+    assert.equal('temperature' in request, false, `${model} rejects temperature`);
+  }
+});
+
+test('non-GPT-5 models keep temperature and get no reasoning_effort', () => {
+  const request = applyModelSpecificControls({ model: 'gpt-4o' }, { temperature: 0.35 });
+  assert.equal(request.temperature, 0.35);
+  assert.equal(request.reasoning_effort, undefined);
+});
+
+test('an explicit reasoning_effort is never overwritten', () => {
+  const request = applyModelSpecificControls({ model: 'gpt-5.6-terra', reasoning_effort: 'high' });
+  assert.equal(request.reasoning_effort, 'high');
+});
+
+test('retry payload downgrades effort to none for 5.1+ only', () => {
+  assert.equal(createOpenAiRetryPayload({ model: 'gpt-5.6-terra' }, 900).reasoning_effort, 'none');
+  assert.equal(createOpenAiRetryPayload({ model: 'gpt-5.4-mini' }, 900).reasoning_effort, 'none');
+  assert.equal(createOpenAiRetryPayload({ model: 'gpt-5' }, 900).reasoning_effort, undefined);
+  assert.equal(createOpenAiRetryPayload({ model: 'gpt-4o' }, 900).reasoning_effort, undefined);
+  assert.equal(createOpenAiRetryPayload({ model: 'gpt-5.2' }, 900).max_completion_tokens, 900);
+});
