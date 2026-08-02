@@ -1,0 +1,844 @@
+"""Swing marking tool — static setup geometry computed ONCE per swing, rendered on every frame.
+
+Implements the pipeline validated in docs/marking-research-2026-08-02.md for the
+requirement in docs/backlog/swing-marking-tool.md:
+
+  1. MoveNet Thunder pose estimation on the ADDRESS frame only (single inference per swing).
+  2. Pose-heuristic camera-view classification (down-the-line vs face-on), confidence scored.
+  3. If DTL: club shaft via cv2.HoughLinesP in a wrist-anchored ROI, golf ball via
+     cv2.HoughCircles in a shaft-anchored ROI. The two detections must mutually confirm.
+  4. Static geometry construction (pure math, once per swing):
+       - head circle  (both views)  — radius proportional to detected head size, never fixed px
+       - spine line   (DTL only)    — hip midpoint through shoulder midpoint
+       - plane line   (DTL only)    — ball/hosel point through shoulder midpoint
+  5. Rendering with PIL onto every frame of the swing using the identical geometry.
+
+HARD RULE honored by construction: geometry is derived from the address frame alone and the
+same normalized coordinates are rendered on every frame — nothing is recomputed per frame.
+
+FAIL CLOSED: every marking is confidence-gated. A marking whose inputs cannot be trusted is
+withheld and the reason recorded in `SetupGeometry.failures`. No marking is better than a
+wrong marking.
+
+Model provenance
+----------------
+MoveNet SinglePose Thunder, TFLite float16, version 4 (Google, Apache-2.0).
+Downloaded 2026-08-02 from Kaggle Models (the canonical host after TF Hub's migration):
+    https://www.kaggle.com/models/google/movenet/tfLite/singlepose-thunder-tflite-float16
+    (formerly https://tfhub.dev/google/lite-model/movenet/singlepose/thunder/tflite_float16/4)
+    file: 4.tflite, 12,584,128 bytes
+    sha256: 41641538679ec79b07d4101e591dda47d098c09af29607674b2a40b8a3798dd3
+Retrieved via `kagglehub.model_download("google/movenet/tfLite/singlepose-thunder-tflite-float16")`.
+
+The model file is located at runtime via (first hit wins):
+  1. env var SWING_MARKER_MODEL_PATH
+  2. <this module's dir>/models/movenet_singlepose_thunder_f16.tflite
+  3. /opt/models/movenet_singlepose_thunder_f16.tflite   (Lambda layer mount)
+
+Runtime: tflite_runtime (production Lambda zip layer, cp39 manylinux2014, 2.4 MB), with
+fallbacks to ai_edge_litert (local macOS dev) and tensorflow.lite. Pure local inference —
+no network access at inference time.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import os
+from dataclasses import dataclass, field, asdict
+from typing import Dict, List, Optional, Sequence, Tuple
+
+import numpy as np
+from PIL import Image, ImageDraw, ImageOps
+
+try:  # OpenCV is only needed for shaft/ball detection (plane line). Pose-only paths work without it.
+    import cv2  # opencv-python-headless
+
+    _HAS_CV2 = True
+except ImportError:  # pragma: no cover
+    cv2 = None
+    _HAS_CV2 = False
+
+MARKER_VERSION = "1.0.0"
+
+MODEL_FILENAME = "movenet_singlepose_thunder_f16.tflite"
+MODEL_SHA256 = "41641538679ec79b07d4101e591dda47d098c09af29607674b2a40b8a3798dd3"
+MODEL_INPUT_SIZE = 256
+
+KEYPOINT_NAMES = (
+    "nose", "left_eye", "right_eye", "left_ear", "right_ear",
+    "left_shoulder", "right_shoulder", "left_elbow", "right_elbow",
+    "left_wrist", "right_wrist", "left_hip", "right_hip",
+    "left_knee", "right_knee", "left_ankle", "right_ankle",
+)
+
+# ---------------------------------------------------------------------------
+# Tunables (all ratios are relative to frame width W, frame height H, or named quantities)
+# ---------------------------------------------------------------------------
+KP_MIN_SCORE = 0.20            # a keypoint below this is treated as unobserved
+POSE_CORE_MIN_MEAN = 0.30      # mean score over core body keypoints required to accept "person present"
+
+VIEW_FACE_ON_MIN = 0.42        # body-spread ratio at/above which the view is face-on
+VIEW_DTL_MAX = 0.30            # body-spread ratio at/below which the view is down-the-line
+VIEW_MIN_CONFIDENCE = 0.50     # below this, view-gated markings (plane/spine) are withheld
+
+HEAD_RADIUS_FACTOR_FACE_ON = 0.75   # r = 0.75 x inter-ear distance      (research §2.1)
+HEAD_RADIUS_FACTOR_DTL = 1.40       # r = 1.40 x eye-to-ear distance     (research §2.1)
+HEAD_DIAMETER_TORSO_MIN = 0.22      # anatomical sanity: head diameter vs shoulder->hip length
+HEAD_DIAMETER_TORSO_MAX = 0.90
+
+SHAFT_ANGLE_MIN_DEG = 20.0     # plausible shaft angle from horizontal at address
+SHAFT_ANGLE_MAX_DEG = 80.0
+SHAFT_WRIST_MAX_DIST = 0.13    # upper endpoint must lie within this x frame-diagonal of the wrist midpoint
+SHAFT_MIN_LEN = 0.30           # x (wrist-to-ankle vertical drop): minimum accepted segment length
+
+BALL_MIN_R = 0.004             # x W
+BALL_MAX_R = 0.030             # x W
+BALL_MIN_BRIGHTNESS = 140.0    # ball must contain near-white/yellow pixels (max-channel intensity)
+BALL_BRIGHTNESS_MARGIN = 12.0  # ball interior must be this much brighter than its surroundings
+BALL_MIN_CIRCULARITY = 0.45    # 4*pi*A/P^2 of the blob contour (lenient: tiny blobs quantize badly)
+BALL_SHAFT_PERP_MAX = 0.018    # x W: base max perpendicular distance ball-center -> shaft line (also >= 3 ball radii)
+BALL_SHAFT_ANGLE_TOL_DEG = 6.0  # angular tolerance of the Hough shaft line, measured from its hands-side anchor
+BALL_ALONG_RANGE = (-0.15, 0.90)  # ball position along the shaft beyond its lower endpoint, x segment length
+                                  # (lower bound is tight: a bright glint UP the shaft must not pass as the ball)
+
+PLANE_MIN_CONFIDENCE = 0.45
+SPINE_MIN_CONFIDENCE = 0.40
+HEAD_MIN_CONFIDENCE = 0.35
+
+
+# ---------------------------------------------------------------------------
+# Style
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class MarkingStyle:
+    """Visual constants. One color per marking type; widths scale with frame width."""
+
+    plane_color: Tuple[int, int, int] = (255, 170, 51)    # amber
+    spine_color: Tuple[int, int, int] = (46, 196, 182)    # teal
+    head_color: Tuple[int, int, int] = (255, 107, 107)    # coral
+    stroke_alpha: int = 235
+    halo_color: Tuple[int, int, int] = (10, 12, 14)       # near-black halo behind every stroke
+    halo_alpha: int = 110
+    line_width_ratio: float = 0.006                        # stroke width = ratio x frame width (min 2 px)
+    halo_extra_ratio: float = 1.9                          # halo width = stroke width x this
+    head_ring_width_ratio: float = 0.005                   # ring is slightly thinner than lines
+    supersample: int = 3                                   # draw at Nx and LANCZOS-downsample for AA
+
+
+DEFAULT_STYLE = MarkingStyle()
+
+
+# ---------------------------------------------------------------------------
+# Geometry containers  (all coordinates normalized: x / frame_width, y / frame_height;
+# circle radius normalized by frame WIDTH)
+# ---------------------------------------------------------------------------
+@dataclass
+class SetupGeometry:
+    marker_version: str
+    frame_width: int
+    frame_height: int
+    keypoints: Dict[str, Dict[str, float]]          # name -> {x, y, score}
+    view: Dict[str, object]                          # {label: face_on|dtl|unknown, confidence, spread_ratio}
+    facing: Optional[str]                            # 'left'|'right' (image-space ball direction, DTL only)
+    ball: Optional[Dict[str, float]]                 # {x, y, r, confidence}
+    shaft: Optional[Dict[str, float]]                # {x1, y1, x2, y2, confidence}
+    markings: Dict[str, Dict[str, float]]            # subset of {head_circle, spine_line, plane_line}
+    failures: List[Dict[str, str]]                   # [{marking, reason}, ...]
+
+    def to_json(self) -> str:
+        """Deterministic, versioned serialization (sorted keys, fixed float precision)."""
+        return json.dumps(_round_floats(asdict(self)), sort_keys=True, separators=(",", ":"))
+
+    @classmethod
+    def from_json(cls, text: str) -> "SetupGeometry":
+        d = json.loads(text)
+        return cls(**{k: d[k] for k in (
+            "marker_version", "frame_width", "frame_height", "keypoints", "view",
+            "facing", "ball", "shaft", "markings", "failures")})
+
+
+def _round_floats(obj, ndigits: int = 6):
+    if isinstance(obj, float):
+        return round(obj, ndigits)
+    if isinstance(obj, dict):
+        return {k: _round_floats(v, ndigits) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_round_floats(v, ndigits) for v in obj]
+    return obj
+
+
+# ---------------------------------------------------------------------------
+# Model loading / pose inference
+# ---------------------------------------------------------------------------
+_INTERPRETER = None
+
+
+def _resolve_model_path() -> str:
+    candidates = [
+        os.environ.get("SWING_MARKER_MODEL_PATH"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", MODEL_FILENAME),
+        os.path.join("/opt/models", MODEL_FILENAME),
+    ]
+    for c in candidates:
+        if c and os.path.isfile(c):
+            return c
+    raise FileNotFoundError(
+        "MoveNet Thunder model not found. Set SWING_MARKER_MODEL_PATH or place "
+        f"{MODEL_FILENAME} in {os.path.dirname(os.path.abspath(__file__))}/models/ "
+        "(see module docstring for download provenance)."
+    )
+
+
+def _make_interpreter(model_path: str):
+    last_err = None
+    for importer in (
+        lambda: __import__("tflite_runtime.interpreter", fromlist=["Interpreter"]).Interpreter,
+        lambda: __import__("ai_edge_litert.interpreter", fromlist=["Interpreter"]).Interpreter,
+        lambda: __import__("tensorflow").lite.Interpreter,
+    ):
+        try:
+            interpreter_cls = importer()
+        except ImportError as e:
+            last_err = e
+            continue
+        # num_threads=1 keeps inference bit-deterministic run to run.
+        interp = interpreter_cls(model_path=model_path, num_threads=1)
+        interp.allocate_tensors()
+        return interp
+    raise ImportError(
+        "No TFLite runtime available (tried tflite_runtime, ai_edge_litert, tensorflow). "
+        f"Last error: {last_err}"
+    )
+
+
+def _get_interpreter():
+    global _INTERPRETER
+    if _INTERPRETER is None:
+        _INTERPRETER = _make_interpreter(_resolve_model_path())
+    return _INTERPRETER
+
+
+def _run_pose(img: Image.Image) -> Dict[str, Dict[str, float]]:
+    """MoveNet Thunder on a PIL RGB image -> normalized keypoints {name: {x, y, score}}.
+
+    The frame is letterboxed onto a square then resized to 256x256; outputs are mapped
+    back to normalized coordinates of the ORIGINAL frame.
+    """
+    interp = _get_interpreter()
+    inp = interp.get_input_details()[0]
+    out = interp.get_output_details()[0]
+
+    w, h = img.size
+    side = max(w, h)
+    canvas = Image.new("RGB", (side, side), (0, 0, 0))
+    off_x, off_y = (side - w) // 2, (side - h) // 2
+    canvas.paste(img, (off_x, off_y))
+    arr = np.asarray(canvas.resize((MODEL_INPUT_SIZE, MODEL_INPUT_SIZE), Image.BILINEAR), dtype=np.uint8)
+    if inp["dtype"] == np.float32:
+        arr = arr.astype(np.float32)
+    interp.set_tensor(inp["index"], arr[None, ...])
+    interp.invoke()
+    raw = interp.get_tensor(out["index"])[0, 0]  # 17 x (y, x, score) in letterboxed-square coords
+
+    kps: Dict[str, Dict[str, float]] = {}
+    for name, (ky, kx, ks) in zip(KEYPOINT_NAMES, raw):
+        kps[name] = {
+            "x": (float(kx) * side - off_x) / w,
+            "y": (float(ky) * side - off_y) / h,
+            "score": float(ks),
+        }
+    return kps
+
+
+# ---------------------------------------------------------------------------
+# Pose-derived helpers  (normalized coords in, normalized out; pixel math uses W/H)
+# ---------------------------------------------------------------------------
+def _kp(kps, name):
+    return kps[name]
+
+
+def _visible(kps, name, min_score=KP_MIN_SCORE):
+    return kps[name]["score"] >= min_score
+
+
+def _px(pt, w, h):
+    return pt["x"] * w, pt["y"] * h
+
+
+def _mid(a, b):
+    return {
+        "x": (a["x"] + b["x"]) / 2.0,
+        "y": (a["y"] + b["y"]) / 2.0,
+        "score": min(a["score"], b["score"]),
+    }
+
+
+def _dist_px(a, b, w, h):
+    ax, ay = _px(a, w, h)
+    bx, by = _px(b, w, h)
+    return math.hypot(ax - bx, ay - by)
+
+
+def _person_present(kps, w, h) -> Tuple[bool, str]:
+    core = ["nose", "left_shoulder", "right_shoulder", "left_hip", "right_hip",
+            "left_knee", "right_knee", "left_ankle", "right_ankle", "left_wrist", "right_wrist"]
+    mean_score = float(np.mean([kps[n]["score"] for n in core]))
+    if mean_score < POSE_CORE_MIN_MEAN:
+        return False, f"pose confidence too low (mean core score {mean_score:.2f} < {POSE_CORE_MIN_MEAN})"
+    # Anatomical ordering sanity (image y grows down). In a bent-over golf address the nose
+    # can sit at/below the shoulder line, so the head is referenced by its topmost keypoint
+    # and only required to be above the hips.
+    sh_y = (_kp(kps, "left_shoulder")["y"] + _kp(kps, "right_shoulder")["y"]) / 2
+    hip_y = (_kp(kps, "left_hip")["y"] + _kp(kps, "right_hip")["y"]) / 2
+    ank_y = (_kp(kps, "left_ankle")["y"] + _kp(kps, "right_ankle")["y"]) / 2
+    head_top_y = min(_kp(kps, n)["y"] for n in ("nose", "left_eye", "right_eye", "left_ear", "right_ear"))
+    if not (head_top_y < hip_y and sh_y < hip_y < ank_y):
+        return False, "pose layout implausible (head/shoulder/hip/ankle vertical order violated)"
+    if _dist_px(_mid(_kp(kps, "left_shoulder"), _kp(kps, "right_shoulder")),
+                _mid(_kp(kps, "left_hip"), _kp(kps, "right_hip")), w, h) < 0.02 * max(w, h):
+        return False, "pose degenerate (torso collapsed to a point)"
+    return True, ""
+
+
+def _classify_view(kps, w, h) -> Dict[str, object]:
+    """Face-on vs down-the-line from body spread, per research §2.4.
+
+    spread_ratio = mean(shoulder x-spread, hip x-spread) / torso length (px).
+    Face-on: limbs spread wide across x. DTL: shoulders/hips nearly collinear in x.
+    """
+    ls, rs = _kp(kps, "left_shoulder"), _kp(kps, "right_shoulder")
+    lh, rh = _kp(kps, "left_hip"), _kp(kps, "right_hip")
+    torso = _dist_px(_mid(ls, rs), _mid(lh, rh), w, h)
+    if torso <= 1:
+        return {"label": "unknown", "confidence": 0.0, "spread_ratio": 0.0}
+    shoulder_spread = abs(ls["x"] - rs["x"]) * w
+    hip_spread = abs(lh["x"] - rh["x"]) * w
+    ratio = float((shoulder_spread + hip_spread) / (2.0 * torso))
+
+    kp_conf = float(np.mean([p["score"] for p in (ls, rs, lh, rh)]))
+    if ratio >= VIEW_FACE_ON_MIN:
+        label = "face_on"
+        margin = min(1.0, (ratio - VIEW_FACE_ON_MIN) / VIEW_FACE_ON_MIN + 0.5)
+    elif ratio <= VIEW_DTL_MAX:
+        label = "dtl"
+        margin = min(1.0, (VIEW_DTL_MAX - ratio) / VIEW_DTL_MAX + 0.5)
+    else:
+        # Ambiguous band: pick the nearer side but confidence stays below the gate.
+        label = "face_on" if (ratio - VIEW_DTL_MAX) > (VIEW_FACE_ON_MIN - ratio) else "dtl"
+        margin = 0.35
+    return {
+        "label": label,
+        "confidence": round(float(min(1.0, margin) * min(1.0, kp_conf / 0.45)), 4),
+        "spread_ratio": round(ratio, 4),
+    }
+
+
+def _facing_direction(kps) -> Optional[str]:
+    """DTL only: which image-space side the golfer faces (ball side). From nose vs hip midpoint x."""
+    nose = _kp(kps, "nose")
+    hip_mid = _mid(_kp(kps, "left_hip"), _kp(kps, "right_hip"))
+    dx = nose["x"] - hip_mid["x"]
+    if abs(dx) < 0.005:
+        return None
+    return "right" if dx > 0 else "left"
+
+
+# ---------------------------------------------------------------------------
+# Head circle (both views)
+# ---------------------------------------------------------------------------
+def _head_circle(kps, view_label: str, w: int, h: int) -> Tuple[Optional[Dict[str, float]], Optional[str]]:
+    """Circle around the head at address. Radius PROPORTIONAL to detected head size.
+
+    face_on: r = HEAD_RADIUS_FACTOR_FACE_ON x inter-ear distance
+    dtl:     r = HEAD_RADIUS_FACTOR_DTL x (visible eye -> visible ear) distance
+    Returns (marking|None, failure_reason|None).
+    """
+    head_names = ["nose", "left_eye", "right_eye", "left_ear", "right_ear"]
+    vis = [n for n in head_names if _visible(kps, n)]
+    if len(vis) < 3:
+        return None, f"too few confident head keypoints ({len(vis)}/5)"
+    cx = float(np.mean([kps[n]["x"] for n in vis]))
+    cy = float(np.mean([kps[n]["y"] for n in vis]))
+
+    r_px = None
+    if view_label == "face_on" and _visible(kps, "left_ear") and _visible(kps, "right_ear"):
+        r_px = HEAD_RADIUS_FACTOR_FACE_ON * _dist_px(kps["left_ear"], kps["right_ear"], w, h)
+    else:
+        pairs = [("left_eye", "left_ear"), ("right_eye", "right_ear")]
+        dists = [
+            _dist_px(kps[e], kps[r], w, h)
+            for e, r in pairs
+            if _visible(kps, e) and _visible(kps, r)
+        ]
+        if dists:
+            r_px = HEAD_RADIUS_FACTOR_DTL * max(dists)  # occluded-side pair foreshortens; take the larger
+    if not r_px or r_px <= 1:
+        return None, "head size not measurable (no confident ear/eye pair)"
+
+    # Anatomical sanity gates (research §2.1): nose inside circle; diameter plausible vs torso.
+    nose_d = _dist_px(kps["nose"], {"x": cx, "y": cy, "score": 1}, w, h)
+    if nose_d > r_px:
+        return None, "sanity gate: nose outside candidate head circle"
+    torso = _dist_px(
+        _mid(kps["left_shoulder"], kps["right_shoulder"]),
+        _mid(kps["left_hip"], kps["right_hip"]), w, h)
+    ratio = (2 * r_px) / torso if torso > 0 else 99.0
+    if not (HEAD_DIAMETER_TORSO_MIN <= ratio <= HEAD_DIAMETER_TORSO_MAX):
+        return None, f"sanity gate: head diameter/torso ratio {ratio:.2f} outside [{HEAD_DIAMETER_TORSO_MIN}, {HEAD_DIAMETER_TORSO_MAX}]"
+
+    conf = float(np.mean([kps[n]["score"] for n in vis]))
+    if conf < HEAD_MIN_CONFIDENCE:
+        return None, f"head keypoint confidence {conf:.2f} < {HEAD_MIN_CONFIDENCE}"
+    return {"cx": cx, "cy": cy, "r": r_px / w, "confidence": round(conf, 4)}, None
+
+
+# ---------------------------------------------------------------------------
+# Spine line (DTL only)
+# ---------------------------------------------------------------------------
+def _spine_line(kps, w: int, h: int) -> Tuple[Optional[Dict[str, float]], Optional[str]]:
+    ls, rs, lh, rh = (kps[n] for n in ("left_shoulder", "right_shoulder", "left_hip", "right_hip"))
+    conf = float(np.mean([p["score"] for p in (ls, rs, lh, rh)]))
+    if conf < SPINE_MIN_CONFIDENCE:
+        return None, f"shoulder/hip confidence {conf:.2f} < {SPINE_MIN_CONFIDENCE}"
+    hip_mid, sh_mid = _mid(lh, rh), _mid(ls, rs)
+    # Extend: slightly below the hip, and beyond the shoulders toward the head.
+    dx, dy = sh_mid["x"] - hip_mid["x"], sh_mid["y"] - hip_mid["y"]
+    if math.hypot(dx * w, dy * h) < 0.02 * max(w, h):
+        return None, "torso too short for a spine line"
+    return {
+        "x1": hip_mid["x"] - 0.08 * dx, "y1": hip_mid["y"] - 0.08 * dy,
+        "x2": hip_mid["x"] + 1.30 * dx, "y2": hip_mid["y"] + 1.30 * dy,
+        "confidence": round(conf, 4),
+    }, None
+
+
+# ---------------------------------------------------------------------------
+# Shaft + ball detection (DTL, classical CV, confidence gated — research §2.2/2.3)
+# ---------------------------------------------------------------------------
+def _detect_shaft(gray: np.ndarray, kps, facing: str, w: int, h: int):
+    """HoughLinesP in a wrist-anchored ROI. Returns (shaft dict|None, reason|None)."""
+    # Hands overlap at address, so the far wrist is often low-confidence; anchor on the
+    # midpoint when both wrists are confident, else on the better wrist alone.
+    lw, rw = kps["left_wrist"], kps["right_wrist"]
+    if _visible(kps, "left_wrist") and _visible(kps, "right_wrist"):
+        anchor = _mid(lw, rw)
+    else:
+        anchor = lw if lw["score"] >= rw["score"] else rw
+        if anchor["score"] < 0.25:
+            return None, "wrist keypoints not confident enough to anchor shaft search"
+    wx, wy = _px(anchor, w, h)
+    ank_y = max(kps["left_ankle"]["y"], kps["right_ankle"]["y"]) * h
+    ground_y = min(h - 1, ank_y + 0.06 * h)
+
+    sign = 1.0 if facing == "right" else -1.0
+    x_lo = wx - 0.10 * w if sign > 0 else wx - 0.55 * w
+    x_hi = wx + 0.55 * w if sign > 0 else wx + 0.10 * w
+    y_lo, y_hi = wy - 0.04 * h, ground_y
+    x_lo, x_hi = max(0, int(x_lo)), min(w - 1, int(x_hi))
+    y_lo, y_hi = max(0, int(y_lo)), min(h - 1, int(y_hi))
+    if x_hi - x_lo < 20 or y_hi - y_lo < 20:
+        return None, "shaft ROI degenerate"
+
+    roi = gray[y_lo:y_hi, x_lo:x_hi]
+    edges = cv2.Canny(roi, 40, 120, apertureSize=3)
+    min_len = SHAFT_MIN_LEN * max(1.0, (ank_y - wy))
+    lines = cv2.HoughLinesP(
+        edges, rho=1, theta=np.pi / 360, threshold=30,
+        minLineLength=int(max(15, min_len)), maxLineGap=8,
+    )
+    if lines is None:
+        return None, "no line segments found in wrist-anchored ROI"
+
+    diag = math.hypot(w, h)
+    best, best_score = None, 0.0
+    for (x1, y1, x2, y2) in np.asarray(lines).reshape(-1, 4):
+        gx1, gy1, gx2, gy2 = x1 + x_lo, y1 + y_lo, x2 + x_lo, y2 + y_lo
+        if gy1 > gy2:  # order: (1) = upper endpoint
+            gx1, gy1, gx2, gy2 = gx2, gy2, gx1, gy1
+        seg_len = math.hypot(gx2 - gx1, gy2 - gy1)
+        if seg_len < 10:
+            continue
+        angle = math.degrees(math.atan2(gy2 - gy1, abs(gx2 - gx1)))
+        if not (SHAFT_ANGLE_MIN_DEG <= angle <= SHAFT_ANGLE_MAX_DEG):
+            continue
+        if sign * (gx2 - gx1) < 0:  # must run from hands toward the ball side
+            continue
+        up_dist = math.hypot(gx1 - wx, gy1 - wy)
+        if up_dist > SHAFT_WRIST_MAX_DIST * diag:
+            continue
+        score = seg_len * (1.0 - up_dist / (SHAFT_WRIST_MAX_DIST * diag))
+        if score > best_score:
+            best_score = score
+            best = (gx1, gy1, gx2, gy2, seg_len, up_dist)
+    if best is None:
+        return None, "no plausible shaft segment (angle/direction/wrist-proximity gates)"
+
+    gx1, gy1, gx2, gy2, seg_len, up_dist = best
+    # Confidence: longer segments anchored close to the hands are more trustworthy.
+    conf = min(1.0, seg_len / (0.9 * max(1.0, ank_y - wy))) * (1.0 - 0.5 * up_dist / (SHAFT_WRIST_MAX_DIST * diag))
+    return {
+        "x1": float(gx1) / w, "y1": float(gy1) / h, "x2": float(gx2) / w, "y2": float(gy2) / h,
+        "confidence": round(float(conf), 4),
+    }, None
+
+
+def _detect_ball(rgb: np.ndarray, cx: float, cy: float, w: int, h: int, shaft_len_px: float):
+    """Bright-blob ball detection in a ROI around the shaft's lower endpoint (cx, cy).
+
+    A golf ball at address is a small, compact, near-white (or bright yellow) blob —
+    the brightest round thing next to the clubhead. Hough circles are unreliable at
+    r = 3-12 px, so this thresholds max-channel brightness (catches white AND yellow
+    balls) and gates candidates on size, aspect, fill and contour circularity.
+
+    Returns (candidates, reason): score-ranked list of candidate dicts (best first) so the
+    caller can take the first one that also confirms against the shaft line; empty list
+    with a reason when nothing passes the gates.
+    """
+    bright = rgb.max(axis=2)  # max over RGB: white and yellow balls are both near-max here
+    r_min = max(2, int(BALL_MIN_R * w))
+    r_max = max(r_min + 2, int(BALL_MAX_R * w))
+    half = int(max(0.08 * w, 0.55 * shaft_len_px))
+    x_lo, x_hi = max(0, int(cx - half)), min(w, int(cx + half))
+    y_lo, y_hi = max(0, int(cy - half)), min(h, int(cy + half))
+    if x_hi - x_lo < 4 * r_min or y_hi - y_lo < 4 * r_min:
+        return None, "ball ROI degenerate"
+    roi = bright[y_lo:y_hi, x_lo:x_hi]
+
+    p_hi = float(np.percentile(roi, 99.9))
+    if p_hi < BALL_MIN_BRIGHTNESS:
+        return [], f"no near-white pixels in ROI (p99.9 brightness {p_hi:.0f} < {BALL_MIN_BRIGHTNESS:.0f})"
+
+    candidates: List[Tuple[float, Dict[str, float]]] = []
+    min_area = max(4.0, 0.30 * math.pi * r_min * r_min)
+    max_area = 1.4 * math.pi * r_max * r_max
+    kernel = np.ones((3, 3), np.uint8)
+    # The ball is often part-shadowed, so no single threshold segments it cleanly;
+    # sweep a few thresholds, and also an eroded variant of each mask (the ball frequently
+    # touches a bright clubhead glint via a thin bridge that erosion splits).
+    masks = []
+    for factor in (0.90, 0.82, 0.72, 0.62):
+        thr = max(BALL_MIN_BRIGHTNESS, factor * p_hi)
+        mask = (roi >= thr).astype(np.uint8)
+        masks.append((mask, 0.0))
+        masks.append((cv2.erode(mask, kernel), 1.0))  # r correction ~1px after erosion
+    for mask, r_corr in masks:
+        n, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        for i in range(1, n):
+            area = float(stats[i, cv2.CC_STAT_AREA])
+            if not (min_area <= area <= max_area):
+                continue
+            bw, bh = float(stats[i, cv2.CC_STAT_WIDTH]), float(stats[i, cv2.CC_STAT_HEIGHT])
+            if not (0.45 <= bw / bh <= 2.2):
+                continue
+            if area / (bw * bh) < 0.35:
+                continue
+            comp = (labels == i).astype(np.uint8)
+            contours, _ = cv2.findContours(comp, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+            if not contours:
+                continue
+            per = cv2.arcLength(contours[0], True)
+            circ = 4.0 * math.pi * area / (per * per) if per > 0 else 0.0
+            if circ < BALL_MIN_CIRCULARITY:
+                continue
+            bx, by = centroids[i]
+            r_est = math.sqrt(area / math.pi) + r_corr
+            # Brightness margin vs an expanded neighborhood (excluding the blob itself).
+            pad = int(max(3, 2.0 * r_est))
+            nx_lo, nx_hi = max(0, int(bx - pad * 2)), min(roi.shape[1], int(bx + pad * 2))
+            ny_lo, ny_hi = max(0, int(by - pad * 2)), min(roi.shape[0], int(by + pad * 2))
+            neigh = roi[ny_lo:ny_hi, nx_lo:nx_hi]
+            neigh_mask = comp[ny_lo:ny_hi, nx_lo:nx_hi] == 0
+            if neigh_mask.sum() < 8:
+                continue
+            mean_in = float(roi[comp == 1].mean())
+            mean_out = float(neigh[neigh_mask].mean())
+            margin = mean_in - mean_out
+            if margin < BALL_BRIGHTNESS_MARGIN:
+                continue
+            proximity = 1.0 - min(1.0, math.hypot(bx + x_lo - cx, by + y_lo - cy) / half)
+            score = margin * (0.4 + 0.6 * proximity) * min(1.0, circ + 0.3)
+            conf = min(1.0, margin / 60.0) * (0.5 + 0.5 * proximity) * min(1.0, circ + 0.3)
+            candidates.append((float(score), {
+                "x": float(bx + x_lo) / w, "y": float(by + y_lo) / h, "r": float(r_est) / w,
+                "confidence": round(float(conf), 4),
+            }))
+    if not candidates:
+        return [], "no compact bright blob passed size/circularity/brightness gates"
+    # Rank by score, then dedupe blobs re-detected at multiple thresholds (keep best-scored).
+    candidates.sort(key=lambda sc: -sc[0])
+    unique: List[Dict[str, float]] = []
+    for _, cand in candidates:
+        if any(math.hypot((cand["x"] - u["x"]) * w, (cand["y"] - u["y"]) * h)
+               < 2.0 * max(cand["r"], u["r"], 2.0 / w) * w for u in unique):
+            continue
+        unique.append(cand)
+        if len(unique) >= 5:
+            break
+    return unique, None
+
+
+def _ball_confirms_shaft(ball, shaft, w, h) -> Tuple[bool, str]:
+    """Mutual confirmation: the ball must sit ON the shaft line, near its lower endpoint."""
+    x1, y1 = shaft["x1"] * w, shaft["y1"] * h
+    x2, y2 = shaft["x2"] * w, shaft["y2"] * h
+    bx, by, br = ball["x"] * w, ball["y"] * h, ball["r"] * w
+    dx, dy = x2 - x1, y2 - y1
+    seg_len = math.hypot(dx, dy)
+    if seg_len < 1:
+        return False, "shaft segment degenerate"
+    ux, uy = dx / seg_len, dy / seg_len
+    rx, ry = bx - x2, by - y2
+    perp = abs(rx * uy - ry * ux)
+    along = rx * ux + ry * uy  # signed distance beyond the lower endpoint
+    # Perpendicular tolerance grows with distance from the hands-side anchor: a small angular
+    # error in the Hough line fans out over the extension toward the ball.
+    dist_from_anchor = seg_len + max(0.0, along)
+    perp_max = max(3.0 * br, BALL_SHAFT_PERP_MAX * w,
+                   math.tan(math.radians(BALL_SHAFT_ANGLE_TOL_DEG)) * dist_from_anchor)
+    if perp > perp_max:
+        return False, f"ball is {perp:.0f}px off the shaft line (max {perp_max:.0f}px)"
+    lo, hi = BALL_ALONG_RANGE[0] * seg_len, BALL_ALONG_RANGE[1] * seg_len
+    if not (lo <= along <= hi):
+        return False, f"ball is {along:.0f}px along the shaft from the clubhead end (allowed {lo:.0f}..{hi:.0f}px)"
+    return True, ""
+
+
+def _plane_line(kps, ball, w, h) -> Tuple[Optional[Dict[str, float]], Optional[str]]:
+    """Plane line: from the ball/hosel point up through the shoulder midpoint (DTL)."""
+    sh_mid = _mid(kps["left_shoulder"], kps["right_shoulder"])
+    if sh_mid["score"] < KP_MIN_SCORE:
+        return None, "shoulder keypoints not confident enough for plane line"
+    bx, by = ball["x"], ball["y"]
+    dx, dy = sh_mid["x"] - bx, sh_mid["y"] - by
+    if math.hypot(dx * w, dy * h) < 0.05 * max(w, h):
+        return None, "ball and shoulders too close for a stable plane line"
+    conf = float(min(ball["confidence"], sh_mid["score"] / 0.45))
+    conf = min(1.0, conf)
+    return {
+        "x1": bx - 0.06 * dx, "y1": by - 0.06 * dy,     # start a touch beyond the ball
+        "x2": bx + 1.55 * dx, "y2": by + 1.55 * dy,     # extend well past the shoulders
+        "confidence": round(conf, 4),
+    }, None
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+def analyze_setup(address_frame_path: str) -> SetupGeometry:
+    """Analyze the ADDRESS frame and derive all static markings for the swing.
+
+    Runs pose once, classifies the camera view, attempts shaft+ball detection (DTL only),
+    and constructs normalized geometry. Any marking whose inputs fail a confidence or
+    sanity gate is withheld, with the reason recorded in `failures` (fail closed).
+    """
+    img = ImageOps.exif_transpose(Image.open(address_frame_path)).convert("RGB")
+    w, h = img.size
+    kps = _run_pose(img)
+
+    failures: List[Dict[str, str]] = []
+    markings: Dict[str, Dict[str, float]] = {}
+    view: Dict[str, object] = {"label": "unknown", "confidence": 0.0, "spread_ratio": 0.0}
+    facing = None
+    ball = shaft = None
+
+    ok, reason = _person_present(kps, w, h)
+    if not ok:
+        for m in ("head_circle", "spine_line", "plane_line"):
+            failures.append({"marking": m, "reason": f"no reliable pose: {reason}"})
+        return SetupGeometry(MARKER_VERSION, w, h, _round_floats(kps), view, facing,
+                             ball, shaft, markings, failures)
+
+    view = _classify_view(kps, w, h)
+    view_ok = view["confidence"] >= VIEW_MIN_CONFIDENCE
+
+    # --- head circle: legal in both views; requires only a confident view-independent pose,
+    # but the radius rule differs per view, so an ambiguous view still withholds it.
+    if view_ok:
+        head, why = _head_circle(kps, view["label"], w, h)
+        if head:
+            markings["head_circle"] = head
+        else:
+            failures.append({"marking": "head_circle", "reason": why})
+    else:
+        failures.append({"marking": "head_circle",
+                         "reason": f"view ambiguous (confidence {view['confidence']:.2f} < {VIEW_MIN_CONFIDENCE})"})
+
+    # --- spine + plane: DTL only.
+    if not view_ok:
+        for m in ("spine_line", "plane_line"):
+            failures.append({"marking": m,
+                             "reason": f"view ambiguous (confidence {view['confidence']:.2f} < {VIEW_MIN_CONFIDENCE})"})
+    elif view["label"] != "dtl":
+        for m in ("spine_line", "plane_line"):
+            failures.append({"marking": m, "reason": f"view={view['label']}: {m} is DTL-only"})
+    else:
+        spine, why = _spine_line(kps, w, h)
+        if spine:
+            markings["spine_line"] = spine
+        else:
+            failures.append({"marking": "spine_line", "reason": why})
+
+        facing = _facing_direction(kps)
+        if facing is None:
+            failures.append({"marking": "plane_line", "reason": "cannot determine facing direction from pose"})
+        elif not _HAS_CV2:
+            failures.append({"marking": "plane_line", "reason": "opencv unavailable: shaft/ball detection disabled"})
+        else:
+            rgb = np.asarray(img)
+            gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+            shaft, why = _detect_shaft(gray, kps, facing, w, h)
+            if shaft is None:
+                failures.append({"marking": "plane_line", "reason": f"shaft not detected: {why}"})
+            else:
+                lx, ly = shaft["x2"] * w, shaft["y2"] * h  # lower (clubhead-side) endpoint
+                shaft_len = math.hypot((shaft["x2"] - shaft["x1"]) * w, (shaft["y2"] - shaft["y1"]) * h)
+                cands, why = _detect_ball(rgb, lx, ly, w, h, shaft_len)
+                # Take the best-scored candidate that also sits on the shaft line (mutual confirmation).
+                ball, reject_why = None, why
+                for cand in cands:
+                    ok, cwhy = _ball_confirms_shaft(cand, shaft, w, h)
+                    if ok:
+                        ball = cand
+                        break
+                    reject_why = cwhy
+                if ball is None:
+                    failures.append({"marking": "plane_line",
+                                     "reason": f"no ball confirmed at clubhead — refusing to guess ({reject_why})"})
+                else:
+                    plane, why = _plane_line(kps, ball, w, h)
+                    if plane and plane["confidence"] >= PLANE_MIN_CONFIDENCE:
+                        markings["plane_line"] = plane
+                    elif plane:
+                        failures.append({"marking": "plane_line",
+                                         "reason": f"confidence {plane['confidence']:.2f} < {PLANE_MIN_CONFIDENCE}"})
+                    else:
+                        failures.append({"marking": "plane_line", "reason": why})
+
+    return SetupGeometry(MARKER_VERSION, w, h, _round_floats(kps), _round_floats(view),
+                         facing, _round_floats(ball) if ball else None,
+                         _round_floats(shaft) if shaft else None,
+                         _round_floats(markings), failures)
+
+
+# ---------------------------------------------------------------------------
+# Rendering (PIL, supersampled for anti-aliasing, halo behind every stroke)
+# ---------------------------------------------------------------------------
+def render_overlay(size: Tuple[int, int], geometry: SetupGeometry,
+                   style: MarkingStyle = DEFAULT_STYLE) -> Image.Image:
+    """Render the markings alone onto a transparent RGBA canvas of `size`.
+
+    Deterministic: identical geometry + size + style => byte-identical overlay.
+    Exposed publicly so the pixel-stability acceptance test can compare overlays directly.
+    """
+    w, h = size
+    ss = style.supersample
+    hi = Image.new("RGBA", (w * ss, h * ss), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(hi)
+
+    stroke_w = max(2, round(style.line_width_ratio * w)) * ss
+    halo_w = int(round(stroke_w * style.halo_extra_ratio))
+    ring_w = max(2, round(style.head_ring_width_ratio * w)) * ss
+    ring_halo_w = int(round(ring_w * style.halo_extra_ratio))
+
+    def line_px(m):
+        return (m["x1"] * w * ss, m["y1"] * h * ss, m["x2"] * w * ss, m["y2"] * h * ss)
+
+    def draw_capped_line(xy, color, width):
+        x1, y1, x2, y2 = xy
+        draw.line((x1, y1, x2, y2), fill=color, width=width)
+        r = width / 2.0
+        for (cx, cy) in ((x1, y1), (x2, y2)):  # round caps
+            draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=color)
+
+    halo = (*style.halo_color, style.halo_alpha)
+    ordered = [  # halo pass then stroke pass, per marking, so overlaps stay clean
+        ("plane_line", style.plane_color),
+        ("spine_line", style.spine_color),
+    ]
+    for name, color in ordered:
+        m = geometry.markings.get(name)
+        if not m:
+            continue
+        xy = line_px(m)
+        draw_capped_line(xy, halo, halo_w)
+        draw_capped_line(xy, (*color, style.stroke_alpha), stroke_w)
+
+    hc = geometry.markings.get("head_circle")
+    if hc:
+        cx, cy = hc["cx"] * w * ss, hc["cy"] * h * ss
+        r = hc["r"] * w * ss
+        for width, color in ((ring_halo_w, halo), (ring_w, (*style.head_color, style.stroke_alpha))):
+            draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=color, width=width)
+
+    return hi.resize((w, h), Image.LANCZOS)
+
+
+def render_markings(frame_path: str, geometry: SetupGeometry, out_path: str,
+                    style: MarkingStyle = DEFAULT_STYLE) -> bool:
+    """Composite the swing's markings onto one frame. Returns False (writes nothing)
+    if the geometry contains no renderable markings."""
+    if not geometry.markings:
+        return False
+    img = ImageOps.exif_transpose(Image.open(frame_path)).convert("RGB")
+    overlay = render_overlay(img.size, geometry, style)
+    out = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    out.save(out_path, quality=92)
+    return True
+
+
+def mark_swing(frame_paths: Sequence[str], out_dir: str,
+               style: MarkingStyle = DEFAULT_STYLE) -> Dict[str, object]:
+    """Compute geometry ONCE from the first frame (address), render it on every frame.
+
+    Returns {"geometry_json": <path to geometry.json>, "marked_paths": [...], "skipped": [...]}.
+    Frames whose dimensions differ from the address frame are skipped (a marking computed
+    for one camera geometry must not be rescaled onto another).
+    """
+    if not frame_paths:
+        raise ValueError("mark_swing requires at least one frame path")
+    os.makedirs(out_dir, exist_ok=True)
+
+    geometry = analyze_setup(frame_paths[0])
+    geo_path = os.path.join(out_dir, "geometry.json")
+    with open(geo_path, "w") as f:
+        f.write(geometry.to_json())
+
+    marked, skipped = [], []
+    ref_size = (geometry.frame_width, geometry.frame_height)
+    for fp in frame_paths:
+        name = os.path.basename(fp)
+        try:
+            size = ImageOps.exif_transpose(Image.open(fp)).size
+        except Exception as e:
+            skipped.append({"frame": fp, "reason": f"unreadable: {e}"})
+            continue
+        if size != ref_size:
+            skipped.append({"frame": fp, "reason": f"size {size} != address frame {ref_size}"})
+            continue
+        if not geometry.markings:
+            skipped.append({"frame": fp, "reason": "no markings passed confidence gates (fail closed)"})
+            continue
+        out_path = os.path.join(out_dir, f"marked_{name}")
+        render_markings(fp, geometry, out_path, style)
+        marked.append(out_path)
+
+    return {"geometry_json": geo_path, "marked_paths": marked, "skipped": skipped}
+
+
+# ---------------------------------------------------------------------------
+# CLI:  python swing_marker.py <frame1> [frame2 ...] -o <out_dir>
+# ---------------------------------------------------------------------------
+if __name__ == "__main__":  # pragma: no cover
+    import argparse
+
+    ap = argparse.ArgumentParser(description="Mark a swing: geometry from frame 1, rendered on all frames.")
+    ap.add_argument("frames", nargs="+", help="frame paths, address frame first")
+    ap.add_argument("-o", "--out-dir", required=True)
+    args = ap.parse_args()
+    result = mark_swing(args.frames, args.out_dir)
+    print(json.dumps(result, indent=2))
+    with open(result["geometry_json"]) as f:
+        geo = json.loads(f.read())
+    print("view:", geo["view"], "markings:", sorted(geo["markings"]), "failures:", geo["failures"])
