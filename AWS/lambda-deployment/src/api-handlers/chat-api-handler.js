@@ -494,19 +494,37 @@ async function callChatCompletions(payload) {
   }
 }
 
+// Returns the GPT-5 minor version (gpt-5 -> 0, gpt-5.6-terra -> 6), or null
+// for non-GPT-5 models. Version-aware rather than prefix-matched: only the
+// original gpt-5 accepts reasoning_effort 'minimal'; every 5.1+ release uses
+// the none|low|medium|high|xhigh enum and 400s on 'minimal'. Prefix matching
+// here silently blocked every model past gpt-5.2.
+// Mirrors getGpt5Minor in ai-analysis/ai-analysis-processor.js.
+function getGpt5Minor(model) {
+  const match = /^gpt-5(?:\.(\d+))?\b/.exec(typeof model === 'string' ? model : '');
+  if (!match) return null;
+  return match[1] ? parseInt(match[1], 10) : 0;
+}
+
 function applyModelSpecificControls(payload) {
   if (!payload || typeof payload !== 'object') {
     return payload;
   }
 
   const request = { ...payload };
-  const model = typeof request.model === 'string' ? request.model : '';
-  if (model.startsWith('gpt-5.1') || model.startsWith('gpt-5.2')) {
+  const minor = getGpt5Minor(request.model);
+  if (minor !== null) {
     delete request.temperature;
-    request.reasoning_effort = request.reasoning_effort || 'low';
-  } else if (model.startsWith('gpt-5')) {
-    delete request.temperature;
-    request.reasoning_effort = request.reasoning_effort || 'minimal';
+    const hasTools = Array.isArray(request.tools) && request.tools.length > 0;
+    if (hasTools && minor >= 1) {
+      // Newer GPT-5 models reject function tools combined with any other
+      // reasoning_effort on /v1/chat/completions: "To use function tools, use
+      // /v1/responses or set reasoning_effort to 'none'." The chat loop always
+      // sends tools, so this is the tool-calling path's only supported value.
+      request.reasoning_effort = 'none';
+    } else {
+      request.reasoning_effort = request.reasoning_effort || (minor >= 1 ? 'low' : 'minimal');
+    }
   }
   return request;
 }
@@ -1054,4 +1072,9 @@ exports.handler = async (event) => {
       }) 
     };
   }
+};
+
+exports.__private = {
+  getGpt5Minor,
+  applyModelSpecificControls,
 };
