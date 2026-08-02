@@ -6,11 +6,18 @@ requirement in docs/backlog/swing-marking-tool.md:
   1. MoveNet Thunder pose estimation on the ADDRESS frame only (single inference per swing).
   2. Pose-heuristic camera-view classification (down-the-line vs face-on), confidence scored.
   3. If DTL: club shaft via cv2.HoughLinesP in a wrist-anchored ROI, golf ball via
-     cv2.HoughCircles in a shaft-anchored ROI. The two detections must mutually confirm.
+     bright-blob detection in a shaft-anchored ROI. The two detections must mutually confirm.
   4. Static geometry construction (pure math, once per swing):
-       - head circle  (both views)  — radius proportional to detected head size, never fixed px
-       - spine line   (DTL only)    — hip midpoint through shoulder midpoint
-       - plane line   (DTL only)    — ball/hosel point through shoulder midpoint
+       - head circle  (both views)  — radius proportional to detected head size, never fixed px;
+                                      center lifted above the face centroid so the whole head
+                                      (cap crown, occiput) sits inside the ring
+       - spine line   (DTL only)    — hip midpoint through shoulder midpoint, top end clamped
+                                      short of the head circle
+       - plane line   (DTL only)    — the DETECTED SHAFT's own direction anchored at the
+                                      detected ball; extent clamped from just past the ball to
+                                      just above head height. If the Hough shaft fit is
+                                      low-confidence the plane line is withheld (fail closed) —
+                                      there is NO ball->body fallback.
   5. Rendering with PIL onto every frame of the swing using the identical geometry.
 
 HARD RULE honored by construction: geometry is derived from the address frame alone and the
@@ -59,7 +66,7 @@ except ImportError:  # pragma: no cover
     cv2 = None
     _HAS_CV2 = False
 
-MARKER_VERSION = "1.0.0"
+MARKER_VERSION = "2.0.0"
 
 MODEL_FILENAME = "movenet_singlepose_thunder_f16.tflite"
 MODEL_SHA256 = "41641538679ec79b07d4101e591dda47d098c09af29607674b2a40b8a3798dd3"
@@ -82,10 +89,13 @@ VIEW_FACE_ON_MIN = 0.42        # body-spread ratio at/above which the view is fa
 VIEW_DTL_MAX = 0.30            # body-spread ratio at/below which the view is down-the-line
 VIEW_MIN_CONFIDENCE = 0.50     # below this, view-gated markings (plane/spine) are withheld
 
-HEAD_RADIUS_FACTOR_FACE_ON = 0.75   # r = 0.75 x inter-ear distance      (research §2.1)
-HEAD_RADIUS_FACTOR_DTL = 1.40       # r = 1.40 x eye-to-ear distance     (research §2.1)
+HEAD_RADIUS_FACTOR_FACE_ON = 0.92   # r = 0.92 x inter-ear distance      (research §2.1, enlarged
+HEAD_RADIUS_FACTOR_DTL = 1.80       # r = 1.80 x eye-to-ear distance      so cap crown/occiput fit)
+HEAD_CENTER_UP_SHIFT = 0.34         # x r: face keypoints sit low on the head — lift the center
+HEAD_CENTER_BACK_SHIFT = 0.26       # x r, DTL only: shift center from the face toward the occiput
 HEAD_DIAMETER_TORSO_MIN = 0.22      # anatomical sanity: head diameter vs shoulder->hip length
-HEAD_DIAMETER_TORSO_MAX = 0.90
+HEAD_DIAMETER_TORSO_MAX = 1.05
+HEAD_KP_MAX_DIST = 0.92             # x r: every confident face keypoint must sit inside the ring
 
 SHAFT_ANGLE_MIN_DEG = 20.0     # plausible shaft angle from horizontal at address
 SHAFT_ANGLE_MAX_DEG = 80.0
@@ -102,9 +112,21 @@ BALL_SHAFT_ANGLE_TOL_DEG = 6.0  # angular tolerance of the Hough shaft line, mea
 BALL_ALONG_RANGE = (-0.15, 0.90)  # ball position along the shaft beyond its lower endpoint, x segment length
                                   # (lower bound is tight: a bright glint UP the shaft must not pass as the ball)
 
+SHAFT_MIN_CONFIDENCE = 0.45    # below this the Hough shaft fit is untrusted -> NO plane line
+                               # (fail closed; never fall back to a ball->body construction)
 PLANE_MIN_CONFIDENCE = 0.45
 SPINE_MIN_CONFIDENCE = 0.40
 HEAD_MIN_CONFIDENCE = 0.35
+
+PLANE_BOTTOM_OVERSHOOT = 2.5   # x ball radius past the ball (min PLANE_BOTTOM_MIN_PX px)
+PLANE_BOTTOM_MIN_PX = 0.010    # x H
+PLANE_TOP_CLEARANCE = 0.55     # x head-circle radius above the ring's top = plane-line top end
+PLANE_EDGE_MARGIN = 0.01       # x W/H: rendered endpoints stay inside the frame by this margin
+SPINE_TOP_GAP = 1.18           # x head-circle radius: spine tip keeps this clearance from center
+SPINE_EXTEND_BEYOND_SHOULDER = 0.30   # base upward extension (x hip->shoulder), pre-clamp
+SPINE_EXTEND_NO_HEAD = 0.10           # conservative extension when no head circle to clamp against
+SPINE_MIN_EXTENT = 0.85               # x hip->shoulder: never clamp the spine shorter than this
+SPINE_EXTEND_BELOW_HIP = 0.08
 
 
 # ---------------------------------------------------------------------------
@@ -112,11 +134,17 @@ HEAD_MIN_CONFIDENCE = 0.35
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class MarkingStyle:
-    """Visual constants. One color per marking type; widths scale with frame width."""
+    """Visual constants. One color per marking type; widths scale with frame width.
 
-    plane_color: Tuple[int, int, int] = (255, 170, 51)    # amber
+    Palette rule: colors must be distinct from objects commonly IN a golf scene —
+    alignment sticks are orange/yellow (a real orange stick collided with the old amber
+    plane line), flags red/white, grass green. Magenta / teal / violet occur in none of
+    those, and are mutually distinct. The dark casing (halo) behind every stroke stays.
+    """
+
+    plane_color: Tuple[int, int, int] = (255, 45, 149)    # magenta  (never orange/yellow)
     spine_color: Tuple[int, int, int] = (46, 196, 182)    # teal
-    head_color: Tuple[int, int, int] = (255, 107, 107)    # coral
+    head_color: Tuple[int, int, int] = (170, 110, 255)    # violet
     stroke_alpha: int = 235
     halo_color: Tuple[int, int, int] = (10, 12, 14)       # near-black halo behind every stroke
     halo_alpha: int = 110
@@ -348,10 +376,15 @@ def _facing_direction(kps) -> Optional[str]:
 # Head circle (both views)
 # ---------------------------------------------------------------------------
 def _head_circle(kps, view_label: str, w: int, h: int) -> Tuple[Optional[Dict[str, float]], Optional[str]]:
-    """Circle around the head at address. Radius PROPORTIONAL to detected head size.
+    """Circle around the WHOLE head at address. Radius PROPORTIONAL to detected head size.
 
     face_on: r = HEAD_RADIUS_FACTOR_FACE_ON x inter-ear distance
     dtl:     r = HEAD_RADIUS_FACTOR_DTL x (visible eye -> visible ear) distance
+
+    The nose/eye/ear keypoints all sit on the FACE, i.e. low and (in profile) forward of
+    the skull's center — a circle on their centroid clips the cap crown and the occiput.
+    The center is therefore lifted by HEAD_CENTER_UP_SHIFT x r and, in profile views,
+    shifted HEAD_CENTER_BACK_SHIFT x r away from the nose toward the back of the head.
     Returns (marking|None, failure_reason|None).
     """
     head_names = ["nose", "left_eye", "right_eye", "left_ear", "right_ear"]
@@ -376,10 +409,22 @@ def _head_circle(kps, view_label: str, w: int, h: int) -> Tuple[Optional[Dict[st
     if not r_px or r_px <= 1:
         return None, "head size not measurable (no confident ear/eye pair)"
 
-    # Anatomical sanity gates (research §2.1): nose inside circle; diameter plausible vs torso.
-    nose_d = _dist_px(kps["nose"], {"x": cx, "y": cy, "score": 1}, w, h)
-    if nose_d > r_px:
-        return None, "sanity gate: nose outside candidate head circle"
+    # Lift the center off the face centroid toward the skull center: up always; back
+    # (away from the nose, toward the visible ear side) in non-face-on views.
+    cy -= HEAD_CENTER_UP_SHIFT * r_px / h
+    if view_label != "face_on":
+        ears = [n for n in ("left_ear", "right_ear") if _visible(kps, n)]
+        if ears:
+            back_dx = float(np.mean([kps[n]["x"] for n in ears])) - kps["nose"]["x"]
+            if abs(back_dx) > 1e-6:
+                cx += math.copysign(HEAD_CENTER_BACK_SHIFT * r_px / w, back_dx)
+
+    # Anatomical sanity gates (research §2.1): every confident face keypoint must sit
+    # inside the ring with margin; diameter plausible vs torso.
+    for n in vis:
+        d = _dist_px(kps[n], {"x": cx, "y": cy, "score": 1}, w, h)
+        if d > HEAD_KP_MAX_DIST * r_px:
+            return None, f"sanity gate: {n} outside candidate head circle (d/r {d / r_px:.2f})"
     torso = _dist_px(
         _mid(kps["left_shoulder"], kps["right_shoulder"]),
         _mid(kps["left_hip"], kps["right_hip"]), w, h)
@@ -396,7 +441,11 @@ def _head_circle(kps, view_label: str, w: int, h: int) -> Tuple[Optional[Dict[st
 # ---------------------------------------------------------------------------
 # Spine line (DTL only)
 # ---------------------------------------------------------------------------
-def _spine_line(kps, w: int, h: int) -> Tuple[Optional[Dict[str, float]], Optional[str]]:
+def _spine_line(kps, w: int, h: int,
+                head: Optional[Dict[str, float]] = None) -> Tuple[Optional[Dict[str, float]], Optional[str]]:
+    """Hip midpoint through shoulder midpoint. The top end is clamped to stop SHORT of
+    the jaw/head circle: with a head circle, the tip keeps SPINE_TOP_GAP x r clearance
+    from its center; without one, the extension past the shoulders stays conservative."""
     ls, rs, lh, rh = (kps[n] for n in ("left_shoulder", "right_shoulder", "left_hip", "right_hip"))
     conf = float(np.mean([p["score"] for p in (ls, rs, lh, rh)]))
     if conf < SPINE_MIN_CONFIDENCE:
@@ -406,9 +455,21 @@ def _spine_line(kps, w: int, h: int) -> Tuple[Optional[Dict[str, float]], Option
     dx, dy = sh_mid["x"] - hip_mid["x"], sh_mid["y"] - hip_mid["y"]
     if math.hypot(dx * w, dy * h) < 0.02 * max(w, h):
         return None, "torso too short for a spine line"
+
+    t_top = 1.0 + (SPINE_EXTEND_BEYOND_SHOULDER if head else SPINE_EXTEND_NO_HEAD)
+    if head:
+        # Largest t (down to SPINE_MIN_EXTENT of the torso) keeping the tip at least
+        # SPINE_TOP_GAP x r away from the head-circle center (px space) — the tip must
+        # stop short of the jaw even when the circle dips below the shoulder line.
+        hx, hy = hip_mid["x"] * w, hip_mid["y"] * h
+        dxp, dyp = dx * w, dy * h
+        cxp, cyp = head["cx"] * w, head["cy"] * h
+        min_gap = SPINE_TOP_GAP * head["r"] * w
+        while t_top > SPINE_MIN_EXTENT and math.hypot(hx + t_top * dxp - cxp, hy + t_top * dyp - cyp) < min_gap:
+            t_top -= 0.01
     return {
-        "x1": hip_mid["x"] - 0.08 * dx, "y1": hip_mid["y"] - 0.08 * dy,
-        "x2": hip_mid["x"] + 1.30 * dx, "y2": hip_mid["y"] + 1.30 * dy,
+        "x1": hip_mid["x"] - SPINE_EXTEND_BELOW_HIP * dx, "y1": hip_mid["y"] - SPINE_EXTEND_BELOW_HIP * dy,
+        "x2": hip_mid["x"] + t_top * dx, "y2": hip_mid["y"] + t_top * dy,
         "confidence": round(conf, 4),
     }, None
 
@@ -604,20 +665,60 @@ def _ball_confirms_shaft(ball, shaft, w, h) -> Tuple[bool, str]:
     return True, ""
 
 
-def _plane_line(kps, ball, w, h) -> Tuple[Optional[Dict[str, float]], Optional[str]]:
-    """Plane line: from the ball/hosel point up through the shoulder midpoint (DTL)."""
-    sh_mid = _mid(kps["left_shoulder"], kps["right_shoulder"])
-    if sh_mid["score"] < KP_MIN_SCORE:
-        return None, "shoulder keypoints not confident enough for plane line"
-    bx, by = ball["x"], ball["y"]
-    dx, dy = sh_mid["x"] - bx, sh_mid["y"] - by
-    if math.hypot(dx * w, dy * h) < 0.05 * max(w, h):
-        return None, "ball and shoulders too close for a stable plane line"
-    conf = float(min(ball["confidence"], sh_mid["score"] / 0.45))
-    conf = min(1.0, conf)
+def _plane_line(shaft, ball, head, kps, w, h) -> Tuple[Optional[Dict[str, float]], Optional[str]]:
+    """Plane line (DTL): the DETECTED SHAFT's own direction, anchored at the detected ball.
+
+    The line's angle IS the Hough shaft segment's angle — never a ball->body construction
+    (a ball->shoulder line measured 13-16 deg steeper than the real shaft on eval).
+    Extent is clamped: bottom end just past the ball (never through the clubhead into the
+    mat), top end just above head height (never into sky/roof), and both ends inside the
+    frame with PLANE_EDGE_MARGIN. The caller has already gated shaft confidence.
+    """
+    # Shaft direction, hands-ward (upward): endpoint 1 is the upper/hands end by contract.
+    sdx = (shaft["x1"] - shaft["x2"]) * w
+    sdy = (shaft["y1"] - shaft["y2"]) * h
+    seg_len = math.hypot(sdx, sdy)
+    if seg_len < 1:
+        return None, "shaft segment degenerate"
+    ux, uy = sdx / seg_len, sdy / seg_len
+    if uy >= -1e-3:
+        return None, "shaft direction not upward"
+
+    bx, by = ball["x"] * w, ball["y"] * h
+    r_ball = ball["r"] * w
+
+    # Bottom end: just past the ball, opposite the hands-ward direction (clamped in-frame).
+    t_bot = -max(PLANE_BOTTOM_OVERSHOOT * r_ball, PLANE_BOTTOM_MIN_PX * h)
+    t_bot = max(t_bot, ((1.0 - PLANE_EDGE_MARGIN) * h - by) / uy)  # uy < 0: y <= 1-margin
+    if ux > 0:
+        t_bot = max(t_bot, (PLANE_EDGE_MARGIN * w - bx) / ux)
+    elif ux < 0:
+        t_bot = max(t_bot, ((1.0 - PLANE_EDGE_MARGIN) * w - bx) / ux)
+
+    # Top end: just above head height.
+    if head:
+        top_y = (head["cy"] * h - head["r"] * w) - PLANE_TOP_CLEARANCE * head["r"] * w
+    else:
+        vis_head = [n for n in ("nose", "left_eye", "right_eye", "left_ear", "right_ear")
+                    if _visible(kps, n)]
+        if not vis_head:
+            return None, "no head reference to bound the plane line's top end"
+        top_y = min(kps[n]["y"] for n in vis_head) * h - 0.05 * h
+    t_top = (top_y - by) / uy  # uy < 0, top_y < by  =>  t_top > 0
+    # Keep the top end inside the frame (with margin); the x-clamp trims a shallow line
+    # that would exit the frame side before reaching head height.
+    if ux < 0:
+        t_top = min(t_top, (PLANE_EDGE_MARGIN * w - bx) / ux)
+    elif ux > 0:
+        t_top = min(t_top, ((1.0 - PLANE_EDGE_MARGIN) * w - bx) / ux)
+    t_top = min(t_top, (PLANE_EDGE_MARGIN * h - by) / uy)  # uy < 0: y >= margin
+    if t_top < 0.10 * h:
+        return None, "clamped plane line degenerate (top end reaches no higher than the ball)"
+
+    conf = float(min(1.0, min(shaft["confidence"], ball["confidence"])))
     return {
-        "x1": bx - 0.06 * dx, "y1": by - 0.06 * dy,     # start a touch beyond the ball
-        "x2": bx + 1.55 * dx, "y2": by + 1.55 * dy,     # extend well past the shoulders
+        "x1": (bx + t_bot * ux) / w, "y1": (by + t_bot * uy) / h,   # bottom: just past the ball
+        "x2": (bx + t_top * ux) / w, "y2": (by + t_top * uy) / h,   # top: just above the head
         "confidence": round(conf, 4),
     }, None
 
@@ -673,7 +774,7 @@ def analyze_setup(address_frame_path: str) -> SetupGeometry:
         for m in ("spine_line", "plane_line"):
             failures.append({"marking": m, "reason": f"view={view['label']}: {m} is DTL-only"})
     else:
-        spine, why = _spine_line(kps, w, h)
+        spine, why = _spine_line(kps, w, h, markings.get("head_circle"))
         if spine:
             markings["spine_line"] = spine
         else:
@@ -690,6 +791,12 @@ def analyze_setup(address_frame_path: str) -> SetupGeometry:
             shaft, why = _detect_shaft(gray, kps, facing, w, h)
             if shaft is None:
                 failures.append({"marking": "plane_line", "reason": f"shaft not detected: {why}"})
+            elif shaft["confidence"] < SHAFT_MIN_CONFIDENCE:
+                # FAIL CLOSED: an untrusted shaft fit withholds the plane line outright —
+                # never a ball->body fallback (measured 13-16 deg off the real shaft).
+                failures.append({"marking": "plane_line",
+                                 "reason": f"shaft fit low-confidence ({shaft['confidence']:.2f} < "
+                                           f"{SHAFT_MIN_CONFIDENCE}) — plane line withheld, no fallback"})
             else:
                 lx, ly = shaft["x2"] * w, shaft["y2"] * h  # lower (clubhead-side) endpoint
                 shaft_len = math.hypot((shaft["x2"] - shaft["x1"]) * w, (shaft["y2"] - shaft["y1"]) * h)
@@ -706,7 +813,7 @@ def analyze_setup(address_frame_path: str) -> SetupGeometry:
                     failures.append({"marking": "plane_line",
                                      "reason": f"no ball confirmed at clubhead — refusing to guess ({reject_why})"})
                 else:
-                    plane, why = _plane_line(kps, ball, w, h)
+                    plane, why = _plane_line(shaft, ball, markings.get("head_circle"), kps, w, h)
                     if plane and plane["confidence"] >= PLANE_MIN_CONFIDENCE:
                         markings["plane_line"] = plane
                     elif plane:

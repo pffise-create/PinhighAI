@@ -1,6 +1,15 @@
 # Swing Marking Tool — `AWS/src/marking/swing_marker.py`
 
-**Version:** `marker_version 1.0.0` · **Built:** 2026-08-02 · Requirement: `docs/backlog/swing-marking-tool.md` · Research: `docs/marking-research-2026-08-02.md`
+**Version:** `marker_version 2.0.0` · **Built:** 2026-08-02 · Requirement: `docs/backlog/swing-marking-tool.md` · Research: `docs/marking-research-2026-08-02.md`
+
+> v2.0.0 (strict-eval fixes): the plane line now carries the **detected Hough shaft's own
+> angle** anchored at the detected ball (v1's ball→shoulder construction measured 13–16°
+> steeper than the real shaft on all three DTL eval sessions); a low-confidence shaft fit
+> withholds the plane line outright — there is no ball→body fallback. Plane-line extent is
+> clamped (just past the ball → just above head height, inside the frame). Head circle
+> enlarged and re-centered to enclose the whole head (cap crown + occiput). Spine tip
+> clamped short of the head circle. Plane color changed amber → magenta after a collision
+> with a real orange alignment stick in-scene.
 
 ## How it works
 
@@ -11,13 +20,16 @@ All geometry is computed **once per swing** from the address frame (frame 1) and
 3. **View classification** — `spread_ratio` = mean(shoulder, hip x-spread) / torso length. ≥ 0.42 ⇒ `face_on`, ≤ 0.30 ⇒ `dtl`, between ⇒ ambiguous (view-gated markings withheld below confidence 0.5). Fixture results: face-on 0.50, DTL 0.03 / 0.03 / 0.21 — the bands are wide.
 4. **DTL only: shaft** — `cv2.HoughLinesP` in a wrist-anchored ROI on the facing side; segments gated on angle (20–80° from horizontal), direction, and upper-endpoint proximity to the hands.
 5. **DTL only: ball** — bright-blob detection (max-RGB-channel, catches white and yellow balls) near the shaft's clubhead end; multi-threshold sweep + eroded-mask pass (splits ball⇄clubhead-glint bridges); blobs gated on area, aspect, fill, contour circularity, brightness margin. Candidates are score-ranked and the first that **mutually confirms** against the shaft line (on-line within an angular tolerance fanned from the hands anchor, and within `[-0.15, 0.90]`×segment-length of the clubhead end) becomes the plane-line origin. No confirmed ball ⇒ **no plane line**.
-6. **Markings** — head circle (both views; radius ∝ detected head size: 0.75×inter-ear face-on, 1.4×eye-ear DTL — never fixed pixels), spine line (DTL; hip-mid → shoulder-mid, extended), plane line (DTL; ball → shoulder-mid, extended past the shoulders).
+6. **Markings**
+   - **Head circle** (both views) — radius ∝ detected head size (0.92×inter-ear face-on, 1.8×eye-ear DTL — never fixed pixels). The face keypoints sit low/forward on the skull, so the center is lifted 0.34×r above the face centroid and (DTL) shifted 0.26×r from the nose toward the occiput — the ring encloses the whole head including cap crown and back of head. Sanity gate: every confident face keypoint must sit inside 0.92×r.
+   - **Spine line** (DTL) — hip-mid → shoulder-mid; the top end is clamped so the tip keeps ≥1.18×r clearance from the head-circle center (down to 0.85× torso extent) — it stops short of the jaw/ring.
+   - **Plane line** (DTL) — the **detected shaft segment's own direction, anchored at the detected ball**. The angle IS the Hough fit's angle; the shoulder midpoint plays no part. Extent clamps: bottom end just past the ball (max(2.5×ball-r, 1% H) — never through the clubhead into the mat), top end just above head height (0.55×head-r above the ring's top — never into sky/roof), both ends ≥1% inside the frame. Shaft confidence < 0.45 ⇒ plane line withheld with a recorded reason — **no ball→body fallback exists**.
 
 ## Geometry JSON schema (deterministic: sorted keys, 6-decimal floats)
 
 ```jsonc
 {
-  "marker_version": "1.0.0",
+  "marker_version": "2.0.0",
   "frame_width": 1080, "frame_height": 1920,     // coords normalized by these (r by width)
   "keypoints": {"nose": {"x": 0.42, "y": 0.32, "score": 0.45}, ...},   // all 17
   "view": {"label": "dtl|face_on|unknown", "confidence": 0.9, "spread_ratio": 0.03},
@@ -35,12 +47,14 @@ All geometry is computed **once per swing** from the address frame (frame 1) and
 
 ## Visual style (`MarkingStyle`)
 
+Palette rule: colors must be distinct from objects commonly in a golf scene — alignment sticks are orange/yellow (a real orange stick collided with v1's amber plane line), flags red/white, grass green. Magenta/teal/violet occur in none of those and are mutually distinct. One color per marking type, everywhere.
+
 | Constant | Value | Purpose |
 |---|---|---|
-| `plane_color` | `#FFAA33` amber | one color per marking type, everywhere |
+| `plane_color` | `#FF2D95` magenta | never orange/yellow (alignment-stick colors) |
 | `spine_color` | `#2EC4B6` teal | |
-| `head_color` | `#FF6B6B` coral, ring only | never a filled blob |
-| `halo` | `#0A0C0E` @ alpha 110, 1.9× stroke width | reads on grass, sky, mats, concrete |
+| `head_color` | `#AA6EFF` violet, ring only | never a filled blob |
+| `halo` | `#0A0C0E` @ alpha 110, 1.9× stroke width | reads on grass, sky, mats, concrete (eval-praised; kept) |
 | `line_width_ratio` | 0.006 × frame width (min 2 px) | weight scales with resolution |
 | `supersample` | 3× draw + LANCZOS downsample | anti-aliasing; round caps drawn explicitly |
 
@@ -52,13 +66,13 @@ A wrong marking is worse than no marking; every gate below withholds rather than
 
 - **Everything** — no/garbage person (low pose confidence, implausible layout, degenerate torso); ambiguous camera view.
 - **Plane + spine** — view is `face_on` (DTL-only markings).
-- **Plane line** — facing direction undeterminable; OpenCV missing; no plausible shaft segment; no compact bright ball blob; shaft and ball disagree (off-line or a glint up the shaft). Known real case: cluttered/low-contrast lies (research §4.2).
-- **Head circle** — <3 confident head keypoints; no measurable ear/eye pair; nose outside candidate circle; head-diameter/torso ratio outside [0.22, 0.90] (catches cap/visor keypoint displacement).
+- **Plane line** — facing direction undeterminable; OpenCV missing; no plausible shaft segment; **Hough shaft fit below confidence 0.45** (an untrusted fit is withheld — never replaced with a ball→body construction); no compact bright ball blob; shaft and ball disagree (off-line or a glint up the shaft); clamped line degenerate; no head reference to bound the top end. Known real case: cluttered/low-contrast lies (research §4.2).
+- **Head circle** — <3 confident head keypoints; no measurable ear/eye pair; any confident face keypoint outside 0.92×r of the candidate circle; head-diameter/torso ratio outside [0.22, 1.05] (catches cap/visor keypoint displacement).
 - **`mark_swing` skips frames** that are unreadable or whose dimensions differ from the address frame (geometry from one camera must not be rescaled onto another).
 
 ## Tests
 
-`AWS/src/marking/test_swing_marker.py` (13 tests, plain `unittest`, run with the dev venv python + `SWING_MARKER_MODEL_PATH` / `SWING_MARKER_FIXTURES` env): pixel-stability (byte-identical overlay across frames + marked-frame recomposition equality + single-geometry assertion), fail-closed on noise, head-radius proportionality (2× head ⇒ 2× radius; cross-session radii diverge >1.5×), view classification on all four real fixture sessions, determinism (byte-identical JSON on repeat), JSON roundtrip + versioning.
+`AWS/src/marking/test_swing_marker.py` (21 tests, plain `unittest`, run with the dev venv python + `SWING_MARKER_MODEL_PATH` / `SWING_MARKER_FIXTURES` env): pixel-stability (byte-identical overlay across frames + marked-frame recomposition equality + single-geometry assertion), fail-closed on noise **and on a low-confidence shaft fit (no fallback)**, plane-line accuracy (angle equals the detected shaft's angle within 0.75°; matches the eval-measured visible shaft angle per DTL fixture within 6°; line passes through the detected ball), plane-line clamped bounds (endpoints in-frame, bottom just past the ball, top at head height; line never crosses the head circle), head circle contains every confident face keypoint with margin, spine tip clears the head circle, head-radius proportionality (2× head ⇒ 2× radius; cross-session radii diverge >1.5×), view classification on all four real fixture sessions, determinism (byte-identical JSON on repeat), JSON roundtrip + versioning.
 
 ## Production packaging (per research §3)
 

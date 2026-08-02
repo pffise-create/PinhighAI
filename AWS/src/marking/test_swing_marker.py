@@ -13,7 +13,13 @@ Env vars:
 
 Covers the acceptance criteria from docs/backlog/swing-marking-tool.md:
   - pixel stability: identical geometry rendered on every frame, pixel-identical overlay
-  - fail closed: garbage input yields failures and zero markings
+  - fail closed: garbage input yields failures and zero markings; a low-confidence Hough
+    shaft fit withholds the plane line (never a ball->body fallback)
+  - plane-line angle equals the DETECTED SHAFT angle, and matches the eval-measured
+    visible shaft angle per DTL fixture
+  - plane-line endpoints stay within the clamped bounds (just past the ball -> just
+    above head height, inside the frame) and clear of the head circle
+  - head circle contains every confident face keypoint with margin
   - head-circle radius proportional to detected head size, never fixed pixels
   - view classification on the real fixture sessions
   - determinism: same input twice -> byte-identical geometry JSON
@@ -21,6 +27,7 @@ Covers the acceptance criteria from docs/backlog/swing-marking-tool.md:
 
 import glob
 import json
+import math
 import os
 import sys
 import tempfile
@@ -41,6 +48,20 @@ FIXTURE_VIEWS = {
     "1771739449202-rcj3uo": "dtl",
     "1780460609209-q55bgd": "dtl",
 }
+
+# Visible shaft angle at address (deg from horizontal), measured against the actual
+# shaft pixels during the 2026-08 strict eval. The rendered plane line must track these.
+FIXTURE_SHAFT_ANGLES = {
+    "1760076117023-e7ofx7": 54.0,
+    "1771739449202-rcj3uo": 46.0,
+    "1780460609209-q55bgd": 62.0,
+}
+SHAFT_ANGLE_TOL_DEG = 6.0
+
+
+def _line_angle_deg(m, w, h):
+    """Angle from horizontal (deg, positive) of a line marking in pixel space."""
+    return math.degrees(math.atan2(abs(m["y2"] - m["y1"]) * h, abs(m["x2"] - m["x1"]) * w))
 
 
 def _fixture_sessions():
@@ -226,6 +247,177 @@ class TestViewClassification(unittest.TestCase):
             withheld = {f["marking"] for f in geo.failures}
             self.assertIn("spine_line", withheld)
             self.assertIn("plane_line", withheld)
+
+
+class TestPlaneLineAccuracy(unittest.TestCase):
+    """The plane line must BE the detected shaft's direction anchored at the ball —
+    the eval failed the old ball->shoulder construction at 13-16 deg off the shaft."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.geos = {name: sm.analyze_setup(frames[0]) for name, frames in SESSIONS.items()
+                    if FIXTURE_VIEWS.get(name) == "dtl"}
+
+    @needs_fixtures
+    def test_plane_angle_equals_detected_shaft_angle(self):
+        checked = 0
+        for name, geo in self.geos.items():
+            plane = geo.markings.get("plane_line")
+            if not plane:
+                continue  # a withheld plane line is legal (fail closed); accuracy is tested when drawn
+            self.assertIsNotNone(geo.shaft, f"{name}: plane line rendered without a detected shaft")
+            w, h = geo.frame_width, geo.frame_height
+            self.assertAlmostEqual(
+                _line_angle_deg(plane, w, h), _line_angle_deg(geo.shaft, w, h), delta=0.75,
+                msg=f"{name}: plane line does not carry the detected shaft's angle")
+            checked += 1
+        self.assertGreater(checked, 0, "no DTL fixture rendered a plane line — nothing verified")
+
+    @needs_fixtures
+    def test_plane_angle_matches_visible_shaft_ground_truth(self):
+        for name, geo in self.geos.items():
+            plane = geo.markings.get("plane_line")
+            expected = FIXTURE_SHAFT_ANGLES.get(name)
+            if not plane or expected is None:
+                continue
+            got = _line_angle_deg(plane, geo.frame_width, geo.frame_height)
+            self.assertAlmostEqual(
+                got, expected, delta=SHAFT_ANGLE_TOL_DEG,
+                msg=f"{name}: plane line at {got:.1f} deg vs visible shaft {expected:.1f} deg")
+
+    @needs_fixtures
+    def test_plane_line_anchored_at_ball(self):
+        for name, geo in self.geos.items():
+            plane = geo.markings.get("plane_line")
+            if not plane:
+                continue
+            w, h = geo.frame_width, geo.frame_height
+            bx, by = geo.ball["x"] * w, geo.ball["y"] * h
+            x1, y1 = plane["x1"] * w, plane["y1"] * h
+            x2, y2 = plane["x2"] * w, plane["y2"] * h
+            ux, uy = x2 - x1, y2 - y1
+            seg = math.hypot(ux, uy)
+            perp = abs((bx - x1) * uy / seg - (by - y1) * ux / seg)
+            self.assertLess(perp, 1.5, f"{name}: plane line does not pass through the detected ball")
+
+    @needs_fixtures
+    def test_low_confidence_shaft_fails_closed_no_fallback(self):
+        """An untrusted Hough fit must withhold the plane line — never ball->body."""
+        name, frames = _dtl_session()
+        real_detect = sm._detect_shaft
+
+        def low_conf_detect(gray, kps, facing, w, h):
+            shaft, why = real_detect(gray, kps, facing, w, h)
+            if shaft:
+                shaft = dict(shaft, confidence=sm.SHAFT_MIN_CONFIDENCE - 0.05)
+            return shaft, why
+
+        sm._detect_shaft = low_conf_detect
+        try:
+            geo = sm.analyze_setup(frames[0])
+        finally:
+            sm._detect_shaft = real_detect
+        self.assertNotIn("plane_line", geo.markings,
+                         f"{name}: plane line rendered from a low-confidence shaft fit")
+        reasons = [f["reason"] for f in geo.failures if f["marking"] == "plane_line"]
+        self.assertTrue(reasons and "low-confidence" in reasons[0],
+                        f"{name}: expected a recorded low-confidence-shaft failure, got {geo.failures}")
+
+
+class TestPlaneLineClampedBounds(unittest.TestCase):
+    """Rendered plane-line endpoints must stay within the clamped extent: bottom at/just
+    past the ball (not into the mat), top just above head height (not into sky/roof)."""
+
+    @needs_fixtures
+    def test_endpoints_within_clamped_bounds(self):
+        checked = 0
+        for name, frames in SESSIONS.items():
+            geo = sm.analyze_setup(frames[0])
+            plane = geo.markings.get("plane_line")
+            if not plane:
+                continue
+            w, h = geo.frame_width, geo.frame_height
+            # Inside the frame (with the edge margin, plus float slack).
+            for x, y in ((plane["x1"], plane["y1"]), (plane["x2"], plane["y2"])):
+                self.assertGreaterEqual(x, sm.PLANE_EDGE_MARGIN - 1e-4, name)
+                self.assertLessEqual(x, 1 - sm.PLANE_EDGE_MARGIN + 1e-4, name)
+                self.assertGreaterEqual(y, sm.PLANE_EDGE_MARGIN - 1e-4, name)
+                self.assertLessEqual(y, 1 - sm.PLANE_EDGE_MARGIN + 1e-4, name)
+            # Bottom end: just past the ball, never further.
+            max_over = max(sm.PLANE_BOTTOM_OVERSHOOT * geo.ball["r"] * w, sm.PLANE_BOTTOM_MIN_PX * h)
+            d_ball = math.hypot((plane["x1"] - geo.ball["x"]) * w, (plane["y1"] - geo.ball["y"]) * h)
+            self.assertLessEqual(d_ball, max_over + 0.5,
+                                 f"{name}: bottom end {d_ball:.1f}px from the ball (max {max_over:.1f})")
+            self.assertGreaterEqual(plane["y1"], geo.ball["y"] - 1e-6,
+                                    f"{name}: bottom end sits above the ball")
+            # Top end: at/above the head circle's top region — never below the shoulders,
+            # and (unless clamped at a frame edge) not more than ~2 head radii above the ring.
+            hc = geo.markings.get("head_circle")
+            if hc:
+                head_top_y = hc["cy"] - hc["r"] * w / h
+                at_edge = plane["x2"] <= sm.PLANE_EDGE_MARGIN + 1e-4 or plane["y2"] <= sm.PLANE_EDGE_MARGIN + 1e-4
+                if not at_edge:
+                    self.assertLessEqual(plane["y2"], head_top_y + 1e-3,
+                                         f"{name}: top end below head height")
+                    self.assertGreaterEqual(plane["y2"], head_top_y - 2.0 * hc["r"] * w / h,
+                                            f"{name}: top end far above the head (sky/roof)")
+            checked += 1
+        self.assertGreater(checked, 0)
+
+    @needs_fixtures
+    def test_plane_line_does_not_cross_head_circle(self):
+        for name, frames in SESSIONS.items():
+            geo = sm.analyze_setup(frames[0])
+            plane, hc = geo.markings.get("plane_line"), geo.markings.get("head_circle")
+            if not plane or not hc:
+                continue
+            w, h = geo.frame_width, geo.frame_height
+            x1, y1, x2, y2 = plane["x1"] * w, plane["y1"] * h, plane["x2"] * w, plane["y2"] * h
+            cx, cy, r = hc["cx"] * w, hc["cy"] * h, hc["r"] * w
+            dx, dy = x2 - x1, y2 - y1
+            t = max(0.0, min(1.0, ((cx - x1) * dx + (cy - y1) * dy) / (dx * dx + dy * dy)))
+            d = math.hypot(x1 + t * dx - cx, y1 + t * dy - cy)
+            self.assertGreater(d, r, f"{name}: plane line crosses the head circle (d {d:.0f} <= r {r:.0f})")
+
+
+class TestHeadCircleContainsFaceKeypoints(unittest.TestCase):
+    """The circle must enclose the whole head: every confident face keypoint sits
+    inside the ring with margin, on every fixture that renders a head circle."""
+
+    @needs_fixtures
+    def test_face_keypoints_inside_ring_with_margin(self):
+        checked = 0
+        for name, frames in SESSIONS.items():
+            geo = sm.analyze_setup(frames[0])
+            hc = geo.markings.get("head_circle")
+            if not hc:
+                continue
+            w, h = geo.frame_width, geo.frame_height
+            r_px = hc["r"] * w
+            for n in ("nose", "left_eye", "right_eye", "left_ear", "right_ear"):
+                kp = geo.keypoints[n]
+                if kp["score"] < sm.KP_MIN_SCORE:
+                    continue
+                d = math.hypot((kp["x"] - hc["cx"]) * w, (kp["y"] - hc["cy"]) * h)
+                self.assertLessEqual(
+                    d, sm.HEAD_KP_MAX_DIST * r_px,
+                    f"{name}: {n} at {d / r_px:.2f}r — head circle does not enclose the face with margin")
+            checked += 1
+        self.assertGreaterEqual(checked, 2)
+
+
+class TestSpineLineClearsHead(unittest.TestCase):
+    @needs_fixtures
+    def test_spine_top_end_stops_short_of_head_circle(self):
+        for name, frames in SESSIONS.items():
+            geo = sm.analyze_setup(frames[0])
+            spine, hc = geo.markings.get("spine_line"), geo.markings.get("head_circle")
+            if not spine or not hc:
+                continue
+            w, h = geo.frame_width, geo.frame_height
+            d = math.hypot((spine["x2"] - hc["cx"]) * w, (spine["y2"] - hc["cy"]) * h)
+            self.assertGreaterEqual(d, hc["r"] * w,
+                                    f"{name}: spine tip intrudes into the head circle")
 
 
 class TestDeterminism(unittest.TestCase):
