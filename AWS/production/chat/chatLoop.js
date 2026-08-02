@@ -6,6 +6,16 @@ const {
   buildDeveloperContext,
   buildChatResponseContractPrompt,
 } = require('../prompts/coachingSystemPrompt');
+const swingMemory = require('../memory/swingMemory');
+const { detectAssertion } = require('../memory/prescriptionGuard');
+// Coaching memory: retrieval + prescription guard + visual-comparison planning.
+// Beat the prior recency-window context 170-125 across 9 probes
+// (docs/memory-head-to-head-2026-08-02.md). Disable to fall back.
+const SWING_MEMORY_ENABLED = process.env.SWING_MEMORY_ENABLED !== 'false';
+// Full-history reranking only pays for itself when the question reaches into
+// the past; a wide fetch on every turn would add ~1s and megabytes of frame
+// metadata to routine questions.
+const HISTORY_SWINGS_WIDE = Math.max(10, parseInt(process.env.MAX_HISTORY_SWINGS || '80', 10));
 const CHAT_MODEL = process.env.CHAT_LOOP_MODEL || 'gpt-4o-mini';
 const MAX_TOOL_ITERATIONS = parseInt(process.env.CHAT_LOOP_MAX_TOOL_RUNS || '2', 10);
 const TOOL_TIMEOUT_MS = parseInt(process.env.CHAT_LOOP_TOOL_TIMEOUT_MS || '8000', 10);
@@ -405,7 +415,7 @@ async function runChatCompletionLoop({ messages, userId, dynamoClient, requestOp
   throw new Error('Chat loop exceeded maximum tool iterations');
 }
 
-async function executeChatLoop({ userId, userMessage, dynamoClient, requestOpenAi, logger, visualQuestionTool }) {
+async function executeChatLoop({ userId, userMessage, dynamoClient, requestOpenAi, logger, visualQuestionTool, comparisonFrameLoader }) {
   if (!userMessage || !userMessage.trim()) {
     throw new Error('User message is required');
   }
@@ -481,9 +491,23 @@ async function executeChatLoop({ userId, userMessage, dynamoClient, requestOpenA
   }
 
   const recentTurns = await chatRepository.getRecentTurns({ userId, client: dynamoClient });
+
+  // Widen the history fetch only when the message actually reaches into the
+  // past — a comparison, or a claim about what was previously advised.
+  // detectComparativeIntent returns an object even when it finds nothing, so
+  // read the flag — truthiness of the object itself is always true.
+  const comparativeIntent = SWING_MEMORY_ENABLED
+    ? swingMemory.detectComparativeIntent(message)
+    : null;
+  const reachesIntoPast = SWING_MEMORY_ENABLED
+    && (comparativeIntent?.comparative === true || !!detectAssertion(message));
+  const swingLimit = reachesIntoPast
+    ? HISTORY_SWINGS_WIDE
+    : (responseMode === 'swing_comparison' ? 3 : 2);
+
   const swings = await swingRepository.getLastAnalyzedSwings({
     userId,
-    limit: responseMode === 'swing_comparison' ? 3 : 2,
+    limit: swingLimit,
     client: dynamoClient,
   });
   const swingProfileRecord = await swingProfileRepository.getProfile({ userId, client: dynamoClient });
@@ -491,12 +515,40 @@ async function executeChatLoop({ userId, userMessage, dynamoClient, requestOpenA
     ? Object.fromEntries(Object.entries(swingProfileRecord).filter(([key]) => key !== 'user_id'))
     : null;
 
-  const developerContext = buildDeveloperContext({
-    swings,
-    swingProfile,
-    includeSummaries: true,
-    includeVisualObservations: true,
-  });
+  let developerContext;
+  let comparisonPlan = null;
+  if (SWING_MEMORY_ENABLED) {
+    try {
+      const memory = swingMemory.buildSwingMemory({
+        question: message,
+        currentSwing: swings[0] || null,
+        swings,
+        chatTurns: recentTurns,
+        swingProfile,
+      });
+      developerContext = memory.context;
+      comparisonPlan = memory.comparisonPlan;
+      safeLog.info?.('SWING_MEMORY', {
+        userId,
+        swingsFetched: swings.length,
+        reachesIntoPast,
+        guard: memory.verification ? memory.verification.found : null,
+        comparisonPlanned: !!(comparisonPlan && comparisonPlan.needed),
+      });
+    } catch (error) {
+      // Memory assembly must never take down chat; fall back to the prior context.
+      safeLog.error?.('SWING_MEMORY_ERROR', error?.message || error);
+      developerContext = null;
+    }
+  }
+  if (!developerContext) {
+    developerContext = buildDeveloperContext({
+      swings,
+      swingProfile,
+      includeSummaries: true,
+      includeVisualObservations: true,
+    });
+  }
   const loadedVideoContext = buildLoadedVideoContext({ swings, responseMode });
   const responseModeInstruction = buildResponseModeInstruction(responseMode);
 
@@ -507,6 +559,40 @@ async function executeChatLoop({ userId, userMessage, dynamoClient, requestOpenA
     { role: 'system', content: `Response mode: ${responseMode}. ${responseModeInstruction}` },
     ...toAssistantMessages(recentTurns),
   ];
+
+  // Visual comparison: when the memory layer planned a then-vs-now comparison,
+  // attach the actual frames. The direction of change must come from the model
+  // looking at these images — never from a stored score.
+  if (comparisonPlan && comparisonPlan.needed && typeof comparisonFrameLoader === 'function') {
+    try {
+      const groups = await comparisonFrameLoader(comparisonPlan);
+      const parts = [];
+      for (const group of (groups || [])) {
+        if (!group?.images?.length) continue;
+        parts.push({ type: 'text', text: `--- ${group.label}${group.date ? ` (${group.date})` : ''} ---` });
+        for (const image of group.images) {
+          parts.push({ type: 'image_url', image_url: { url: image } });
+        }
+      }
+      if (parts.length) {
+        baseMessages.push({
+          role: 'system',
+          content: 'Frames from an earlier swing and the current swing are attached for comparison. '
+            + 'Judge any change ONLY from what you can see in these images. If the views are not '
+            + 'comparable or the needed moment is missing, say so and state what to capture instead.',
+        });
+        baseMessages.push({ role: 'user', content: parts });
+        safeLog.info?.('SWING_MEMORY_COMPARISON_ATTACHED', {
+          userId,
+          groups: groups.length,
+          images: parts.filter((p) => p.type === 'image_url').length,
+        });
+      }
+    } catch (error) {
+      // A failed comparison must degrade to a text answer, not a failed turn.
+      safeLog.warn?.('SWING_MEMORY_COMPARISON_FAILED', error?.message || error);
+    }
+  }
 
   const result = await runChatCompletionLoop({
     messages: baseMessages,

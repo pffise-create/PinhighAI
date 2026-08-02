@@ -7,7 +7,11 @@ const { DynamoDBDocumentClient, QueryCommand, GetCommand } = require('@aws-sdk/l
 const ANALYSES_TABLE = process.env.DYNAMODB_TABLE || 'golf-coach-analyses';
 const USER_ANALYSES_INDEX = process.env.USER_ANALYSES_INDEX || 'user-timestamp-index';
 const DEFAULT_RECENT_LIMIT = 2;
-const MAX_RECENT_LIMIT = 10;
+// Coaching memory (AWS/src/memory/swingMemory.js) reranks the whole history
+// rather than taking the newest N, so a 10-swing cap silently truncated
+// "compare this to my first video" to the last few weeks. Raised for the
+// memory path; callers that only need recent swings still pass small limits.
+const MAX_RECENT_LIMIT = Math.max(10, parseInt(process.env.MAX_HISTORY_SWINGS || '80', 10));
 const ANALYZED_STATUSES = new Set(['AI_COMPLETED', 'COMPLETED']);
 
 let sharedDocumentClient = null;
@@ -159,7 +163,9 @@ async function getLastAnalyzedSwings({ userId, limit = DEFAULT_RECENT_LIMIT, cli
       ':userId': userId,
     },
     ScanIndexForward: false,
-    Limit: Math.max(requestedLimit * 3, requestedLimit),
+    // Over-fetch to survive status filtering, but cap the overshoot — at a
+    // large requestedLimit a flat 3x pulls megabytes of frame metadata.
+    Limit: Math.min(Math.max(requestedLimit * 3, requestedLimit), requestedLimit + 40),
   });
 
   const response = await documentClient.send(query);

@@ -454,6 +454,7 @@ async function handleChatLoopRequest(event, userContext) {
     requestOpenAi,
     logger,
     visualQuestionTool: answerVisualQuestionWithFrames,
+    comparisonFrameLoader: loadComparisonFrames,
   });
 
   return {
@@ -1078,3 +1079,36 @@ exports.__private = {
   getGpt5Minor,
   applyModelSpecificControls,
 };
+
+// Loads the frames named by swingMemory's visual-comparison plan so the model
+// can judge change by looking, rather than from any stored score.
+// Returns [{ label, date, images: [dataUrl] }]; failures degrade to fewer
+// groups (chatLoop falls back to a text-only answer when nothing loads).
+async function loadComparisonFrames(plan) {
+  if (!plan || !plan.needed) return [];
+  const groups = [
+    { label: 'EARLIER SWING', swing: plan.priorSwing, frames: plan.priorFrames },
+    { label: 'CURRENT SWING', swing: plan.currentSwing, frames: plan.currentFrames },
+  ];
+  const loaded = [];
+  for (const group of groups) {
+    const frames = Array.isArray(group.frames) ? group.frames : [];
+    const images = [];
+    for (const frame of frames.slice(0, CHAT_VISUAL_TOOL_MAX_FRAMES)) {
+      const url = frame?.url || frame?.frame_url || frame?.image_url;
+      if (!url) continue;
+      try {
+        const payload = await downloadFrameAsDataUrl(url);
+        images.push(payload.dataUrl);
+      } catch (error) {
+        console.warn('COMPARISON_FRAME_DOWNLOAD_FAILED', group.label, error.message);
+      }
+    }
+    if (images.length) {
+      const captured = group.swing?.capturedAt || group.swing?.captured_at || null;
+      loaded.push({ label: group.label, date: captured ? String(captured).slice(0, 10) : null, images });
+    }
+  }
+  // A one-sided comparison is misleading; require both halves.
+  return loaded.length === 2 ? loaded : [];
+}
