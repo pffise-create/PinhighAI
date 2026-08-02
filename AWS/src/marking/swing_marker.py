@@ -66,7 +66,7 @@ except ImportError:  # pragma: no cover
     cv2 = None
     _HAS_CV2 = False
 
-MARKER_VERSION = "2.0.0"
+MARKER_VERSION = "2.1.0"
 
 MODEL_FILENAME = "movenet_singlepose_thunder_f16.tflite"
 MODEL_SHA256 = "41641538679ec79b07d4101e591dda47d098c09af29607674b2a40b8a3798dd3"
@@ -89,8 +89,14 @@ VIEW_FACE_ON_MIN = 0.42        # body-spread ratio at/above which the view is fa
 VIEW_DTL_MAX = 0.30            # body-spread ratio at/below which the view is down-the-line
 VIEW_MIN_CONFIDENCE = 0.50     # below this, view-gated markings (plane/spine) are withheld
 
-HEAD_RADIUS_FACTOR_FACE_ON = 0.92   # r = 0.92 x inter-ear distance      (research §2.1, enlarged
+HEAD_RADIUS_FACTOR_FACE_ON = 0.96   # r = 0.96 x inter-ear distance      (research §2.1, enlarged
 HEAD_RADIUS_FACTOR_DTL = 1.80       # r = 1.80 x eye-to-ear distance      so cap crown/occiput fit)
+# Oblique "DTL" views foreshorten the eye->ear distance (three-quarter face), which
+# undersized the ring ~15% on the oblique fixture (strict-eval v2). The nose->far-ear
+# span tracks head depth robustly across profile AND oblique views; take the larger
+# of the two candidates. 1.43 calibrated so crown+occiput are enclosed on the oblique
+# fixture while true-DTL sessions grow <=8%.
+HEAD_RADIUS_FACTOR_DTL_NOSE_EAR = 1.43
 HEAD_CENTER_UP_SHIFT = 0.34         # x r: face keypoints sit low on the head — lift the center
 HEAD_CENTER_BACK_SHIFT = 0.26       # x r, DTL only: shift center from the face toward the occiput
 HEAD_DIAMETER_TORSO_MIN = 0.22      # anatomical sanity: head diameter vs shoulder->hip length
@@ -404,8 +410,19 @@ def _head_circle(kps, view_label: str, w: int, h: int) -> Tuple[Optional[Dict[st
             for e, r in pairs
             if _visible(kps, e) and _visible(kps, r)
         ]
+        candidates = []
         if dists:
-            r_px = HEAD_RADIUS_FACTOR_DTL * max(dists)  # occluded-side pair foreshortens; take the larger
+            candidates.append(HEAD_RADIUS_FACTOR_DTL * max(dists))  # occluded side foreshortens; larger pair
+        if _visible(kps, "nose"):
+            nose_ear = [
+                _dist_px(kps["nose"], kps[n], w, h)
+                for n in ("left_ear", "right_ear")
+                if _visible(kps, n)
+            ]
+            if nose_ear:
+                candidates.append(HEAD_RADIUS_FACTOR_DTL_NOSE_EAR * max(nose_ear))
+        if candidates:
+            r_px = max(candidates)
     if not r_px or r_px <= 1:
         return None, "head size not measurable (no confident ear/eye pair)"
 
