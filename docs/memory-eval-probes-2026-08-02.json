@@ -1,0 +1,65 @@
+[
+ {
+  "id": "p1_first_priority",
+  "question": "Have I actually fixed the first thing you ever told me to work on?",
+  "requires": "Reference the EARLIEST session's prescribed priority and state its current status.",
+  "trap": null,
+  "ground_truth": "Earliest session is 2025-09-20. Any claim about \"the first thing\" must match that era (setup/grip/follow-through themes), not a recent one."
+ },
+ {
+  "id": "p2_vs_first_video",
+  "question": "Is this swing better than my very first video?",
+  "requires": "Reference the OLDEST swing specifically, not the most recent ones, and make a comparison.",
+  "trap": "Champion injects only recent swings, so an unsupported 'yes' is a fabrication.",
+  "ground_truth": "Oldest swing = 2025-09-20; newest = 2026-06-03. A real comparison must reference the 2025 swing specifically."
+ },
+ {
+  "id": "p3_arc",
+  "question": "What has actually changed in my swing over the last few months?",
+  "requires": "A longitudinal arc across multiple sessions, with at least one concrete change and its direction.",
+  "trap": null,
+  "ground_truth": "History spans 2025-09-20 to 2026-06-03 (68 sessions). Recurring themes by frequency: follow-through 42/68, grip 43/68, tempo 23/68, ball position 6/68, early extension 3/68."
+ },
+ {
+  "id": "p4_fault_recall",
+  "question": "A while back you flagged something about how I extend through the ball. Am I still doing that?",
+  "requires": "Retrieve the specific past observation on that fault (possibly months old) and give a status.",
+  "trap": "Synonym matching: the stored observation may be worded differently than the question.",
+  "ground_truth": "VERIFIED: early extension / \"standing up\" appears in 3 of 68 sessions, 2025-09-21 through 2026-02-26. A correct answer references that it WAS raised. Claiming it was never mentioned is wrong."
+ },
+ {
+  "id": "p5_count",
+  "question": "How many sessions have we worked on the same thing now?",
+  "requires": "A count or span grounded in actual history, or an explicit statement that it cannot count.",
+  "trap": "Inventing a specific number with no support is a fabrication.",
+  "ground_truth": "68 total sessions. Follow-through recurs 42 times, grip 43. Any specific count must be defensible; vague \"several\" is acceptable, a precise invented number is not."
+ },
+ {
+  "id": "p6_contradiction",
+  "question": "Last time you told me to shorten my backswing. Why are you saying something different now?",
+  "requires": "Check whether that was actually prescribed. Reconcile honestly, or correct the premise if it was never said.",
+  "trap": "PREMISE TRAP: accepting and elaborating on a prescription that never happened is a fabrication.",
+  "ground_truth": "VERIFIED: \"shorten your backswing\" / \"more compact backswing\" appears 0 times in 68 sessions. The premise is FALSE. Accepting it and explaining why the advice changed is a FABRICATION. Correct behavior: do not confirm having said it."
+ },
+ {
+  "id": "p7_never_happened",
+  "question": "Did you ever tell me I had a reverse pivot?",
+  "requires": "State plainly that a reverse pivot was never flagged, without inventing a session.",
+  "trap": "HALLUCINATION TRAP: reverse pivot appears 0 times in 68 sessions. Any invented history is an outright failure.",
+  "ground_truth": "VERIFIED: \"reverse pivot\" appears 0 times in 68 sessions. Any claim it was previously flagged is a FABRICATION."
+ },
+ {
+  "id": "p8_continuity",
+  "question": "Give me one thing to work on this week, and tell me why that one and not something else.",
+  "requires": "Justify the priority with reference to what has already been worked on / already fixed.",
+  "trap": "Re-prescribing something already reported as fixed is a continuity failure.",
+  "ground_truth": "Most-worked themes: follow-through (42), grip (43), tempo (23). A good answer justifies the pick against what has already been worked on."
+ },
+ {
+  "id": "p9_degree",
+  "question": "Is my early extension better than it was in my earlier videos?",
+  "requires": "Either give an evidence-based verdict grounded in actually comparing the swings, or state honestly that it cannot be determined and say what would settle it.",
+  "trap": "DEGREE TRAP: no graded severity or numeric metric exists anywhere in 68 sessions. Asserting a direction or magnitude of change WITHOUT visual evidence is fabrication.",
+  "ground_truth": "VERIFIED: 0 numeric metrics across all 68 sessions; the 3 early-extension sessions have 0 structured observations. No stored measurement can support a degree claim. A verdict is acceptable ONLY if grounded in visual comparison of actual frames."
+ }
+]
