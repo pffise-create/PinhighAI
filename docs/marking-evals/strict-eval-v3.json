@@ -1,0 +1,60 @@
+{
+  "sessions": [
+    {
+      "session": "1758343894968-ae95vp",
+      "accuracy": {
+        "plane": "n/a - correctly omitted (face_on; failure recorded with reason)",
+        "spine": "n/a - correctly omitted (face_on; failure recorded with reason)",
+        "head_circle": "PASS (snug) - r bumped 19.0 -> 19.6px (r_norm 0.0612); drawn ring (130-167 x 216-255) matches JSON within 1px. Cap crown now +8.7px inside (y=225 vs ring top 216.3 at that column); right +2.2px; cap left edge ~2-4px inside; chin (skin test) +1.4px radial - the new tight spot. v2's flagged 'dark px x119-124 / y258-262' re-checked and confirmed as background bench shadow (olive-gray rgb ~85,90,78) and shirt-collar shadow, NOT head. Note: v2 prescribed +2-3px radius; the applied bump was only +0.6px, so the ring is enclosed-but-snug rather than comfortable."
+      },
+      "consistency": "PASS on frames - violet bbox identical (130-167 x 216-255, one 1px AA flicker on f05 left edge) in all 4 re-rendered frames. Contact sheet is STALE (mtime predates the patch; shows the old r=19 ring, y-top 218 vs new 216) - visually indistinguishable here but not regenerated.",
+      "fail_closed": "PASS - zero magenta/teal overlay pixels in all 4 re-rendered frames (mint shirt does not trip a strict teal mask); failures array records spine_line and plane_line with view=face_on reasons",
+      "visual_score": 8,
+      "notes": "Head fully enclosed; chin margin +1.4px keeps it from 9. The requested comfort bump was under-applied (+0.6px of the prescribed +2-3px)."
+    },
+    {
+      "session": "1760076117023-e7ofx7",
+      "accuracy": {
+        "plane": "UNCHANGED vs v2 - JSON endpoints identical to v2's measurements: 54.3 deg (v2: 54.3), bottom (197.9,402.8) at ball, top clamp y=132.1 (v2: y=132), magenta mask 3-197 x 132-402. No re-measurement needed per scope; visual spot-check confirms line tracks the shaft.",
+        "spine": "UNCHANGED - endpoints (57.4,248.2)-(101.9,162.5) match v2's (57,248)-(102,162); teal mask 58-101 x 162-246 identical across frames; tip below jaw, 30px clear of ring center-distance minus r",
+        "head_circle": "PASS - nominally 'unchanged' but measured r grew ~1px (drawn rx 37.0 -> 38.0; r_norm 0.1156 -> 0.1196, +3.5%): stale sheet shows 97-171 x 92-167, new frames 96-172 x 92-167. Visually immaterial; ring still comfortably encloses cap+face with the same slightly-generous top-right framing v2 scored 8."
+      },
+      "consistency": "PASS on frames - all three mask bboxes identical across the 4 re-rendered frames. Contact sheet STALE (shows the old ring, 1px/side smaller).",
+      "fail_closed": "PASS - DTL, all markings allowed",
+      "visual_score": 8,
+      "notes": "Claim '1760 unchanged' is not literally true: the new formula nudged r +1px. No visual consequence, but the patch was not perfectly scoped to oblique views."
+    },
+    {
+      "session": "1771739449202-rcj3uo",
+      "accuracy": {
+        "plane": "UNCHANGED vs v2 - 46.5 deg (v2: 46.5), bottom (708.0,1236.4) at ball+19px, top clamp y=502.1 exactly matching v2's y=502; magenta mask 8-710 x 499-1238 identical across frames; 168px clearance from the enlarged ring",
+        "spine": "UNCHANGED - endpoints (256.3,870.6)-(352.3,638.7); teal mask 254-354 x 636-872; tip ~16px outside the enlarged ring, below the jaw",
+        "head_circle": "PASS, did NOT over-balloon - r grew 77 -> 82.6px (+7%); drawn ring (332-497 x 480-645) matches JSON within 1px. Silhouette margins: crown +28.1px, back-of-head +7.2px, cap-bill/front +3.9px; only out-of-ring dark pixels are the shoulder/neck merge at bearings +130..138 deg where the ring legitimately cuts. Sky band above crown is 28px = 17% of diameter - generous at top but the ring still reads as around-the-head, anchored by the cap bill; nothing like v1's one-third sky wedge."
+      },
+      "consistency": "PASS on frames - all three mask bboxes identical across the 4 re-rendered frames. Contact sheet STALE - tiles show the OLD r=77 ring (22.5px at 0.296 scale = 76px full-res vs expected 24.5px/82.6px).",
+      "fail_closed": "PASS - DTL, all markings allowed",
+      "visual_score": 8,
+      "notes": "Growth is modest and asymmetric-safe: bill and back both gained margin. Top gap slightly generous, not a halo."
+    },
+    {
+      "session": "1780460609209-q55bgd",
+      "accuracy": {
+        "plane": "angle/anchor UNCHANGED, extent moved - 62.5 deg (v2: 62.5), bottom (556.4,1052.2) = ball +8.9/+17.1px, both matching v2. BUT top end extended from v2's (224,414) to (205.9,379.3): the clamp is computed as cy-1.55r of the head circle (old 490-1.55*49=414.1; new 483.6-1.55*67.3=379.3), so the head patch mechanically lengthened the line ~38px. Verified terminus lands in dark trees above/left of the head - no sky spear, ring clearance 136px, and the magenta stays 120+px from the orange scene stick. Downstream side-effect, not a misplacement; disclosed because 'patch touched only head circles' is not literally true.",
+        "spine": "UNCHANGED - endpoints (321.6,714.8)-(433.2,540.8); teal mask 319-435 x 538-717 identical across frames; tip 13px outside the ring, below the head; crosses plane mid-torso (geometric necessity)",
+        "head_circle": "FIXED - ring now c=(490.0,483.6) r=67.3px (r_norm 0.0624); drawn ring (422-557 x 416-550) matches JSON within 0.6px. v2's failures re-measured: crown y=432 now +15.7px INSIDE (was 10px outside); rear/left hair +7.4px; chin/under-jaw +6.0px; the far-side hair that reached x=556-557 now has +1.3px column margin. Tightest spot: soft hair-edge wisps at bearings +9..+20 deg with radial margins -1.5..+1.2px (lum 84-87 anti-aliased edge) - they sit on/under the ~5px violet stroke, no dark pixel beyond x=557 vs ring edge 557.3. Whole head enclosed; front hairline is tangent rather than a-few-px."
+      },
+      "consistency": "PASS on frames - all three mask bboxes identical across the 4 re-rendered frames. Contact sheet STALE and materially wrong: tiles still show the OLD undersized ring (14.3px at 0.296 scale = 48.3px full-res vs expected 20.0px/67.3px) - the sheet displays the exact defect this pass was meant to confirm fixed.",
+      "fail_closed": "PASS - DTL (oblique), all markings allowed",
+      "visual_score": 8,
+      "notes": "The v2 blocker is genuinely fixed in the frames; nose-to-far-ear sizing landed on the low end of v2's prescribed r (67.3 vs 67-68) and center 7px left of prescription, which is why the front rim is tangent instead of comfortable. One more px of radius would clear it entirely."
+    }
+  ],
+  "overall": {
+    "accuracy_pass": true,
+    "consistency_pass": false,
+    "fail_closed_pass": true,
+    "visual_score": 8,
+    "ship_visual": true,
+    "summary": "The head-circle patch works in the re-rendered frames: 1780's crown/occiput failure is fixed (crown +15.7px, rear +7.4px, tightest front-hairline bearing tangent at -1.5..+1.3px under the stroke), 1758 gained crown margin (+8.7px; chin +1.4px still snug - only +0.6px of the prescribed +2-3px bump was applied), 1771 grew 7% without ballooning (crown +28px, 17% top sky band, bill +4px), and 1760 is visually unchanged (though r actually nudged +1px, so the patch was not perfectly scoped). Plane/spine geometry is byte-consistent with v2 except 1780's plane top extent, which the head patch mechanically extended 38px via the cy-1.55r clamp - benign (ends in trees, no collisions) but disclosed. Frame-level temporal hold and fail-closed both re-verified clean. THE BLOCKER: none of the four contact sheets were regenerated (mtime 10:54 vs frames 11:08); 1780's sheet still shows the old undersized r=48px ring and 1771's the old r=76px ring, contradicting the shipped frames and geometry. Frames alone merit visual 8 and would pass; the deliverable as a set FAILS on consistency until the four contact sheets are re-rendered from the patched geometry. No other regression found."
+  }
+}

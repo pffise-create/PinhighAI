@@ -1,0 +1,60 @@
+{
+  "sessions": [
+    {
+      "session": "1758343894968-ae95vp",
+      "accuracy": {
+        "plane": "n/a - correctly omitted (face_on, recorded failure reason)",
+        "spine": "n/a - correctly omitted (face_on, recorded failure reason)",
+        "head_circle": "placed - rings the face at address; top of cap clipped but clearly on the head, not neck, not floating"
+      },
+      "consistency": "PASS - circle at identical position in all 4 tiles; sway visible against fixed ring in tile 4; single geometry set",
+      "fail_closed": "PASS - no plane/spine drawn on face-on view; failures array records both with reasons",
+      "visual_score": 6,
+      "notes": "Circle is face-hugging and small (r~15px at 320w), crown of cap outside the ring; thin stroke at low res. Alignment stick on ground confirms no stray ground/plane lines were drawn."
+    },
+    {
+      "session": "1760076117023-e7ofx7",
+      "accuracy": {
+        "plane": "MISPLACED - line rises at ~70 deg while the visible shaft lies at ~54 deg; the two visibly diverge from the clubhead upward and the line passes through the neck/head instead of tracking the shaft; bottom end also overshoots slightly past the clubhead into the mat",
+        "spine": "placed - teal runs from hip along the back tilt to the ear/jaw; tracks the spine angle",
+        "head_circle": "placed - rings head including most of the cap; slight forward/down bias"
+      },
+      "consistency": "PASS - all three markings pixel-identical across the 4 tiles; single geometry set",
+      "fail_closed": "PASS - DTL, all markings allowed",
+      "visual_score": 5,
+      "notes": "Plane line extends to y=0.03, far past the golfer into the sky - past sensible bounds. Spine tip pokes into the jaw/circle area. Dark casing keeps overlays legible on the 320px source."
+    },
+    {
+      "session": "1771739449202-rcj3uo",
+      "accuracy": {
+        "plane": "MISPLACED - driver shaft sits at ~46 deg but the line is drawn at ~60 deg; the crop shows a clear V opening from the clubhead, with the line cutting through the head circle instead of tracking the shaft; origin at the ball is correct",
+        "spine": "placed - teal follows the back tilt from hip to lower head; slightly long past the shoulder but on-axis",
+        "head_circle": "placed (marginal) - anchored on the face but offset forward: occiput excluded and roughly a third of the ring encloses empty sky"
+      },
+      "consistency": "PASS - all markings fixed across the 4 tiles; single geometry set",
+      "fail_closed": "PASS - DTL, all markings allowed",
+      "visual_score": 5,
+      "notes": "Backlit contrast handled well by the dark line casing. Circle forward-offset with a sky wedge; plane line runs far past the body up into the roof beam; plane line crosses the head circle."
+    },
+    {
+      "session": "1780460609209-q55bgd",
+      "accuracy": {
+        "plane": "MISPLACED - near-vertical line (~77 deg) versus a visible shaft at ~62 deg; the crop shows obvious angular divergence from the hosel upward, the line passing right of the hands through the neck; bottom end lands just past the ball on the mat",
+        "spine": "placed - teal tracks the torso lean from hip to just below the head",
+        "head_circle": "placed (marginal) - rings the face; hair/crown at back-top excluded, ring biased forward"
+      },
+      "consistency": "PASS - all markings fixed across the 4 tiles; single geometry set",
+      "fail_closed": "PASS - DTL (oblique), all markings allowed",
+      "visual_score": 5,
+      "notes": "Plane-line orange nearly collides with the real orange alignment stick standing in-scene at left. Spine line crosses the plane line mid-torso and its tip touches the circle. Plane line top floats far above the head."
+    }
+  ],
+  "overall": {
+    "accuracy_pass": false,
+    "consistency_pass": true,
+    "fail_closed_pass": true,
+    "visual_score": 5,
+    "ship_visual": false,
+    "summary": "Systematic plane-line error: in all three DTL sessions the line is anchored ball-to-upper-body (13-16 deg steeper than the visible shaft) rather than fitted to the shaft at address. Temporal hold and face-on fail-closed behavior are correct. Visual polish is below AAA: face-only head circles (one with a large sky wedge), plane lines extending far past sensible bounds, spine tips intruding into the head circle, and an orange-on-orange collision with a scene alignment stick."
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "sessions": [
+    {
+      "session": "1758343894968-ae95vp",
+      "accuracy": {
+        "plane": "n/a - correctly omitted (face_on; failure recorded with reason)",
+        "spine": "n/a - correctly omitted (face_on; failure recorded with reason)",
+        "head_circle": "placed - r grew vs v1 (19px at 320w); cap crown now inside the ring with ~6px margin (crown y=223 vs ring top y=217); sides tight (dark head pixels x 125..163 vs ring x 130..168 - left edge tangent, a few px of brim-shadow at the rim), chin just inside. Encloses the head, but with near-zero margin on the left and bottom."
+      },
+      "consistency": "PASS - violet mask bbox pixel-identical (130-166, 218-253) in all 4 tiles; 13 stray teal-mask px in 2 tiles are the golfer's mint shirt (scene content, not a drawn line)",
+      "fail_closed": "PASS - zero magenta/teal overlay pixels in all 4 frames; geometry failures array records spine_line and plane_line with view=face_on reasons",
+      "visual_score": 8,
+      "notes": "v1 crown-clip fixed. Ring is tight rather than generous; +2-3px radius would give comfortable margin at 320px source. Yellow stick at feet does not conflict with violet."
+    },
+    {
+      "session": "1760076117023-e7ofx7",
+      "accuracy": {
+        "plane": "FIXED - drawn at 54.3 deg; visible shaft measured at ~53-54 deg from the original frame (grip ~(118,295) to hosel ~(186,386)); residual delta ~1 deg, v1's 16-deg V is gone. Bottom end starts 3,5px from ball center; top end clamped at head height (y=132) terminating in the treeline at the left frame edge, not open sky",
+        "spine": "placed - hip (57,248) to upper back (102,162); tip stops 7px short of the head ring, below the jaw",
+        "head_circle": "placed - encloses cap crown, occiput and chin with margin (ring 97-171 x 93-167 vs head ~103-160); slightly generous (diameter 75px vs head width ~55px) with a sky wedge top-right"
+      },
+      "consistency": "PASS - magenta/violet/teal mask bboxes pixel-identical across all 4 tiles",
+      "fail_closed": "PASS - DTL, all markings allowed",
+      "visual_score": 8,
+      "notes": "v1's 70-vs-54-deg error and sky overshoot to y=0.03 both corrected. Plane no longer crosses the head ring (70px clearance). Line spans to x=3 at the left edge but at head height against dark trees - sensible clamp."
+    },
+    {
+      "session": "1771739449202-rcj3uo",
+      "accuracy": {
+        "plane": "FIXED - drawn at 46.5 deg; visible driver shaft fit from original pixels = 47.6 deg; residual delta ~1.1 deg (v1 was 14 deg). Line is a shaft-parallel through the ball, offset ~20-30px above the physical shaft as expected for a ball-origin plane line. Bottom tip stops 19px past ball center at the driver crown, not through the clubhead into the mat. Top clamped at head-top height (y=502 vs head top y=488), ending against tree canopy at the left edge - no roof/sky spear",
+        "spine": "placed - hip to upper back; tip 16px clear of the head ring, well below the jaw",
+        "head_circle": "FIXED - ring (340-494 x 488-642) fully contains the silhouette dark mass (364-483 x 520-591); crown and occiput enclosed; cap-bill tip and chin tangent to the rim. v1's one-third sky wedge is gone"
+      },
+      "consistency": "PASS - all three mask bboxes pixel-identical across the 4 tiles",
+      "fail_closed": "PASS - DTL, all markings allowed",
+      "visual_score": 8,
+      "notes": "Backlit scene handled well; dark casing keeps magenta/violet legible against bright sky. v1's plane-through-head-circle collision resolved (174px clearance)."
+    },
+    {
+      "session": "1780460609209-q55bgd",
+      "accuracy": {
+        "plane": "FIXED - drawn at 62.5 deg; visible shaft fit from original pixels = 61.8-62.1 deg; residual delta ~0.4-0.7 deg (v1 was 15 deg). Bottom tip lands at the clubhead/ball on the mat surface (9,17px past ball point). Top end clamped at y=414, ~27px above head top, terminating in trees - v1's far-overshoot fixed. 156px clearance from the head ring",
+        "spine": "placed - hip to below head; tip 9.5px outside the ring; crosses the plane line mid-torso (geometric necessity, not a rubric collision)",
+        "head_circle": "STILL FAILING - ring c=(495,490) r=49 spans x 446-544 / y 441-539, but head dark pixels reach y=431 (hair crown ~10px above the ring) and x=557 (occiput/back-of-head hair ~13px outside the ring). Face-hugging ring undersized ~15%; same class of defect as v1"
+      },
+      "consistency": "PASS - all three mask bboxes pixel-identical across the 4 tiles",
+      "fail_closed": "PASS - DTL (oblique), all markings allowed",
+      "visual_score": 6,
+      "notes": "v1's orange-on-orange resolved: plane is now magenta (224,47,137 sampled) vs the red-orange scene stick, 0 scene pixels match the magenta mask, and the stick is 125px from the line. Remaining defect is solely the undersized head circle. Fix: center ~(497,483), r ~67-68px (norm r ~0.062-0.063)."
+    }
+  ],
+  "overall": {
+    "accuracy_pass": false,
+    "consistency_pass": true,
+    "fail_closed_pass": true,
+    "visual_score": 7,
+    "ship_visual": false,
+    "summary": "The v1 systemic plane-line error is genuinely fixed: measured against shaft pixels in the original frames, residual deltas are ~1.0 deg (1760), ~1.1 deg (1771), ~0.7 deg (1780); line extents are clamped to head height with ball-anchored bottoms; plane/head-ring and spine-tip/ring collisions are resolved; the magenta/violet/teal palette is distinct from all in-scene objects including the 1780 orange stick. Temporal hold is pixel-identical across all frames and face-on fail-closed is clean. The single remaining accuracy failure is the 1780 head circle: r=49px face-hugging ring leaves the hair crown ~10px and the occiput ~13px outside. That one defect blocks accuracy_pass and holds overall visual at 7 (1758: 8, 1760: 8, 1771: 8, 1780: 6). Enlarging the 1780 ring to c~(497,483) r~68px (and optionally +2-3px margin on the tight 1758 ring) would clear the ship bar."
+  }
+}
