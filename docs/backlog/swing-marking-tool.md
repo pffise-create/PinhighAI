@@ -1,6 +1,6 @@
 # Backlog: Swing Marking Tool (drawn lines / circles on frames)
 
-**Status:** `NOT STARTED — requirements only` · **Filed:** 2026-08-02 · **No code exists for this.**
+**Status:** `IN PROGRESS — research phase` · **Filed:** 2026-08-02 · **Started:** 2026-08-02
 
 ## Why
 
@@ -66,6 +66,6 @@ Solving this is the core of the work item. Do not accept an implementation that 
 
 ## Open questions (product decisions needed before build)
 
-- Which markings ship first? (Suggest: plane line + spine angle, as the highest diagnostic value per unit of input difficulty.)
+- ~~Which markings ship first?~~ **Decided 2026-08-02: plane line + spine angle + head circle** (head circle added by product owner — static circle at address, head movement out of it becomes visible; cheapest input requirement of the three).
 - Is Mode 2 a paid-tier differentiator?
 - Do we re-extract and re-mark historical swings, or only mark going forward?
