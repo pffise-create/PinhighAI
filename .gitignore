@@ -72,3 +72,7 @@ AWS/archive/
 
 # Stray screenshots
 Screenshot*.png
+
+# Python bytecode
+__pycache__/
+*.pyc
