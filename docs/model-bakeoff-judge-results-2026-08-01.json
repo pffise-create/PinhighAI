@@ -1,0 +1,26 @@
+[
+  {"swing": 0, "arm": "A", "specificity": 3, "diagnostic": 2, "actionable": 1, "voice": 4, "trust": 3, "word_count": 209, "flags": ["hedgy", "no-clear-priority"], "rank": 4},
+  {"swing": 0, "arm": "B", "specificity": 4, "diagnostic": 4, "actionable": 5, "voice": 4, "trust": 4, "word_count": 243, "flags": ["excellent"], "rank": 1},
+  {"swing": 0, "arm": "C", "specificity": 5, "diagnostic": 4, "actionable": 4, "voice": 3, "trust": 4, "word_count": 308, "flags": ["padded", "template-speak"], "rank": 2},
+  {"swing": 0, "arm": "D", "specificity": 3, "diagnostic": 2, "actionable": 4, "voice": 3, "trust": 4, "word_count": 207, "flags": ["no-clear-priority", "template-speak"], "rank": 3},
+
+  {"swing": 1, "arm": "A", "specificity": 3, "diagnostic": 3, "actionable": 3, "voice": 3, "trust": 3, "word_count": 221, "flags": ["template-speak"], "rank": 3},
+  {"swing": 1, "arm": "B", "specificity": 3, "diagnostic": 1, "actionable": 1, "voice": 4, "trust": 3, "word_count": 225, "flags": ["hedgy", "no-clear-priority"], "rank": 4},
+  {"swing": 1, "arm": "C", "specificity": 4, "diagnostic": 4, "actionable": 4, "voice": 4, "trust": 4, "word_count": 230, "flags": ["excellent"], "rank": 1},
+  {"swing": 1, "arm": "D", "specificity": 5, "diagnostic": 4, "actionable": 4, "voice": 2, "trust": 3, "word_count": 345, "flags": ["padded", "template-speak"], "rank": 2},
+
+  {"swing": 2, "arm": "A", "specificity": 3, "diagnostic": 2, "actionable": 2, "voice": 3, "trust": 2, "word_count": 189, "flags": ["hedgy", "hallucinated-detail"], "rank": 4},
+  {"swing": 2, "arm": "B", "specificity": 4, "diagnostic": 3, "actionable": 2, "voice": 3, "trust": 3, "word_count": 351, "flags": ["padded", "template-speak"], "rank": 2},
+  {"swing": 2, "arm": "C", "specificity": 3, "diagnostic": 2, "actionable": 2, "voice": 4, "trust": 4, "word_count": 241, "flags": ["hedgy"], "rank": 3},
+  {"swing": 2, "arm": "D", "specificity": 4, "diagnostic": 3, "actionable": 4, "voice": 4, "trust": 4, "word_count": 180, "flags": ["excellent"], "rank": 1},
+
+  {"swing": 3, "arm": "A", "specificity": 4, "diagnostic": 3, "actionable": 4, "voice": 4, "trust": 4, "word_count": 200, "flags": [], "rank": 2},
+  {"swing": 3, "arm": "B", "specificity": 5, "diagnostic": 5, "actionable": 5, "voice": 3, "trust": 4, "word_count": 406, "flags": ["excellent", "padded"], "rank": 1},
+  {"swing": 3, "arm": "C", "specificity": 3, "diagnostic": 1, "actionable": 2, "voice": 4, "trust": 4, "word_count": 192, "flags": ["no-clear-priority"], "rank": 3},
+  {"swing": 3, "arm": "D", "specificity": 2, "diagnostic": 1, "actionable": 1, "voice": 3, "trust": 3, "word_count": 245, "flags": ["hedgy", "no-clear-priority", "template-speak"], "rank": 4},
+
+  {"swing": 4, "arm": "A", "specificity": 3, "diagnostic": 1, "actionable": 1, "voice": 4, "trust": 3, "word_count": 260, "flags": ["hedgy", "no-clear-priority"], "rank": 4},
+  {"swing": 4, "arm": "B", "specificity": 5, "diagnostic": 4, "actionable": 4, "voice": 2, "trust": 4, "word_count": 369, "flags": ["padded", "template-speak"], "rank": 2},
+  {"swing": 4, "arm": "C", "specificity": 4, "diagnostic": 4, "actionable": 4, "voice": 5, "trust": 4, "word_count": 208, "flags": ["excellent"], "rank": 1},
+  {"swing": 4, "arm": "D", "specificity": 3, "diagnostic": 2, "actionable": 2, "voice": 4, "trust": 4, "word_count": 172, "flags": ["no-clear-priority"], "rank": 3}
+]
