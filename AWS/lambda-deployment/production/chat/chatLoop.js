@@ -18,6 +18,11 @@ const SWING_MEMORY_ENABLED = process.env.SWING_MEMORY_ENABLED !== 'false';
 const HISTORY_SWINGS_WIDE = Math.max(10, parseInt(process.env.MAX_HISTORY_SWINGS || '80', 10));
 const CHAT_MODEL = process.env.CHAT_LOOP_MODEL || 'gpt-4o-mini';
 const MAX_TOOL_ITERATIONS = parseInt(process.env.CHAT_LOOP_MAX_TOOL_RUNS || '2', 10);
+// Tunable without a deploy. Kept at the historical 450: chat always sends tools,
+// which forces reasoning_effort 'none', so the whole budget is content. If a code
+// path ever drops tools, reasoning tokens can consume this silently — hence the
+// CHAT_COMPLETION_TRUNCATED log below.
+const CHAT_MAX_COMPLETION_TOKENS = Math.max(200, parseInt(process.env.CHAT_MAX_COMPLETION_TOKENS || '450', 10));
 const TOOL_TIMEOUT_MS = parseInt(process.env.CHAT_LOOP_TOOL_TIMEOUT_MS || '8000', 10);
 const VISUAL_KEYWORDS = [
   'look',
@@ -369,13 +374,31 @@ async function runChatCompletionLoop({ messages, userId, dynamoClient, requestOp
       messages: conversation,
       tools: TOOL_DEFINITIONS,
       temperature: 0.6,
-      max_completion_tokens: 450,
+      max_completion_tokens: CHAT_MAX_COMPLETION_TOKENS,
     };
 
     const response = await requestOpenAi(payload);
     const choice = response?.choices?.[0];
     if (!choice) {
       throw new Error('OpenAI chat completion returned no choices');
+    }
+
+    // Truncation and reasoning-starvation are silent failures: the API returns
+    // 200 with a short or empty message. Surface them so they can be alarmed on
+    // rather than reaching a user as a cut-off or blank coach reply.
+    const finish = choice.finish_reason;
+    const usage = response?.usage || {};
+    const reasoningTokens = usage.completion_tokens_details?.reasoning_tokens || 0;
+    const contentLength = (choice.message?.content || '').trim().length;
+    if (finish === 'length' || (contentLength === 0 && !(choice.message?.tool_calls || []).length)) {
+      safeLog.warn?.('CHAT_COMPLETION_TRUNCATED', {
+        userId,
+        finishReason: finish,
+        budget: CHAT_MAX_COMPLETION_TOKENS,
+        completionTokens: usage.completion_tokens,
+        reasoningTokens,
+        contentLength,
+      });
     }
 
     const assistantMessage = choice.message || {};
