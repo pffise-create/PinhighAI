@@ -77,6 +77,18 @@ endpoints). The RevenueCat **secret** key must never appear in the app bundle.
 | `SUBSCRIPTION_ENTITLEMENT_KEY` | no | `"DivotLab Unlimited"` | Must match the RevenueCat entitlement ID and the app's `EXPO_PUBLIC_REVENUECAT_ENTITLEMENT_ID`. |
 | `USER_ACCESS_TABLE` | no | defaults to `DYNAMODB_TABLE` | Table holding `access#<userId>` entitlement records. |
 
+## Backend (Lambda) environment variables — swing markings
+
+Lambda env vars for the swing marking tool (`docs/marking-tool.md`). **Both
+default to off.** Nothing about coaching changes while they are unset.
+
+| Var | Set on | Default | Notes |
+|---|---|---|---|
+| `SWING_MARKING_ENABLED` | `golf-frame-extractor-simple-with-ai` **and** `golf-ai-analysis-processor` | off | Mode 1 (silent grounding). On the extractor it generates marked frame variants and writes `analysis_results.marking`; on the processor it sends those marked frames to the vision model instead of the plain ones and appends the Mode 1 instruction. Set on both or the pair does nothing useful: extractor-only just burns ~1s of CPU per swing, processor-only finds no marked frames and runs exactly as before. The extractor also needs the marking Lambda layer (`tflite_runtime`, `opencv-python-headless`, numpy, Pillow, and the MoveNet model at `/opt/models/movenet_singlepose_thunder_f16.tflite`); without it the import fails and marking is skipped with a recorded reason. |
+| `SWING_MARKING_DISPLAY_ENABLED` | `golf-chat-api-handler` | off | Mode 2 (showing a marked frame to the player). Ships dark. When off, `shouldShowMarking` is short-circuited, chat attaches plain frames and the response carries no `display_frames`. |
+
+Values are parsed strictly: only `1`, `true`, `yes`, `on` (case-insensitive) enable a flag.
+
 ## Launch checklist: EAS dashboard environment variables
 
 Before the first `eas build --profile preview` for staging QA, set these on the **preview** environment via EAS dashboard (or `eas env:create`):

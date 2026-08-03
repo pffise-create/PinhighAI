@@ -1,6 +1,11 @@
 # Backlog: Swing Marking Tool (drawn lines / circles on frames)
 
-**Status:** `IN PROGRESS — research phase` · **Filed:** 2026-08-02 · **Started:** 2026-08-02
+**Status:** `WIRED — both modes shipped dark` · **Filed:** 2026-08-02 · **Started:** 2026-08-02 · **Wired:** 2026-08-03
+
+Mode 1 passed its ship gate and is wired behind `SWING_MARKING_ENABLED` (default off).
+Mode 2 (display) is built and wired behind `SWING_MARKING_DISPLAY_ENABLED` (default off),
+pending the paid-tier decision. Production wiring, env flags and the client
+`display_frames` payload: `docs/marking-tool.md` § Production wiring.
 
 ## Why
 
@@ -44,12 +49,12 @@ Solving this is the core of the work item. Do not accept an implementation that 
 
 ## Acceptance criteria
 
-- [ ] Static geometry (plane, target line, ground) computed **once per swing**, provably identical across frames — verified by a test asserting pixel-level line-endpoint stability across a sequence.
-- [ ] Every marking type either has a documented, obtainable input source **or** is explicitly listed as not-yet-supportable.
-- [ ] Strict evaluator passes both accuracy/consistency and visual quality.
-- [ ] Blind coaching evaluation shows measurable improvement with markings vs without.
-- [ ] Coach decides when to display; markings are not shown unconditionally.
-- [ ] Side-by-side cross-session comparison against a plane line works end to end.
+- [x] Static geometry (plane, target line, ground) computed **once per swing**, provably identical across frames — verified by a test asserting pixel-level line-endpoint stability across a sequence.
+- [x] Every marking type either has a documented, obtainable input source **or** is explicitly listed as not-yet-supportable (`docs/marking-research-2026-08-02.md`).
+- [x] Strict evaluator passes both accuracy/consistency and visual quality (`docs/marking-evals/strict-eval-v3.json`).
+- [x] Blind coaching evaluation shows measurable improvement with markings vs without (`docs/marking-evals/coaching-eval-2026-08-02.md`, 4/4, 78-68).
+- [x] Coach decides when to display; markings are not shown unconditionally (`AWS/src/marking/displayPolicy.js` — topic-matched, confidence-gated, coach-vetoable).
+- [x] Side-by-side cross-session comparison against a plane line works end to end, and is **refused** when the two sessions' framing is not comparable.
 
 ## Dependencies and connections to existing work
 
@@ -67,5 +72,5 @@ Solving this is the core of the work item. Do not accept an implementation that 
 ## Open questions (product decisions needed before build)
 
 - ~~Which markings ship first?~~ **Decided 2026-08-02: plane line + spine angle + head circle** (head circle added by product owner — static circle at address, head movement out of it becomes visible; cheapest input requirement of the three).
-- Is Mode 2 a paid-tier differentiator?
-- Do we re-extract and re-mark historical swings, or only mark going forward?
+- Is Mode 2 a paid-tier differentiator? (`shouldShowMarking` takes `entitlementActive` and echoes it in the decision, but does **not** gate on it — the caller applies whatever policy this question lands on.)
+- Do we re-extract and re-mark historical swings, or only mark going forward? (Today: forward only. Un-marked history is invisible to Mode 2 — a then-vs-now comparison needs a marking on **both** sides, so side-by-side stays unavailable until a user has two marked sessions.)

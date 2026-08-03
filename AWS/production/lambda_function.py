@@ -17,6 +17,14 @@ as a candidate swing; the strongest is analyzed ("clearest swing wins") and
 the count is stored for product use.
 
 Bake-off evidence: docs/frame-bakeoff-2026-08-01.md (challenger won 22-0).
+
+Swing markings (Mode 1, docs/backlog/swing-marking-tool.md): when
+SWING_MARKING_ENABLED is truthy, marked variants of the selected frames are
+generated with marking/swing_marker.py and uploaded alongside the plain frames
+under .../frames/<analysis_id>/marked/<same name>.jpg. The outcome is recorded
+in analysis_results.marking. Marking is an ENHANCEMENT: every failure path
+leaves marking.generated false with a reason and the swing analysis proceeds
+on the plain frames exactly as before.
 """
 
 import json
@@ -104,6 +112,8 @@ PHASE_FPS = 5.0
 FINISH_FPS = 2.0
 DENSE_FPS_CAP = 60.0
 
+MARKED_FRAME_DIR = 'marked'
+
 AUDIO_SR = 8000
 AUDIO_WIN_S = 0.010
 MOTION_FPS = 15.0
@@ -148,8 +158,14 @@ def lambda_handler(event, context):
         print(f"Selected {len(extracted_frames)} frames "
               f"(anchor={extraction_meta.get('anchor_time')}, method={extraction_meta.get('anchor_method')})")
 
+        # Markings are generated BEFORE the upload step, which deletes the local
+        # frame files. Never allowed to raise (see generate_marked_frames).
+        marked_files, marking_meta = generate_marked_frames(extracted_frames, temp_dir)
+
         frame_analysis = upload_frames_to_s3(extracted_frames, bucket_name, analysis_id, user_id)
         frame_analysis['extraction'] = extraction_meta
+        frame_analysis['marking'] = attach_marked_frames(
+            frame_analysis, marked_files, marking_meta, bucket_name, analysis_id, user_id)
 
         update_analysis_status(
             table, analysis_id, user_id, "COMPLETED",
@@ -448,6 +464,168 @@ def extract_frames_event_anchored(video_path, analysis_id, temp_dir):
             'frame_number': i,
         })
     return frame_files, meta
+
+
+# ── Swing markings (Mode 1 grounding) ──────────────────────────────────────
+#
+# Fail-soft contract: nothing in this section may raise into the extraction
+# path, and nothing in it may change the plain frames. The worst case is
+# analysis_results.marking = {generated: false, reason: "..."} and a swing
+# analysed on unmarked frames, exactly as before this feature existed.
+
+
+def _flag_enabled(name, default=False):
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def _marking_record(generated, reason=None, **extra):
+    record = {
+        'version': None,
+        'generated': bool(generated),
+        'markings_rendered': [],
+        'failures': [],
+        'geometry': None,
+        'frames_marked': 0,
+    }
+    if reason:
+        record['reason'] = reason
+    record.update(extra)
+    return record
+
+
+def _import_swing_marker():
+    """Import the marking module however it was packaged into the zip."""
+    try:
+        from marking import swing_marker  # packaged as marking/swing_marker.py
+        return swing_marker
+    except ImportError:
+        import swing_marker  # flat zip layout
+        return swing_marker
+
+
+def _compact_geometry(geometry):
+    """Keep the geometry that downstream consumers use; drop the 17 raw keypoints.
+
+    The keypoints are ~50 floats of pose detail no consumer reads, and this
+    record is written into a DynamoDB item that already carries the frame list.
+    """
+    if not isinstance(geometry, dict):
+        return None
+    keep = ('marker_version', 'frame_width', 'frame_height', 'view', 'facing',
+            'ball', 'shaft', 'markings')
+    return {k: geometry[k] for k in keep if k in geometry}
+
+
+def generate_marked_frames(frame_files, temp_dir):
+    """Render markings for the selected frames. Returns (marked_files, record).
+
+    marked_files entries are {'phase': ..., 'path': ...}. NEVER raises.
+    """
+    if not _flag_enabled('SWING_MARKING_ENABLED'):
+        return [], _marking_record(False, 'disabled: SWING_MARKING_ENABLED is not enabled')
+    if not frame_files:
+        return [], _marking_record(False, 'no frames to mark')
+
+    try:
+        swing_marker = _import_swing_marker()
+    except Exception as e:  # module, native deps or model layer missing
+        print(f"Marking skipped: swing_marker unavailable ({e})")
+        return [], _marking_record(False, f'swing_marker unavailable: {e}')
+
+    version = getattr(swing_marker, 'MARKER_VERSION', None)
+    out_dir = os.path.join(temp_dir, MARKED_FRAME_DIR)
+    try:
+        ordered = sorted(frame_files, key=lambda f: f.get('frame_number', 0))
+        result = swing_marker.mark_swing([f['path'] for f in ordered], out_dir)
+        with open(result['geometry_json']) as fh:
+            geometry = json.load(fh)
+    except Exception as e:
+        print(f"Marking failed: {e}")
+        return [], _marking_record(False, f'marking failed: {e}', version=version)
+
+    rendered = sorted((geometry.get('markings') or {}).keys())
+    failures = geometry.get('failures') or []
+    marked_set = set(result.get('marked_paths') or [])
+
+    marked_files = []
+    for frame_info in ordered:
+        candidate = os.path.join(out_dir, 'marked_' + os.path.basename(frame_info['path']))
+        if candidate in marked_set and os.path.exists(candidate):
+            marked_files.append({'phase': frame_info['phase'], 'path': candidate})
+
+    record = _marking_record(
+        bool(marked_files),
+        None if marked_files else 'no frame could be marked (fail closed)',
+        version=version,
+        markings_rendered=rendered,
+        failures=failures,
+        geometry=_compact_geometry(geometry),
+        frames_marked=len(marked_files),
+        frames_skipped=result.get('skipped') or [],
+    )
+    print(f"Marking: {len(marked_files)}/{len(ordered)} frames marked, "
+          f"rendered={rendered}, failures={len(failures)}")
+    return marked_files, record
+
+
+def attach_marked_frames(frame_analysis, marked_files, marking_meta, bucket_name, analysis_id, user_id):
+    """Upload the marked variants and cross-link them onto the frame records.
+
+    Returns the marking record to store. NEVER raises.
+    """
+    try:
+        if not marked_files or not marking_meta.get('generated'):
+            return marking_meta
+
+        frames_by_phase = {f.get('phase'): f for f in frame_analysis.get('frames', [])}
+        uploaded = []
+        for marked in marked_files:
+            frame_record = frames_by_phase.get(marked['phase'])
+            if not frame_record:
+                continue
+            plain_key = _key_from_url(frame_record.get('url'))
+            if not plain_key:
+                continue
+            head, _, name = plain_key.rpartition('/')
+            s3_key = f"{head}/{MARKED_FRAME_DIR}/{name}"
+            try:
+                s3_client.upload_file(marked['path'], bucket_name, s3_key)
+            except Exception as e:
+                print(f"Marked frame upload failed ({s3_key}): {e}")
+                continue
+            url = f"https://{bucket_name}.s3.amazonaws.com/{s3_key}"
+            frame_record['marked_url'] = url
+            frame_record['marked_key'] = s3_key
+            uploaded.append({'phase': marked['phase'], 'key': s3_key, 'url': url})
+            try:
+                os.remove(marked['path'])
+            except OSError:
+                pass
+
+        if not uploaded:
+            return _marking_record(
+                False, 'marked frames could not be uploaded',
+                version=marking_meta.get('version'),
+                markings_rendered=marking_meta.get('markings_rendered', []),
+                failures=marking_meta.get('failures', []),
+                geometry=marking_meta.get('geometry'),
+            )
+
+        marking_meta['frames_marked'] = len(uploaded)
+        marking_meta['frames'] = uploaded
+        return marking_meta
+    except Exception as e:
+        print(f"Marking attach failed: {e}")
+        return _marking_record(False, f'marking attach failed: {e}')
+
+
+def _key_from_url(url):
+    if not isinstance(url, str) or '.amazonaws.com/' not in url:
+        return None
+    return url.split('.amazonaws.com/', 1)[1]
 
 
 # ── Upload / status / trigger (unchanged contracts) ────────────────────────
