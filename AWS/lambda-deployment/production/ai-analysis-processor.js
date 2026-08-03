@@ -39,7 +39,24 @@ const PRIOR_SWING_CONTEXT_LIMIT = Math.max(1, Math.min(parseInt(process.env.AI_A
 const GENERIC_GATE_MONITOR_ONLY = process.env.GENERIC_GATE_MONITOR_ONLY !== 'false';
 const COACH_TONE_PROFILE = (process.env.COACH_TONE_PROFILE || 'wry').toLowerCase();
 const POST_ANALYSIS_TO_ASSISTANT_THREAD = process.env.POST_ANALYSIS_TO_ASSISTANT_THREAD !== 'false';
+// Mode 1 (silent grounding). Set on this Lambda AND on the frame extractor —
+// the extractor generates the marked frames, this function consumes them.
+// Default off so the pair is turned on deliberately, together.
+const SWING_MARKING_ENABLED = /^(1|true|yes|on)$/i.test((process.env.SWING_MARKING_ENABLED || '').trim());
 const DYNAMO_ATTRIBUTE_KEYS = new Set(['S', 'N', 'BOOL', 'NULL', 'M', 'L', 'SS', 'NS', 'BS', 'B']);
+
+// Mode 1 instruction, adapted from the arm that won the ship gate 4/4
+// (docs/marking-evals/coaching-eval-2026-08-02.md). Two jobs: tell the model the
+// geometry is a FIXED ruler taken at address (not a per-frame observation), and
+// forbid it from ever surfacing to the player. Contamination in the eval was 0/8.
+const MODE_1_MARKING_INSTRUCTION = [
+  'These images carry reference geometry drawn by an analysis tool: a magenta line on the swing plane the club started on at address, a teal line along the spine, and a violet circle around the head at address.',
+  'That geometry was measured ONCE from the address frame and is drawn in the identical position on every image, so treat it as a fixed ruler rather than as a description of the frame it sits on.',
+  'Use it: judge the club and shaft against the magenta plane line, posture and side bend against the teal spine line, and head movement by how far the head has travelled out of the violet circle.',
+  'Any of the three may be absent. Use only the ones that are present and never infer anything from a missing one.',
+  'NEVER mention the lines, the circle, colors, overlays, drawings, markings, or reference geometry to the player, and never say the swing was measured against anything drawn on the video.',
+  'Report what you conclude in ordinary coaching language, as if you saw it with your own eyes — for example "the shaft works above where it started at address" or "your head stays where it started through the backswing".',
+].join(' ');
 const GENERIC_PHRASES = [
   'grip pressure',
   'body rotation',
@@ -247,6 +264,39 @@ function extractFrameData(fullSwingData) {
     analysisResults,
     frames
   };
+}
+
+// Mode 1: map phase -> marked frame URL, but only when the extractor says the
+// marking was actually generated. Anything short of a clean record returns an
+// empty map and the analysis runs on plain frames.
+function extractMarkedFrameUrls(analysisResults, frames) {
+  if (!SWING_MARKING_ENABLED) {
+    return {};
+  }
+  try {
+    const marking = analysisResults?.marking;
+    if (!marking || marking.generated !== true) {
+      return {};
+    }
+    const markedUrls = {};
+    (Array.isArray(frames) ? frames : []).forEach((frame) => {
+      const url = frame?.marked_url || frame?.markedUrl;
+      if (frame?.phase && typeof url === 'string' && url) {
+        markedUrls[frame.phase] = url;
+      }
+    });
+    if (Object.keys(markedUrls).length === 0 && Array.isArray(marking.frames)) {
+      marking.frames.forEach((entry) => {
+        if (entry?.phase && typeof entry.url === 'string' && entry.url) {
+          markedUrls[entry.phase] = entry.url;
+        }
+      });
+    }
+    return markedUrls;
+  } catch (error) {
+    console.warn('Failed to read marked frame URLs, using plain frames:', error.message);
+    return {};
+  }
 }
 
 
@@ -797,12 +847,13 @@ function buildHeuristicVisualObservations({ responseText, selectedFrames }) {
   }));
 }
 
-async function extractSwingFactsWithVision({ selectedFrameImages, userQuestion }) {
+async function extractSwingFactsWithVision({ selectedFrameImages, userQuestion, markedFrames = false }) {
   const promptText = buildVisionFactExtractionPrompt({ userQuestion });
   const messageContent = [
     {
       type: 'text',
-      text: `${promptText}\n\nDo not mention frames or internal references in the JSON values.`,
+      text: `${promptText}\n\nDo not mention frames or internal references in the JSON values.`
+        + (markedFrames ? `\n\n${MODE_1_MARKING_INSTRUCTION}` : ''),
     },
   ];
 
@@ -897,7 +948,7 @@ async function renderCoachResponseFromFacts({
   };
 }
 
-async function renderCoachResponseDirectFromFrames({ selectedFrameImages, userQuestion }) {
+async function renderCoachResponseDirectFromFrames({ selectedFrameImages, userQuestion, markedFrames = false }) {
   const analysisContractPrompt = buildAnalysisNaturalContractPrompt();
   const messageContent = [
     {
@@ -915,7 +966,8 @@ async function renderCoachResponseDirectFromFrames({ selectedFrameImages, userQu
         'Default to best-effort coaching when the golfer and club are visible in most images. ' +
         'Only say footage is insufficient if visibility is truly unusable. ' +
         'If visibility is partial, state assumptions briefly and still give a useful best-effort coaching response. ' +
-        `Attached player question: ${typeof userQuestion === 'string' && userQuestion.trim() ? userQuestion.trim() : 'None'}`,
+        `Attached player question: ${typeof userQuestion === 'string' && userQuestion.trim() ? userQuestion.trim() : 'None'}`
+        + (markedFrames ? `\n\n${MODE_1_MARKING_INSTRUCTION}` : ''),
     },
   ];
 
@@ -965,25 +1017,58 @@ async function analyzeSwingWithGPT5(frameData, swingData) {
     const selectedFrames = selectFramesForAnalysis(allFrames, modelFrameLimit);
     console.log(`Selected ${selectedFrames.length}/${allFrames.length} frames for model inference`);
 
-    const selectedFrameImages = [];
-    for (const frame of selectedFrames) {
-      try {
-        console.log(`Processing frame: ${frame.phase}`);
-        const imagePayload = await downloadAndCompressImage(frame.url);
-        selectedFrameImages.push({
-          phase: frame.phase,
-          image: imagePayload.dataUrl,
-          sourceBytes: imagePayload.sourceBytes,
-          payloadBytes: imagePayload.payloadBytes,
-        });
-      } catch (error) {
-        console.error(`Failed to process frame ${frame.phase}:`, error.message);
+    const downloadFrames = async (frames, sourceLabel) => {
+      const images = [];
+      for (const frame of frames) {
+        try {
+          console.log(`Processing ${sourceLabel} frame: ${frame.phase}`);
+          const imagePayload = await downloadAndCompressImage(frame.url);
+          images.push({
+            phase: frame.phase,
+            image: imagePayload.dataUrl,
+            sourceBytes: imagePayload.sourceBytes,
+            payloadBytes: imagePayload.payloadBytes,
+          });
+        } catch (error) {
+          console.error(`Failed to process ${sourceLabel} frame ${frame.phase}:`, error.message);
+        }
       }
+      return images;
+    };
+
+    // Mode 1: send the marked variants INSTEAD of the plain frames, but only if
+    // every selected frame has one and all of them load. A half-marked sequence
+    // would put a fixed ruler on some frames and not others, which is worse than
+    // no ruler at all — so it is all marked frames or all plain frames.
+    const markedFrameUrls = (frameData && frameData.marked_frame_urls) || {};
+    const markedCandidates = selectedFrames.map((frame) => ({
+      phase: frame.phase,
+      url: markedFrameUrls[frame.phase],
+    }));
+    const markedComplete = markedCandidates.length > 0 && markedCandidates.every((frame) => !!frame.url);
+
+    let usedMarkedFrames = false;
+    let selectedFrameImages = [];
+    if (markedComplete) {
+      const markedImages = await downloadFrames(markedCandidates, 'marked');
+      if (markedImages.length === selectedFrames.length) {
+        selectedFrameImages = markedImages;
+        usedMarkedFrames = true;
+      } else {
+        console.warn(
+          `Marked frames incomplete (${markedImages.length}/${selectedFrames.length}); falling back to plain frames`
+        );
+      }
+    }
+
+    if (!usedMarkedFrames) {
+      selectedFrameImages = await downloadFrames(selectedFrames, 'plain');
     }
 
     if (selectedFrameImages.length === 0) {
       throw new Error('No frame images could be converted');
     }
+    console.log(`Frame source for inference: ${usedMarkedFrames ? 'marked (Mode 1)' : 'plain'}`);
 
     const factStartedAt = Date.now();
     let factResult = null;
@@ -993,6 +1078,7 @@ async function analyzeSwingWithGPT5(frameData, swingData) {
       factResult = await extractSwingFactsWithVision({
         selectedFrameImages,
         userQuestion,
+        markedFrames: usedMarkedFrames,
       });
       factsDurationMs = Date.now() - factStartedAt;
     } catch (factError) {
@@ -1014,6 +1100,7 @@ async function analyzeSwingWithGPT5(frameData, swingData) {
       : await renderCoachResponseDirectFromFrames({
           selectedFrameImages,
           userQuestion,
+          markedFrames: usedMarkedFrames,
         });
     let finalAnalysis = renderResult.text;
     let quality = scoreGenericCoachingResponse(finalAnalysis);
@@ -1040,6 +1127,8 @@ async function analyzeSwingWithGPT5(frameData, swingData) {
       temperature: AI_ANALYSIS_TEMPERATURE,
       framesSelected: selectedFrames.length,
       framesAnalyzed: selectedFrameImages.length,
+      markedFramesUsed: usedMarkedFrames,
+      markingEnabled: SWING_MARKING_ENABLED,
       frameSourceBytesTotal: selectedFrameImages.reduce((total, frame) => total + (frame.sourceBytes || 0), 0),
       framePayloadBytesTotal: selectedFrameImages.reduce((total, frame) => total + (frame.payloadBytes || 0), 0),
       genericGateMonitorOnly: GENERIC_GATE_MONITOR_ONLY,
@@ -1069,6 +1158,7 @@ async function analyzeSwingWithGPT5(frameData, swingData) {
       coaching_response: finalAnalysis,
       frames_analyzed: selectedFrameImages.length,
       frames_skipped: Math.max(allFrames.length - selectedFrameImages.length, 0),
+      marked_frames_used: usedMarkedFrames,
       fallback_triggered: false,
       fallback_reason: null,
       skipped_frames: [],
@@ -1189,8 +1279,15 @@ async function processSwingAnalysis(swingData) {
       }
     });
     
+    // Mode 1: marked variants when the extractor produced them and the flag is on.
+    const marked_frame_urls = extractMarkedFrameUrls(analysisResults, frameData);
+    if (Object.keys(marked_frame_urls).length > 0) {
+      console.log(`Found ${Object.keys(marked_frame_urls).length} marked frames (Mode 1 grounding available)`);
+    }
+
     const convertedFrameData = {
       frame_urls: frame_urls,
+      marked_frame_urls,
       video_duration: analysisResults?.video_duration,
       fps: analysisResults?.fps,
       frames_extracted: frameData.length
@@ -1433,6 +1530,8 @@ exports.__private = {
   scoreGenericCoachingResponse,
   normalizeDynamoItem,
   extractFrameData,
+  extractMarkedFrameUrls,
+  MODE_1_MARKING_INSTRUCTION,
   getGpt5Minor,
   applyModelSpecificControls,
   createOpenAiRetryPayload,

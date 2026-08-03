@@ -507,6 +507,9 @@ async function executeChatLoop({ userId, userMessage, dynamoClient, requestOpenA
           source: 'frame_rereview',
           frameReview,
         },
+        // Mode 2: the visual tool may have shown the player a marked frame.
+        displayFrames: Array.isArray(frameReview.display_frames) ? frameReview.display_frames : [],
+        displayMeta: frameReview.display_meta || null,
       };
     }
 
@@ -586,9 +589,19 @@ async function executeChatLoop({ userId, userMessage, dynamoClient, requestOpenA
   // Visual comparison: when the memory layer planned a then-vs-now comparison,
   // attach the actual frames. The direction of change must come from the model
   // looking at these images — never from a stored score.
+  let displayFrames = [];
+  let displayMeta = null;
   if (comparisonPlan && comparisonPlan.needed && typeof comparisonFrameLoader === 'function') {
     try {
-      const groups = await comparisonFrameLoader(comparisonPlan);
+      // The loader may return the legacy array of groups, or
+      // { groups, display_frames, display_meta } once the Mode 2 display layer
+      // is wired in. Both shapes must keep working.
+      const loaded = await comparisonFrameLoader(comparisonPlan, { swings, question: message });
+      const groups = Array.isArray(loaded) ? loaded : (loaded?.groups || []);
+      if (!Array.isArray(loaded)) {
+        displayFrames = Array.isArray(loaded?.display_frames) ? loaded.display_frames : [];
+        displayMeta = loaded?.display_meta || null;
+      }
       const parts = [];
       for (const group of (groups || [])) {
         if (!group?.images?.length) continue;
@@ -609,11 +622,25 @@ async function executeChatLoop({ userId, userMessage, dynamoClient, requestOpenA
           userId,
           groups: groups.length,
           images: parts.filter((p) => p.type === 'image_url').length,
+          markingsShown: displayFrames.length > 0,
+          markingKind: displayMeta?.kind || null,
+        });
+      }
+      if (displayFrames.length) {
+        // The player is being shown the same marked frames the model is looking
+        // at, so the Mode 1 silence rule is lifted for this turn only.
+        baseMessages.push({
+          role: 'system',
+          content: 'The attached frames carry reference geometry drawn on them (swing plane line, spine line, head circle), '
+            + 'and the player is being shown these same images alongside your reply. You may refer to what is drawn '
+            + 'when it helps them see the point. Never claim a line proves something it does not show.',
         });
       }
     } catch (error) {
       // A failed comparison must degrade to a text answer, not a failed turn.
       safeLog.warn?.('SWING_MEMORY_COMPARISON_FAILED', error?.message || error);
+      displayFrames = [];
+      displayMeta = null;
     }
   }
 
@@ -639,6 +666,8 @@ async function executeChatLoop({ userId, userMessage, dynamoClient, requestOpenA
   return {
     reply: assistantText.trim(),
     rawResponse: result.rawResponse,
+    displayFrames,
+    displayMeta,
   };
 }
 

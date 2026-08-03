@@ -7,6 +7,7 @@ const { executeChatLoop } = require('../chat/chatLoop');
 const swingRepository = require('../data/swingRepository');
 const { SYSTEM_PROMPT, buildCoachRenderPrompt } = require('../prompts/coachingSystemPrompt');
 const { buildLockedContent, evaluateAccessForLockedResult } = require('../access/entitlementGate');
+const displayPolicy = require('../marking/displayPolicy');
 const crypto = require('crypto');
 const https = require('https');
 
@@ -20,6 +21,8 @@ const HTTP_REQUEST_TIMEOUT_MS = parseInt(process.env.HTTP_REQUEST_TIMEOUT_MS || 
 const CHAT_VISUAL_TOOL_ENABLED = process.env.CHAT_VISUAL_TOOL_ENABLED !== 'false';
 const CHAT_VISUAL_TOOL_MAX_FRAMES = Math.max(2, Math.min(parseInt(process.env.CHAT_VISUAL_TOOL_MAX_FRAMES || '4', 10), 6));
 const COACH_TONE_PROFILE = (process.env.COACH_TONE_PROFILE || 'wry').toLowerCase();
+// Mode 2 (showing a marked frame to the player). Ships dark: default false.
+const SWING_MARKING_DISPLAY_ENABLED = /^(1|true|yes|on)$/i.test((process.env.SWING_MARKING_DISPLAY_ENABLED || '').trim());
 const JWKS_CACHE_TTL_MS = 1000 * 60 * 60 * 6;
 const jwksCacheByIssuer = new Map();
 
@@ -457,6 +460,11 @@ async function handleChatLoopRequest(event, userContext) {
     comparisonFrameLoader: loadComparisonFrames,
   });
 
+  const displayFrames = Array.isArray(result.displayFrames) ? result.displayFrames : [];
+  const extra = displayFrames.length
+    ? { display_frames: displayFrames, display_frames_meta: result.displayMeta || null }
+    : {};
+
   return {
     statusCode: 200,
     headers: {
@@ -468,6 +476,7 @@ async function handleChatLoopRequest(event, userContext) {
         userContext,
         userMessage: message,
         coachReply: result.reply,
+        extra,
       })
     )
   };
@@ -628,14 +637,15 @@ function buildAnalysisPromptContext(analysis, label) {
   };
 }
 
-async function loadFrameImagesForAnalysis(analysis, label, logger) {
+async function loadFrameImagesForAnalysis(analysis, label, logger, markedUrlByPlainUrl = null) {
   const frames = extractFramesFromAnalysis(analysis);
   const selectedFrames = selectVisualFrames(frames, CHAT_VISUAL_TOOL_MAX_FRAMES);
   const frameImages = [];
 
   for (const frame of selectedFrames) {
     try {
-      const payload = await downloadFrameAsDataUrl(frame.url);
+      const marked = markedUrlByPlainUrl ? markedUrlByPlainUrl.get(frame.url) : null;
+      const payload = await downloadFrameAsDataUrl(marked || frame.url);
       frameImages.push({
         label,
         phase: frame.phase,
@@ -695,9 +705,23 @@ async function answerVisualQuestionWithFrames({
       analysis,
       index === 0 ? 'latest_uploaded_swing' : 'previous_uploaded_swing'
     ));
+  // Mode 2, single-frame case: a plane / posture / head question about one swing
+  // is exactly what a marking answers. The policy decides; when it says show,
+  // that one frame is swapped for its marked variant.
+  const singleDisplay = responseMode === 'swing_comparison'
+    ? { show: false, frames: [] }
+    : decideSingleMarkingDisplay({ swing: analyses[0], question });
+  const markedUrlByPlainUrl = new Map();
+  singleDisplay.frames.forEach((frame) => {
+    if (frame?.url && frame?.plain_url) {
+      markedUrlByPlainUrl.set(frame.plain_url, frame.url);
+    }
+  });
+
   const frameSets = [];
   for (let index = 0; index < contexts.length; index += 1) {
-    frameSets.push(await loadFrameImagesForAnalysis(analyses[index], contexts[index].label, safeLog));
+    frameSets.push(await loadFrameImagesForAnalysis(
+      analyses[index], contexts[index].label, safeLog, markedUrlByPlainUrl));
   }
   const frameImages = frameSets.flatMap((set) => set.frameImages);
   const selectedFrames = frameSets.flatMap((set) => set.selectedFrames);
@@ -727,7 +751,12 @@ async function answerVisualQuestionWithFrames({
         (isComparison
           ? 'Compare latest_uploaded_swing against previous_uploaded_swing using both stored analysis and visible frames. '
           : 'Answer using the latest uploaded swing context and visible frames. ') +
-        'Do not invent details.',
+        'Do not invent details.' +
+        (singleDisplay.show
+          ? ' One of the attached frames carries reference geometry drawn on it (swing plane line, spine line, head circle) '
+            + 'and the player is being shown that same image alongside your reply, so you may refer to what is drawn. '
+            + 'Never claim a line proves something it does not show.'
+          : ''),
     },
     {
       type: 'text',
@@ -774,6 +803,10 @@ async function answerVisualQuestionWithFrames({
     analysis_ids: contexts.map((context) => context.analysis_id).filter(Boolean),
     frames_used: frameImages.map((frame) => `${frame.label}:${frame.phase}`),
     duration_ms: durationMs,
+    display_frames: singleDisplay.show ? singleDisplay.frames : [],
+    display_meta: singleDisplay.show
+      ? { kind: singleDisplay.kind, marking: singleDisplay.marking || null, reason: singleDisplay.reason }
+      : null,
   };
 }
 
@@ -1078,25 +1111,186 @@ exports.handler = async (event) => {
 exports.__private = {
   getGpt5Minor,
   applyModelSpecificControls,
+  loadComparisonFrames,
+  buildChatSuccessPayload,
+  decideMarkingDisplay,
+  decideSingleMarkingDisplay,
+  annotateFramesWithMarked,
+  readMarkingRecord,
 };
+
+// --- Mode 2: marked-frame display -----------------------------------------
+// The extractor writes analysis_results.marking and cross-links each frame with
+// marked_url / marked_key. Everything below reads that record; if it is missing
+// or says generated:false, chat behaves exactly as it did before markings existed.
+
+function readMarkingRecord(swing) {
+  const results = swing?.analysisResults || swing?.analysis_results || null;
+  const marking = results && typeof results === 'object' ? results.marking : null;
+  return marking && typeof marking === 'object' ? marking : null;
+}
+
+function readExtractionAnchored(swing) {
+  const results = swing?.analysisResults || swing?.analysis_results || null;
+  const extraction = results && typeof results === 'object' ? results.extraction : null;
+  if (!extraction || typeof extraction !== 'object') return false;
+  const anchored = extraction.anchor_time !== null && extraction.anchor_time !== undefined && extraction.anchor_time !== '';
+  return anchored || /event-anchored/i.test(String(extraction.mode || ''));
+}
+
+// Annotate the plan's frames (which carry url/key/phaseHint) with the marked
+// variant stored on the same swing, matched on S3 key or phase.
+function annotateFramesWithMarked(planFrames, swing) {
+  const results = swing?.analysisResults || swing?.analysis_results || null;
+  const stored = Array.isArray(results?.frames) ? results.frames : [];
+  const byKey = new Map();
+  const byPhase = new Map();
+  stored.forEach((frame) => {
+    if (!frame || typeof frame !== 'object') return;
+    const markedUrl = frame.marked_url || frame.markedUrl || null;
+    const markedKey = frame.marked_key || frame.markedKey || null;
+    if (!markedUrl && !markedKey) return;
+    const plainKey = frame.key || frame.s3_key
+      || (typeof frame.url === 'string' && frame.url.includes('.amazonaws.com/')
+        ? frame.url.split('.amazonaws.com/')[1]
+        : null);
+    if (plainKey) byKey.set(plainKey, { markedUrl, markedKey });
+    if (frame.phase) byPhase.set(frame.phase, { markedUrl, markedKey });
+  });
+
+  return (Array.isArray(planFrames) ? planFrames : []).map((frame) => {
+    const key = frame?.key
+      || (typeof frame?.url === 'string' && frame.url.includes('.amazonaws.com/')
+        ? frame.url.split('.amazonaws.com/')[1]
+        : null);
+    const phase = frame?.sourcePhase || frame?.phase || null;
+    const match = (key && byKey.get(key)) || (phase && byPhase.get(phase)) || null;
+    return {
+      ...frame,
+      key,
+      phase,
+      markedUrl: match ? match.markedUrl : null,
+      markedKey: match ? match.markedKey : null,
+    };
+  });
+}
+
+function buildMarkingSide(swing, planFrames, planSide) {
+  if (!swing) return null;
+  return {
+    analysisId: planSide?.analysisId || swing.analysisId || swing.analysis_id || null,
+    capturedAt: planSide?.capturedAt || swing.capturedAt || swing.captured_at || null,
+    extractionMode: planSide?.extractionMode || null,
+    anchored: readExtractionAnchored(swing),
+    marking: readMarkingRecord(swing) || { generated: false, reason: 'no marking record on this swing' },
+    frames: annotateFramesWithMarked(planFrames, swing),
+  };
+}
+
+function findSwingById(swings, analysisId) {
+  if (!analysisId) return null;
+  return (Array.isArray(swings) ? swings : [])
+    .find((swing) => (swing?.analysisId || swing?.analysis_id) === analysisId) || null;
+}
+
+// Decides whether a marked frame may be shown for this turn. Returns the policy
+// decision plus the marked URL to substitute per group. Never throws.
+function decideMarkingDisplay({ plan, swings, question }) {
+  const noShow = (reason) => ({ show: false, kind: null, reason, frames: [] });
+  try {
+    if (!SWING_MARKING_DISPLAY_ENABLED) {
+      return noShow('display disabled: SWING_MARKING_DISPLAY_ENABLED is not enabled');
+    }
+    const priorSwing = findSwingById(swings, plan?.priorSwing?.analysisId);
+    const currentSwing = findSwingById(swings, plan?.currentSwing?.analysisId) || (Array.isArray(swings) ? swings[0] : null);
+    const markingAvailable = {
+      prior: buildMarkingSide(priorSwing, plan?.priorFrames, plan?.priorSwing),
+      current: buildMarkingSide(currentSwing, plan?.currentFrames, plan?.currentSwing),
+    };
+    return displayPolicy.shouldShowMarking({
+      question,
+      coachIntent: null,
+      markingAvailable,
+      comparison: plan,
+      // Open product question (paid tier or not) — reported, never enforced here.
+      entitlementActive: undefined,
+    });
+  } catch (error) {
+    console.warn('MARKING_DISPLAY_DECISION_FAILED', error?.message || error);
+    return noShow(`display decision failed: ${error?.message || error}`);
+  }
+}
+
+// Mode 2, single-swing case: used by the frame re-review path, where a plane /
+// posture / head question about one swing is answered by looking again. Only the
+// frames that path will actually load are candidates, so a shown frame is always
+// a frame the model saw. Never throws.
+function decideSingleMarkingDisplay({ swing, question }) {
+  const noShow = (reason) => ({ show: false, kind: null, reason, frames: [] });
+  try {
+    if (!SWING_MARKING_DISPLAY_ENABLED) {
+      return noShow('display disabled: SWING_MARKING_DISPLAY_ENABLED is not enabled');
+    }
+    if (!swing) {
+      return noShow('no swing to mark');
+    }
+    const candidates = selectVisualFrames(extractFramesFromAnalysis(swing), CHAT_VISUAL_TOOL_MAX_FRAMES);
+    const markingAvailable = {
+      current: {
+        analysisId: swing.analysisId || swing.analysis_id || null,
+        capturedAt: swing.capturedAt || swing.captured_at || null,
+        anchored: readExtractionAnchored(swing),
+        marking: readMarkingRecord(swing) || { generated: false, reason: 'no marking record on this swing' },
+        frames: annotateFramesWithMarked(candidates, swing),
+      },
+    };
+    return displayPolicy.shouldShowMarking({
+      question,
+      coachIntent: null,
+      markingAvailable,
+      comparison: null,
+      entitlementActive: undefined,
+    });
+  } catch (error) {
+    console.warn('MARKING_DISPLAY_DECISION_FAILED', error?.message || error);
+    return noShow(`display decision failed: ${error?.message || error}`);
+  }
+}
 
 // Loads the frames named by swingMemory's visual-comparison plan so the model
 // can judge change by looking, rather than from any stored score.
-// Returns [{ label, date, images: [dataUrl] }]; failures degrade to fewer
-// groups (chatLoop falls back to a text-only answer when nothing loads).
-async function loadComparisonFrames(plan) {
-  if (!plan || !plan.needed) return [];
+// Returns { groups: [{ label, date, images: [dataUrl] }], display_frames, display_meta }.
+// Failures degrade to fewer groups (chatLoop falls back to a text-only answer
+// when nothing loads) and markings never block the plain path.
+async function loadComparisonFrames(plan, { swings = [], question = '' } = {}) {
+  const empty = { groups: [], display_frames: [], display_meta: null };
+  if (!plan || !plan.needed) return empty;
+
+  const decision = decideMarkingDisplay({ plan, swings, question });
+  // Marked variants are substituted for the model only when the coach is also
+  // showing them, so the words the player reads match the picture they see.
+  const markedByRole = new Map();
+  if (decision.show) {
+    decision.frames.forEach((frame) => {
+      if (frame?.url) markedByRole.set(frame.role, frame.url);
+    });
+  }
+
   const groups = [
-    { label: 'EARLIER SWING', swing: plan.priorSwing, frames: plan.priorFrames },
-    { label: 'CURRENT SWING', swing: plan.currentSwing, frames: plan.currentFrames },
+    { role: 'prior', label: 'EARLIER SWING', swing: plan.priorSwing, frames: plan.priorFrames },
+    { role: 'current', label: 'CURRENT SWING', swing: plan.currentSwing, frames: plan.currentFrames },
   ];
   const loaded = [];
   for (const group of groups) {
-    const frames = Array.isArray(group.frames) ? group.frames : [];
+    const markedUrl = markedByRole.get(group.role);
+    const urls = markedUrl
+      ? [markedUrl]
+      : (Array.isArray(group.frames) ? group.frames : [])
+        .slice(0, CHAT_VISUAL_TOOL_MAX_FRAMES)
+        .map((frame) => frame?.url || frame?.frame_url || frame?.image_url)
+        .filter(Boolean);
     const images = [];
-    for (const frame of frames.slice(0, CHAT_VISUAL_TOOL_MAX_FRAMES)) {
-      const url = frame?.url || frame?.frame_url || frame?.image_url;
-      if (!url) continue;
+    for (const url of urls) {
       try {
         const payload = await downloadFrameAsDataUrl(url);
         images.push(payload.dataUrl);
@@ -1109,6 +1303,15 @@ async function loadComparisonFrames(plan) {
       loaded.push({ label: group.label, date: captured ? String(captured).slice(0, 10) : null, images });
     }
   }
+
   // A one-sided comparison is misleading; require both halves.
-  return loaded.length === 2 ? loaded : [];
+  const usable = loaded.length === 2 ? loaded : [];
+  const showing = decision.show && usable.length === 2;
+  return {
+    groups: usable,
+    display_frames: showing ? decision.frames : [],
+    display_meta: showing
+      ? { kind: decision.kind, marking: decision.marking || null, reason: decision.reason }
+      : null,
+  };
 }

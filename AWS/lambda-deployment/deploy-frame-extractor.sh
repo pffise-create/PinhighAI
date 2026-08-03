@@ -29,8 +29,16 @@ cd "$(dirname "$0")/src/frame-extractor"
 print_status "Creating deployment package..."
 zip -r ../../frame-extractor-sqs.zip lambda_function.py
 
+# Swing marking module (Mode 1). Inert unless SWING_MARKING_ENABLED is set, and
+# it also needs the marking layer (tflite_runtime + opencv-headless + numpy +
+# Pillow + /opt/models/movenet_singlepose_thunder_f16.tflite) attached to the
+# function. Without the layer the import fails and marking is simply skipped.
+cd ..
+print_status "Adding marking module to the package..."
+zip -r ../frame-extractor-sqs.zip marking/swing_marker.py marking/__init__.py
+
 # Navigate back
-cd ../..
+cd ..
 
 # Update function code
 print_status "Updating Lambda function code..."
