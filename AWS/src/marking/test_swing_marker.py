@@ -179,14 +179,18 @@ class TestHeadCircleProportionality(unittest.TestCase):
         """Synthetic upright pose whose head size scales by `head_scale`."""
         def pt(x, y, s=0.9):
             return {"x": x, "y": y, "score": s}
+        # Scale BOTH axes: the radius is fitted to the head's actual extent, so a head
+        # that only widens is not "twice as large" and must not be expected to double it.
         ear_half = 0.03 * head_scale
+        eye_rise = 0.01 * head_scale      # nose->eye vertical offset scales too
+        cy = 0.20
         kps = {n: pt(0.5, 0.5) for n in sm.KEYPOINT_NAMES}
         kps.update({
-            "nose": pt(0.50, 0.20),
-            "left_eye": pt(0.50 + ear_half * 0.5, 0.19),
-            "right_eye": pt(0.50 - ear_half * 0.5, 0.19),
-            "left_ear": pt(0.50 + ear_half, 0.20),
-            "right_ear": pt(0.50 - ear_half, 0.20),
+            "nose": pt(0.50, cy),
+            "left_eye": pt(0.50 + ear_half * 0.5, cy - eye_rise),
+            "right_eye": pt(0.50 - ear_half * 0.5, cy - eye_rise),
+            "left_ear": pt(0.50 + ear_half, cy),
+            "right_ear": pt(0.50 - ear_half, cy),
             "left_shoulder": pt(0.58, 0.30), "right_shoulder": pt(0.42, 0.30),
             "left_hip": pt(0.55, 0.55), "right_hip": pt(0.45, 0.55),
         })
@@ -200,12 +204,29 @@ class TestHeadCircleProportionality(unittest.TestCase):
         self.assertAlmostEqual(large["r"] / small["r"], 2.0, places=5,
                                msg="doubling detected head size must double the circle radius")
 
-    def test_radius_formula_face_on(self):
+    def test_radius_is_fitted_within_the_factor_upper_bound(self):
+        """The keypoint-factor radius reliably CONTAINS the head but overshoots real
+        heads by ~1.5x (clip-art). It is now an upper bound: the shipped radius is
+        fitted to actual head extent and may be smaller, never larger."""
         kps = self._kps(1.0)
         head, _ = sm._head_circle(kps, "face_on", self.W, self.H)
         inter_ear_px = abs(kps["left_ear"]["x"] - kps["right_ear"]["x"]) * self.W
-        self.assertAlmostEqual(head["r"] * self.W,
-                               sm.HEAD_RADIUS_FACTOR_FACE_ON * inter_ear_px, places=4)
+        upper = sm.HEAD_RADIUS_FACTOR_FACE_ON * inter_ear_px
+        self.assertLessEqual(head["r"] * self.W, upper + 1e-6,
+                             "fitted radius must never exceed the factor upper bound")
+        self.assertGreater(head["r"] * self.W, 0.4 * upper,
+                           "fitted radius collapsed — the head would not be enclosed")
+
+    def test_fitted_ring_still_encloses_every_head_keypoint(self):
+        """Tightening the ring must not clip the head: the accuracy gate outranks the
+        design one."""
+        import math as _m
+        kps = self._kps(1.0)
+        head, _ = sm._head_circle(kps, "face_on", self.W, self.H)
+        cx, cy, r = head["cx"] * self.W, head["cy"] * self.H, head["r"] * self.W
+        for n in ("nose", "left_eye", "right_eye", "left_ear", "right_ear"):
+            d = _m.hypot(kps[n]["x"] * self.W - cx, kps[n]["y"] * self.H - cy)
+            self.assertLess(d, r, f"{n} fell outside the fitted head circle")
 
     @needs_fixtures
     def test_fixture_radii_track_head_size_not_fixed_pixels(self):

@@ -66,7 +66,7 @@ except ImportError:  # pragma: no cover
     cv2 = None
     _HAS_CV2 = False
 
-MARKER_VERSION = "3.0.0"
+MARKER_VERSION = "4.0.0"
 
 MODEL_FILENAME = "movenet_singlepose_thunder_f16.tflite"
 MODEL_SHA256 = "41641538679ec79b07d4101e591dda47d098c09af29607674b2a40b8a3798dd3"
@@ -91,6 +91,13 @@ VIEW_MIN_CONFIDENCE = 0.50     # below this, view-gated markings (plane/spine) a
 
 HEAD_RADIUS_FACTOR_FACE_ON = 0.96   # r = 0.96 x inter-ear distance      (research §2.1, enlarged
 HEAD_RADIUS_FACTOR_DTL = 1.80       # r = 1.80 x eye-to-ear distance      so cap crown/occiput fit)
+# The factors above size a ring that RELIABLY contains the head; measured against real
+# heads they overshoot by ~1.5x, which is the clip-art signature. The ring is therefore
+# FITTED to the head's actual extent: farthest confident head keypoint from the centre,
+# plus a crown allowance (keypoints sit on the face, the skull continues above and behind),
+# plus a small margin. The factor-derived radius becomes an upper bound, never the answer.
+HEAD_FIT_CROWN_ALLOWANCE = 0.45     # x (centre -> farthest face keypoint): skull beyond the face
+HEAD_FIT_MARGIN = 0.04              # x r: breathing room so the ring never grazes hair
 # Oblique "DTL" views foreshorten the eye->ear distance (three-quarter face), which
 # undersized the ring ~15% on the oblique fixture (strict-eval v2). The nose->far-ear
 # span tracks head depth robustly across profile AND oblique views; take the larger
@@ -127,7 +134,11 @@ HEAD_MIN_CONFIDENCE = 0.35
 PLANE_BOTTOM_OVERSHOOT = 2.5   # x ball radius past the ball (min PLANE_BOTTOM_MIN_PX px)
 PLANE_BOTTOM_MIN_PX = 0.010    # x H
 PLANE_TOP_CLEARANCE = 0.55     # x head-circle radius above the ring's top = plane-line top end
-PLANE_EDGE_MARGIN = 0.01       # x W/H: rendered endpoints stay inside the frame by this margin
+PLANE_EDGE_MARGIN = 0.06       # x W/H: rendered endpoints stay this far inside every frame
+                               # edge. At 0.01 the line terminated 2px from the edge on a
+                               # 320px source with chroma still at 81% of peak — a stroke
+                               # dissolving at a frame edge is the clearest "not broadcast"
+                               # tell. 0.06 = 65px at 1080.
 SPINE_TOP_GAP = 1.18           # x head-circle radius: spine tip keeps this clearance from center
 SPINE_EXTEND_BEYOND_SHOULDER = 0.30   # base upward extension (x hip->shoulder), pre-clamp
 SPINE_EXTEND_NO_HEAD = 0.10           # conservative extension when no head circle to clamp against
@@ -172,19 +183,26 @@ class MarkingStyle:
     plane_color: Tuple[int, int, int] = (255, 45, 149)    # magenta  (never orange/yellow)
     spine_color: Tuple[int, int, int] = (46, 196, 182)    # teal
     head_color: Tuple[int, int, int] = (170, 110, 255)    # violet
-    casing_color: Tuple[int, int, int] = (8, 10, 12)      # near-black casing/glow base
-    casing_tint: float = 0.16       # fraction of the marking's OWN hue blended into its
-                                    # casing+glow. A pure-black casing on a bright sky
-                                    # reads as "black ring with a colour fringe"; a
-                                    # hue-tinted casing stays dark enough to separate
-                                    # while the marking still reads as its colour.
+    casing_color: Tuple[int, int, int] = (8, 10, 12)      # legacy neutral base (unused when
+                                                          # a per-marking casing is defined)
+    casing_tint: float = 0.16       # fallback tint fraction for any marking without an
+                                    # explicit casing colour below.
+    # Per-marking DARK-OF-HUE casings. A near-black casing measured DeltaL -162 against
+    # blown-out sky: the eye read a black rim before the colour. These are the same hue
+    # at low luminance, so they separate the stroke from the video without reading as an
+    # outline. Acceptance: DeltaL no worse than -55 at +2px on a 220-luminance background.
+    plane_casing: Tuple[int, int, int] = (74, 12, 48)     # dark magenta  #4A0C30
+    spine_casing: Tuple[int, int, int] = (10, 59, 54)     # dark teal     #0A3B36
+    head_casing: Tuple[int, int, int] = (46, 26, 71)      # dark violet   #2E1A47
 
     # --- stroke widths (relative to frame width, then to role) -------------
-    stroke_ratio: float = 0.0056    # PRIMARY stroke width = ratio x frame width
-    stroke_min_px: float = 2.6      # floor: below this a layered stroke has no pixels to work with
-    stroke_max_px: float = 9.0      # ceiling: keeps 4K frames from getting a slab
-    secondary_scale: float = 0.70   # non-primary markings are thinner...
-    secondary_alpha_scale: float = 0.90   # ...and very slightly quieter
+    stroke_ratio: float = 0.0055    # PRIMARY stroke width = ratio x frame width.
+                                    # Broadcast telestration sits near 0.4-0.6% of frame
+                                    # width; 1.4-1.9% reads as a marker pen.
+    stroke_min_px: float = 3.0
+    stroke_max_px: float = 7.0      # ceiling: keeps 4K frames from getting a slab
+    secondary_scale: float = 0.75   # non-primary markings are thinner...
+    secondary_alpha_scale: float = 0.62   # ...and clearly quieter, so the primary leads
     ring_scale_primary: float = 0.78      # head ring width vs PRIMARY stroke, ring is primary
     ring_scale_secondary: float = 0.66    # ...and when it is a supporting marking
     ring_min_px: float = 2.0
@@ -192,7 +210,9 @@ class MarkingStyle:
     # --- dark casing (crisp edge definition) -------------------------------
     casing_ratio: float = 0.32      # casing extends this x stroke width on EACH side
     casing_min_px: float = 0.75
-    casing_alpha: int = 210
+    casing_width_ratio: float = 0.0011   # absolute casing pad = ratio x frame width (>=1px).
+                                         # Supersedes casing_ratio when larger of the two.
+    casing_alpha: int = 115         # was 210 — the casing is a separation edge, not an outline
     casing_taper_floor: float = 0.55  # the casing pad shrinks with a tapering body down
                                       # to this fraction — a constant pad around a taper
                                       # turns the tip into a dark blob
@@ -201,10 +221,14 @@ class MarkingStyle:
     body_alpha: int = 242
 
     # --- core highlight (the "lit object" read) ----------------------------
-    core_ratio: float = 0.26        # core width vs stroke width
+    core_enabled: bool = False      # OFF by default. A/B on identical backgrounds showed
+                                    # the core desaturates the body into a five-band ribbon
+                                    # (magenta -> dull crimson) and, at 320px, renders a
+                                    # literal 1-2px white square on the golf ball.
+    core_ratio: float = 0.22        # core width vs stroke width (when enabled)
     core_min_px: float = 0.85
-    core_mix: float = 0.50          # body colour -> white
-    core_alpha: int = 250
+    core_mix: float = 0.18          # body colour -> lighter (never toward white)
+    core_alpha: int = 200
     core_fade_lo: float = 3.0       # stroke px at/below which the core is suppressed
     core_fade_hi: float = 4.6       # stroke px at/above which it is at full strength.
                                     # Below ~3px the core desaturates the body and beads
@@ -212,16 +236,28 @@ class MarkingStyle:
                                     # clean 2-layer casing+body instead.
 
     # --- soft dark glow (depth / separation from any background) -----------
-    glow_ratio: float = 0.85        # glow extends this x stroke beyond the casing, each side
-    glow_min_px: float = 1.0
-    glow_blur_ratio: float = 1.15   # Gaussian radius = ratio x stroke width
-    glow_blur_min_px: float = 1.6
-    glow_alpha: int = 95
+    glow_ratio: float = 0.55        # glow extends this x stroke beyond the casing, each side
+    glow_min_px: float = 0.8
+    glow_blur_ratio: float = 0.55   # Gaussian radius = ratio x stroke width
+    glow_blur_min_px: float = 1.5   # ~1.5px sigma: a tight halo, not a smudge. The old
+                                    # ~6px neutral blur held bright sky 15-25% below true
+                                    # value out to +13px.
+    glow_alpha: int = 64            # was 95
+    glow_alpha_bright: int = 31     # halo alpha where the local background is already
+                                    # bright (see glow_bright_luma) — over blown-out sky a
+                                    # dark halo is what makes graphics look pasted on.
+    glow_bright_luma: float = 170.0
 
     # --- endpoint treatment ------------------------------------------------
-    plane_taper: float = 0.50       # plane-line width at its far (top) end, x stroke
-    plane_taper_frac: float = 0.65  # taper spans this fraction of the run, from the far end
-    plane_tip_alpha: float = 0.80   # alpha multiplier at the far tip (dissolve, not a blunt cap)
+    plane_taper: float = 0.62       # plane-line width at its far (top) end, x stroke
+    plane_taper_frac: float = 0.12  # taper spans the last 12% of LINE LENGTH. A fixed 4px
+                                    # taper looks pointed only under magnification; at 1:1
+                                    # it is a chisel.
+    plane_tip_alpha: float = 0.0    # dissolve fully — a stroke that stops at full chroma
+                                    # reads as a chop, especially near a frame edge.
+    plane_edge_margin_ratio: float = 0.06  # terminus stays this x frame width inside every
+                                           # edge (65px at 1080). A line running off-frame
+                                           # is the clearest "not broadcast" tell.
     plane_node: bool = True         # anchor node at the ball end
     node_scale: float = 1.25        # node colour-disc radius, x stroke width
     node_core_scale: float = 0.38   # bright centre dot radius, x stroke width
@@ -230,6 +266,15 @@ class MarkingStyle:
 
     # --- head ring ---------------------------------------------------------
     ring_alpha_scale: float = 0.95
+    # A perfectly circular ring at uniform alpha through 360 degrees is the clip-art
+    # signature: around a non-circular head it leaves a visible crescent of empty
+    # background top and bottom. The ring is NOT shrunk to remove that crescent — an
+    # accuracy pass measured it already tangent to hair at one bearing on a real head,
+    # so a smaller ring clips. Instead the arcs that sit ON the head (along its long
+    # axis) carry full alpha and the crescent arcs cosine-ramp down.
+    ring_falloff_enabled: bool = True
+    ring_alpha_min: float = 0.55    # alpha multiplier at the top/bottom of the ring
+    ring_falloff_steps: int = 72    # arc segments used to draw the ramp
 
     # --- anti-aliasing -----------------------------------------------------
     # Supersample factor is chosen so the THINNEST stroke is at least this many pixels
@@ -509,6 +554,7 @@ def _head_circle(kps, view_label: str, w: int, h: int) -> Tuple[Optional[Dict[st
             r_px = max(candidates)
     if not r_px or r_px <= 1:
         return None, "head size not measurable (no confident ear/eye pair)"
+    r_upper = r_px  # factor-derived value is now only an UPPER BOUND
 
     # Lift the center off the face centroid toward the skull center: up always; back
     # (away from the nose, toward the visible ear side) in non-face-on views.
@@ -519,6 +565,16 @@ def _head_circle(kps, view_label: str, w: int, h: int) -> Tuple[Optional[Dict[st
             back_dx = float(np.mean([kps[n]["x"] for n in ears])) - kps["nose"]["x"]
             if abs(back_dx) > 1e-6:
                 cx += math.copysign(HEAD_CENTER_BACK_SHIFT * r_px / w, back_dx)
+
+    # --- fit the radius to the head's ACTUAL extent -------------------------
+    # The factor-derived radius reliably CONTAINS the head but overshoots real heads by
+    # ~1.5x, which reads as clip-art. Measure from the (already lifted/shifted) centre to
+    # the farthest confident head keypoint, extend by a crown allowance because every
+    # keypoint sits on the FACE while the skull continues above and behind it, then add a
+    # small margin. Clamped to the factor radius so this can only ever tighten the ring.
+    far = max(_dist_px(kps[n], {"x": cx, "y": cy, "score": 1}, w, h) for n in vis)
+    r_fit = (far * (1.0 + HEAD_FIT_CROWN_ALLOWANCE)) * (1.0 + HEAD_FIT_MARGIN)
+    r_px = max(1.0, min(r_upper, r_fit))
 
     # Anatomical sanity gates (research §2.1): every confident face keypoint must sit
     # inside the ring with margin; diameter plausible vs torso.
@@ -1003,17 +1059,36 @@ def _stroke_pass(draw, p1, p2, color, alpha, w_start, w_end,
         _disc(draw, p2, w_end / 2, (*color, int(round(alpha * tip_alpha))))
 
 
-def _ring_pass(draw, c, r, width, color, alpha):
+def _ring_pass(draw, c, r, width, color, alpha, style=None, long_axis_deg=0.0):
     """One layer of the head ring: `width` wide, CENTERED on radius `r`.
 
     PIL grows an ellipse outline INWARD from its bounding box, so drawing a wider casing
     ring on the same bbox leaves it flush with the body ring's outer edge — all the dark
     inside, none outside, which reads as a black circle with a colour fringe. Expanding
     the bbox by width/2 re-centers every pass on the same radius.
+
+    When `style.ring_falloff_enabled`, the ring is drawn as arc segments whose alpha
+    cosine-ramps from full on the head's long axis to `ring_alpha_min` at 90 degrees to
+    it, so the crescent of empty background top and bottom recedes instead of being
+    outlined at full strength.
     """
     rb = r + width / 2.0
-    draw.ellipse((c[0] - rb, c[1] - rb, c[0] + rb, c[1] + rb),
-                 outline=(*color, int(alpha)), width=max(1, int(round(width))))
+    box = (c[0] - rb, c[1] - rb, c[0] + rb, c[1] + rb)
+    wpx = max(1, int(round(width)))
+    if not (style and getattr(style, "ring_falloff_enabled", False)):
+        draw.ellipse(box, outline=(*color, int(alpha)), width=wpx)
+        return
+    n = max(12, int(getattr(style, "ring_falloff_steps", 72)))
+    a_min = float(getattr(style, "ring_alpha_min", 0.55))
+    step = 360.0 / n
+    for i in range(n):
+        a0 = i * step
+        # 0 on the long axis, 1 at 90 degrees to it; cos^2 gives a smooth ramp.
+        d = math.radians((a0 + step / 2.0) - long_axis_deg)
+        t = math.sin(d) ** 2
+        seg_alpha = alpha * (1.0 - (1.0 - a_min) * t)
+        draw.arc(box, a0 - 0.6, a0 + step + 0.6,
+                 fill=(*color, max(0, int(seg_alpha))), width=wpx)
 
 
 def resolve_primary(names: Sequence[str], primary: Optional[str] = None) -> Optional[str]:
@@ -1049,8 +1124,13 @@ def select_markings(geometry: SetupGeometry, only: Optional[Sequence[str]] = Non
 def render_overlay(size: Tuple[int, int], geometry: SetupGeometry,
                    style: MarkingStyle = DEFAULT_STYLE,
                    only: Optional[Sequence[str]] = None,
-                   primary: Optional[str] = None) -> Image.Image:
+                   primary: Optional[str] = None,
+                   bg_luma: Optional[Dict[str, float]] = None) -> Image.Image:
     """Render the markings alone onto a transparent RGBA canvas of `size`.
+
+    `bg_luma` — optional {marking_name: mean background luminance under that marking},
+    supplied by render_markings which has the frame. Used only to gate the dark halo
+    down over already-bright background; absent => halo at full strength.
 
     `only`    — render just this subset (default: every marking the geometry carries).
     `primary` — which marking gets primary weight (default: MARKING_PRIORITY order).
@@ -1065,6 +1145,11 @@ def render_overlay(size: Tuple[int, int], geometry: SetupGeometry,
         return out
 
     lead = resolve_primary(list(marks), primary)
+    luma = bg_luma or {}
+
+    def is_bright(name):
+        v = luma.get(name)
+        return v is not None and v > style.glow_bright_luma
 
     # --- role-relative widths ------------------------------------------------
     stroke_p = min(style.stroke_max_px, max(style.stroke_min_px, style.stroke_ratio * w))
@@ -1085,7 +1170,11 @@ def render_overlay(size: Tuple[int, int], geometry: SetupGeometry,
                                                 else style.ring_scale_secondary))
 
     def casing_pad(sw):
-        return max(style.casing_min_px, sw * style.casing_ratio)
+        # Absolute (frame-relative) pad OR the proportional one, whichever is larger.
+        # A pad tied only to stroke width grows into an outline on wide strokes.
+        return max(style.casing_min_px,
+                   sw * style.casing_ratio,
+                   max(1.0, style.casing_width_ratio * w))
 
     def casing_w(body_w, sw, taper=1.0):
         return body_w + 2 * casing_pad(sw) * max(style.casing_taper_floor, taper)
@@ -1097,10 +1186,23 @@ def render_overlay(size: Tuple[int, int], geometry: SetupGeometry,
         return max(style.core_min_px, sw * style.core_ratio)
 
     def core_alpha(sw):
+        if not style.core_enabled:
+            return 0.0
         t = (sw - style.core_fade_lo) / max(1e-9, style.core_fade_hi - style.core_fade_lo)
         return style.core_alpha * max(0.0, min(1.0, t))
 
+    _CASINGS = {
+        style.plane_color: style.plane_casing,
+        style.spine_color: style.spine_casing,
+        style.head_color: style.head_casing,
+    }
+
     def cas(color):
+        # Dark-of-hue casing: same hue, low luminance. Falls back to the legacy
+        # tinted-neutral for any colour without an explicit mapping.
+        explicit = _CASINGS.get(tuple(color))
+        if explicit is not None:
+            return explicit
         return _mix_rgb(style.casing_color, color, style.casing_tint)
 
     def line_px(m):
@@ -1114,13 +1216,16 @@ def render_overlay(size: Tuple[int, int], geometry: SetupGeometry,
 
     # --- pass 1: soft dark glow, drawn at 1x and blurred ---------------------
     # One blurred mask PER marking, so a thin ring never inherits a thick line's radius.
-    def add_glow(canvas, paint, sw, color):
+    def add_glow(canvas, paint, sw, color, bright=False):
         m = Image.new("L", (w, h), 0)
         paint(ImageDraw.Draw(m), sw + 2 * glow_pad(sw))
         m = m.filter(ImageFilter.GaussianBlur(
             max(style.glow_blur_min_px, style.glow_blur_ratio * sw)))
+        # Over already-bright background (blown sky) a dark halo is what makes a
+        # graphic look pasted on, so it is gated down rather than off.
+        ga = style.glow_alpha_bright if bright else style.glow_alpha
         lay = Image.new("RGBA", (w, h), (*cas(color), 0))
-        lay.putalpha(m.point(lambda v: int(v * style.glow_alpha / 255)))
+        lay.putalpha(m.point(lambda v: int(v * ga / 255)))
         return Image.alpha_composite(canvas, lay)
 
     if plane:
@@ -1133,18 +1238,18 @@ def render_overlay(size: Tuple[int, int], geometry: SetupGeometry,
             _disc(d, p2, gw * 0.5 * style.plane_taper, 255)
             if style.plane_node:
                 _disc(d, p1, sw * style.node_scale + glow_pad(sw), 255)
-        out = add_glow(out, _plane_glow, sw, style.plane_color)
+        out = add_glow(out, _plane_glow, sw, style.plane_color, is_bright('plane_line'))
     if spine:
         q1, q2 = line_px(spine)
         out = add_glow(out, lambda d, gw: d.line((*q1, *q2), fill=255,
                                                  width=max(1, int(round(gw)))),
-                       width_of("spine_line"), style.spine_color)
+                       width_of("spine_line"), style.spine_color, is_bright('spine_line'))
     if head:
         def _head_glow(d, gw):
             rb = hr + gw / 2.0  # centre the band on the ring radius (see _ring_pass)
             d.ellipse((hcx - rb, hcy - rb, hcx + rb, hcy + rb),
                       outline=255, width=max(1, int(round(gw))))
-        out = add_glow(out, _head_glow, ring_w, style.head_color)
+        out = add_glow(out, _head_glow, ring_w, style.head_color, is_bright('head_circle'))
 
     # --- pass 2: crisp casing / body / core for the lines, supersampled ------
     if plane or spine:
@@ -1211,8 +1316,10 @@ def render_overlay(size: Tuple[int, int], geometry: SetupGeometry,
             c = ((hcx - x0) * S, (hcy - y0) * S)
             R = hr * S
             _ring_pass(ld, c, R, casing_w(ring_w, ring_w) * S,
-                       cas(style.head_color), style.casing_alpha * a)
-            _ring_pass(ld, c, R, ring_w * S, style.head_color, style.body_alpha * a)
+                       cas(style.head_color), style.casing_alpha * a,
+                       style, head.get("long_axis_deg", 0.0))
+            _ring_pass(ld, c, R, ring_w * S, style.head_color, style.body_alpha * a,
+                       style, head.get("long_axis_deg", 0.0))
             ca = core_alpha(ring_w) * a
             if ca > 2:
                 _ring_pass(ld, c, R, core_w(ring_w) * S,
@@ -1221,6 +1328,44 @@ def render_overlay(size: Tuple[int, int], geometry: SetupGeometry,
             region = out.crop((x0, y0, x1, y1))
             out.paste(Image.alpha_composite(region, small), (x0, y0))
 
+    return out
+
+
+def _background_luma(img, geometry: "SetupGeometry",
+                     only: Optional[Sequence[str]] = None) -> Dict[str, float]:
+    """Mean luminance of the frame along each marking's own path.
+
+    The dark halo exists to separate a stroke from busy video; over already-bright
+    background (blown-out sky) it is the thing that makes a graphic look pasted on.
+    Sampling under each marking individually matters because one stroke can sit on
+    sky while another sits on grass in the same frame.
+    """
+    marks = select_markings(geometry, only)
+    if not marks:
+        return {}
+    w, h = img.size
+    gray = img.convert("L")
+    px = gray.load()
+
+    def at(x, y):
+        xi = min(w - 1, max(0, int(round(x))))
+        yi = min(h - 1, max(0, int(round(y))))
+        return px[xi, yi]
+
+    out: Dict[str, float] = {}
+    for name, m in marks.items():
+        vals = []
+        if name == "head_circle":
+            cx, cy, r = m["cx"] * w, m["cy"] * h, m["r"] * w
+            for i in range(24):
+                a = 2 * math.pi * i / 24
+                vals.append(at(cx + r * math.cos(a), cy + r * math.sin(a)))
+        else:
+            x1, y1, x2, y2 = m["x1"] * w, m["y1"] * h, m["x2"] * w, m["y2"] * h
+            for i in range(24):
+                t = i / 23.0
+                vals.append(at(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t))
+        out[name] = sum(vals) / float(len(vals)) if vals else 0.0
     return out
 
 
@@ -1236,7 +1381,8 @@ def render_markings(frame_path: str, geometry: SetupGeometry, out_path: str,
     if not select_markings(geometry, only):
         return False
     img = ImageOps.exif_transpose(Image.open(frame_path)).convert("RGB")
-    overlay = render_overlay(img.size, geometry, style, only=only, primary=primary)
+    overlay = render_overlay(img.size, geometry, style, only=only, primary=primary,
+                             bg_luma=_background_luma(img, geometry, only))
     out = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     if os.path.splitext(out_path)[1].lower() in (".jpg", ".jpeg"):
