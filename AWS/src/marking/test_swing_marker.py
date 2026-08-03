@@ -439,5 +439,99 @@ class TestDeterminism(unittest.TestCase):
         self.assertEqual(restored.to_json(), text)
 
 
+class TestMarkingSubsets(unittest.TestCase):
+    """The user-facing render shows only the markings relevant to the question, and
+    visual weight is RELATIVE to that set — never fixed per marking type."""
+
+    def _all_marks_session(self):
+        for name, frames in SESSIONS.items():
+            geo = sm.analyze_setup(frames[0])
+            if len(geo.markings) >= 2:
+                return name, frames, geo
+        return None, None, None
+
+    @staticmethod
+    def _body_pixels(overlay, marking, style=None):
+        """Count pixels painted with a marking's own colour (body or core highlight).
+
+        Colour-matched rather than alpha-matched: the soft glow of one marking can
+        legitimately touch another marking's pixels, so a bare alpha probe is ambiguous.
+        """
+        style = style or sm.DEFAULT_STYLE
+        colors = {"plane_line": style.plane_color, "spine_line": style.spine_color,
+                  "head_circle": style.head_color}
+        arr = np.asarray(overlay).astype(np.int32)
+        rgb, a = arr[:, :, :3], arr[:, :, 3]
+        body = np.array(colors[marking])
+        core = np.array(sm._mix_rgb(colors[marking], (255, 255, 255), style.core_mix))
+        near = (np.abs(rgb - body).sum(-1) <= 60) | (np.abs(rgb - core).sum(-1) <= 60)
+        return int(((a >= 150) & near).sum())
+
+    @needs_fixtures
+    def test_subset_draws_only_the_requested_markings(self):
+        name, frames, geo = self._all_marks_session()
+        self.assertIsNotNone(geo, "need a session with >= 2 markings")
+        size = (geo.frame_width, geo.frame_height)
+        for keep in geo.markings:
+            ov = sm.render_overlay(size, geo, only=[keep])
+            self.assertGreater(self._body_pixels(ov, keep), 0, f"{keep}: nothing drawn")
+            for other in geo.markings:
+                if other == keep:
+                    continue
+                self.assertEqual(self._body_pixels(ov, other), 0,
+                                 f"{keep}-only render still painted {other}")
+
+    @needs_fixtures
+    def test_lone_marking_renders_at_primary_weight(self):
+        """A marking shown alone is the whole message: it must be drawn at the weight it
+        gets as the primary of a bigger set, and heavier than as a supporting marking."""
+        name, frames, geo = self._all_marks_session()
+        size = (geo.frame_width, geo.frame_height)
+        support = next(m for m in geo.markings if m != sm.resolve_primary(list(geo.markings)))
+        alone = self._body_pixels(sm.render_overlay(size, geo, only=[support]), support)
+        promoted = self._body_pixels(
+            sm.render_overlay(size, geo, primary=support), support)
+        supporting = self._body_pixels(sm.render_overlay(size, geo), support)
+        self.assertGreater(alone, supporting,
+                           f"{support} alone is not heavier than as a supporting marking")
+        self.assertGreater(promoted, supporting,
+                           f"explicit primary={support} did not promote it")
+
+    @needs_fixtures
+    def test_subset_overlay_is_pixel_stable_across_frames(self):
+        name, frames = _dtl_session()
+        geo = sm.analyze_setup(frames[0])
+        size = (geo.frame_width, geo.frame_height)
+        for only in ([m] for m in geo.markings):
+            overlays = [sm.render_overlay(size, geo, only=only).tobytes() for _ in frames]
+            self.assertEqual(len(set(overlays)), 1,
+                             f"{only}: subset overlay differs between frames")
+
+    @needs_fixtures
+    def test_empty_subset_writes_nothing(self):
+        name, frames = _dtl_session()
+        geo = sm.analyze_setup(frames[0])
+        with tempfile.TemporaryDirectory() as td:
+            out = os.path.join(td, "m.png")
+            self.assertFalse(sm.render_markings(frames[0], geo, out, only=[]))
+            self.assertFalse(os.path.exists(out))
+            # A marking withheld by the gates stays withheld even if requested.
+            withheld = {f["marking"] for f in geo.failures} - set(geo.markings)
+            if withheld:
+                self.assertFalse(sm.render_markings(frames[0], geo, out,
+                                                    only=sorted(withheld)))
+
+    def test_resolve_primary_prefers_explicit_then_priority(self):
+        self.assertEqual(sm.resolve_primary(["spine_line", "head_circle"]), "spine_line")
+        self.assertEqual(sm.resolve_primary(["head_circle"]), "head_circle")
+        self.assertEqual(
+            sm.resolve_primary(["plane_line", "head_circle"], primary="head_circle"),
+            "head_circle")
+        # An explicit choice that is not in the render set falls back to priority.
+        self.assertEqual(sm.resolve_primary(["spine_line"], primary="plane_line"),
+                         "spine_line")
+        self.assertIsNone(sm.resolve_primary([]))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
