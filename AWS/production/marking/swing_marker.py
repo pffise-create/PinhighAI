@@ -139,11 +139,20 @@ PLANE_EDGE_MARGIN = 0.06       # x W/H: rendered endpoints stay this far inside 
                                # 320px source with chroma still at 81% of peak — a stroke
                                # dissolving at a frame edge is the clearest "not broadcast"
                                # tell. 0.06 = 65px at 1080.
-SPINE_TOP_GAP = 1.18           # x head-circle radius: spine tip keeps this clearance from center
-SPINE_EXTEND_BEYOND_SHOULDER = 0.30   # base upward extension (x hip->shoulder), pre-clamp
-SPINE_EXTEND_NO_HEAD = 0.10           # conservative extension when no head circle to clamp against
-SPINE_MIN_EXTENT = 0.85               # x hip->shoulder: never clamp the spine shorter than this
-SPINE_EXTEND_BELOW_HIP = 0.08
+# The spine line should read as the SPINE: sacrum to C7. Pose gives hip and shoulder
+# midpoints, which are both inboard of that — the sacrum sits below the hip midpoint and
+# C7 above the shoulder line — so both ends are extended. A critic measured the drawn
+# line at ~55-60% of the real spine (0.12 of frame height); target is 0.28-0.34.
+SPINE_TOP_GAP = 1.02           # x head-circle radius: spine tip keeps this clearance from
+                               # center. Was 1.18 when the ring was oversized; the ring is
+                               # now fitted, so the tip can reach C7 without touching it.
+SPINE_EXTEND_BEYOND_SHOULDER = 0.34   # base upward extension (x hip->shoulder) to reach C7
+SPINE_EXTEND_NO_HEAD = 0.16           # conservative extension when no head circle to clamp against
+SPINE_MIN_EXTENT = 0.94               # x hip->shoulder: NEVER clamp below the shoulder line.
+                                      # At 0.85 the head-clearance clamp pulled the tip
+                                      # down INTO the torso, so the line dissolved
+                                      # mid-back with neither end on a landmark.
+SPINE_EXTEND_BELOW_HIP = 0.20         # reach the sacrum, not the hip midpoint
 
 
 # ---------------------------------------------------------------------------
