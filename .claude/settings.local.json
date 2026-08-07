@@ -30,7 +30,13 @@
       "WebFetch(domain:raw.githubusercontent.com)",
       "WebFetch(domain:docs.expo.dev)",
       "WebFetch(domain:www.npmjs.com)",
-      "Bash(xxd:*)"
+      "Bash(xxd:*)",
+      "Bash(npx jest *)",
+      "Bash(git fetch *)",
+      "Bash(git rm *)",
+      "Bash(printf '\\\\n# Root scratch/debug files\\\\n/_*.json\\\\n\\\\n# Stray screenshots\\\\nScreenshot*.png\\\\n')",
+      "Bash(npm run *)",
+      "Bash(git push *)"
     ],
     "deny": [],
     "ask": []
