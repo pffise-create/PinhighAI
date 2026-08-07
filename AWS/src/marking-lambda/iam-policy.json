@@ -1,0 +1,11 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "WriteMarkedFramesOnly",
+      "Effect": "Allow",
+      "Action": ["s3:PutObject"],
+      "Resource": "arn:aws:s3:::golf-coach-videos-1753203601/golf-swings/*/frames/*/marked/*"
+    }
+  ]
+}
