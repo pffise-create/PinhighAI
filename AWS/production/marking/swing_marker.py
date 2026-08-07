@@ -66,7 +66,7 @@ except ImportError:  # pragma: no cover
     cv2 = None
     _HAS_CV2 = False
 
-MARKER_VERSION = "4.0.0"
+MARKER_VERSION = "5.0.0"
 
 MODEL_FILENAME = "movenet_singlepose_thunder_f16.tflite"
 MODEL_SHA256 = "41641538679ec79b07d4101e591dda47d098c09af29607674b2a40b8a3798dd3"
@@ -108,7 +108,58 @@ HEAD_CENTER_UP_SHIFT = 0.34         # x r: face keypoints sit low on the head �
 HEAD_CENTER_BACK_SHIFT = 0.26       # x r, DTL only: shift center from the face toward the occiput
 HEAD_DIAMETER_TORSO_MIN = 0.22      # anatomical sanity: head diameter vs shoulder->hip length
 HEAD_DIAMETER_TORSO_MAX = 1.05
-HEAD_KP_MAX_DIST = 0.92             # x r: every confident face keypoint must sit inside the ring
+HEAD_KP_MAX_DIST = 0.95             # x r: every confident face keypoint must sit inside the ring
+
+# --- head ring: silhouette re-centring, then fit --------------------------------------
+# The keypoint anchor is derived from FACE landmarks, so on a profile/oblique head it sits
+# forward and low of the skull centre: measured on real frames the ring grazed the NECK on
+# the face side while leaving 21-42px of empty background across the whole back-of-skull
+# sector. Shrinking about that centre would clip. The ring is therefore RE-CENTRED on the
+# head's own silhouette first, and only then fitted:
+#
+#   1. segment the silhouette in the band ABOVE the shoulder line (that band is head, not
+#      torso), by consensus over many candidate thresholds — see _segment_head_silhouette
+#   2. centre = the silhouette bounding box centroid (the box is grown to include every
+#      confident face keypoint, because the shoulder cut truncates the jaw)
+#   3. r = HEAD_FIT_SEG_FACTOR x max(head_w, head_h) + HEAD_FIT_SEG_PAD, with the
+#      keypoint-derived radius demoted from "the answer" to an upper bound at
+#      HEAD_FIT_KP_DEMOTE x, and a hard containment floor so the ring can never clip.
+#
+# Fail soft: if segmentation is unavailable (no cv2) or fails any plausibility gate, the
+# v4 keypoint centre/radius is used unchanged. A ring that rendered before still renders.
+HEAD_SEG_ROI = 1.60                 # x keypoint radius: half-size of the silhouette search box
+HEAD_SEG_SHOULDER_GAP = 0.02        # x H above the higher shoulder: the silhouette cut
+HEAD_SEG_MIN_FRAC = 0.015           # candidate region area, as a fraction of the search box
+HEAD_SEG_MAX_FRAC = 0.42
+HEAD_SEG_W_MIN = 0.45               # x keypoint radius: plausible silhouette bbox width
+HEAD_SEG_W_MAX = 2.00
+HEAD_SEG_H_MIN = 0.22               # x keypoint radius: plausible silhouette bbox height
+HEAD_SEG_MIN_CANDIDATES = 2         # fewer candidate regions than this => untrusted
+HEAD_SEG_VOTE = 0.35                # a pixel joins the silhouette when this fraction of a
+                                    # seed's candidate regions contain it (consensus, not
+                                    # union: one leaky threshold cannot drag the silhouette
+                                    # into the background, and a head split across seeds —
+                                    # dark cap vs lit face — still contributes both parts)
+HEAD_FIT_SEG_FACTOR = 0.58          # x max(head_w, head_h)
+HEAD_FIT_SEG_PAD = 3.0              # px
+HEAD_FIT_KP_DEMOTE = 0.72           # x keypoint radius: the fit target ceiling
+HEAD_FIT_CLEARANCE = 2.5            # px of clear background between silhouette and ring
+HEAD_RING_MARGIN_BEARINGS = 36      # regression measurement: bearings sampled around the ring
+HEAD_RING_SHOULDER_EXCLUDE = 45.0   # +/- deg around the bearing to the shoulder midpoint —
+                                    # that sector points at the NECK, not the head, and it is
+                                    # where the v4 evaluation mistook neck-tangency for fit
+HEAD_RING_MIN_EDGE = 0.35           # x r: a silhouette "edge" nearer than this is a hole in
+                                    # the mask, not the head outline — the ring centre is
+                                    # inside the head by construction
+HEAD_RING_MIN_MARGIN = 2.0          # px of clear background the ring must keep from the head
+HEAD_RING_SLACK_MARGIN = 6.0        # px: the ring may be no looser than this, unless face
+                                    # containment (HEAD_KP_MAX_DIST) demands more
+HEAD_RING_MAX_SLACK = 0.35          # x r: worst-case empty background inside the ring
+                                    # (v4 measured 0.46-0.63r on the same fixtures)
+HEAD_RING_MEASURABLE_R = 20.0       # px: below this a 1px ragged mask edge is 5% of the
+                                    # radius, so the worst-bearing statistic measures the
+                                    # segmentation rather than the ring. Minimum margin is
+                                    # still asserted at every scale.
 
 SHAFT_ANGLE_MIN_DEG = 20.0     # plausible shaft angle from horizontal at address
 SHAFT_ANGLE_MAX_DEG = 80.0
@@ -130,6 +181,10 @@ SHAFT_MIN_CONFIDENCE = 0.45    # below this the Hough shaft fit is untrusted -> 
 PLANE_MIN_CONFIDENCE = 0.45
 SPINE_MIN_CONFIDENCE = 0.40
 HEAD_MIN_CONFIDENCE = 0.35
+SHOULDER_MIN_CONFIDENCE = 0.30   # face-on shoulder line: both acromions must be observed
+SHOULDER_MIN_SPAN = 0.30         # x torso length: below this the view is too oblique for a
+                                 # shoulder line to mean anything (it collapses toward DTL)
+SHOULDER_EXTEND = 0.10           # x shoulder span, past each acromion
 
 PLANE_BOTTOM_OVERSHOOT = 2.5   # x ball radius past the ball (min PLANE_BOTTOM_MIN_PX px)
 PLANE_BOTTOM_MIN_PX = 0.010    # x H
@@ -174,7 +229,7 @@ SPINE_EXTEND_BELOW_HIP = 0.20         # reach the sacrum, not the hip midpoint
 # Weight is RELATIVE to the render set, never fixed per marking type: whatever is
 # primary carries full width and alpha, everything else recedes. A marking rendered
 # on its own is therefore always primary — it is the whole message.
-MARKING_PRIORITY = ("plane_line", "spine_line", "head_circle")
+MARKING_PRIORITY = ("plane_line", "spine_line", "shoulder_line", "head_circle")
 
 
 @dataclass(frozen=True)
@@ -204,12 +259,15 @@ class MarkingStyle:
     spine_casing: Tuple[int, int, int] = (10, 59, 54)     # dark teal     #0A3B36
     head_casing: Tuple[int, int, int] = (46, 26, 71)      # dark violet   #2E1A47
 
-    # --- stroke widths (relative to frame width, then to role) -------------
-    stroke_ratio: float = 0.0055    # PRIMARY stroke width = ratio x frame width.
-                                    # Broadcast telestration sits near 0.4-0.6% of frame
-                                    # width; 1.4-1.9% reads as a marker pen.
-    stroke_min_px: float = 3.0
-    stroke_max_px: float = 7.0      # ceiling: keeps 4K frames from getting a slab
+    # --- stroke widths (relative to the SUBJECT, then to role) -------------
+    # Stroke weight keys off the measured head, not off frame width. Keyed off the frame,
+    # a 320px source got a stroke 2.4x heavier in relative terms than a 1080px source
+    # (1.56% of frame width vs 0.65%) and the two renders did not read as one graphics
+    # package. The head is the one object whose true size is known in every frame.
+    stroke_head_ratio: float = 0.053  # PRIMARY stroke = ratio x max(head_w, head_h) px
+    stroke_ratio: float = 0.0055    # fallback when the head was not measured: x frame width
+    stroke_min_px: float = 2.5
+    stroke_max_px: float = 9.0      # ceiling: keeps 4K frames from getting a slab
     secondary_scale: float = 0.75   # non-primary markings are thinner...
     secondary_alpha_scale: float = 0.62   # ...and clearly quieter, so the primary leads
     ring_scale_primary: float = 0.78      # head ring width vs PRIMARY stroke, ring is primary
@@ -221,7 +279,10 @@ class MarkingStyle:
     casing_min_px: float = 0.75
     casing_width_ratio: float = 0.0011   # absolute casing pad = ratio x frame width (>=1px).
                                          # Supersedes casing_ratio when larger of the two.
-    casing_alpha: int = 115         # was 210 — the casing is a separation edge, not an outline
+    casing_alpha: int = 91          # 210 -> 115 (v4) -> 91. The casing is a separation edge,
+                                    # not an outline. At 115 the worst bearing on the head
+                                    # ring still measured dL -70 at +2px against a 231-luma
+                                    # sky, against a -55 acceptance bar; 115 x 55/70 = 91.
     casing_taper_floor: float = 0.55  # the casing pad shrinks with a tapering body down
                                       # to this fraction — a constant pad around a taper
                                       # turns the tip into a dark blob
@@ -269,9 +330,29 @@ class MarkingStyle:
                                            # is the clearest "not broadcast" tell.
     plane_node: bool = True         # anchor node at the ball end
     node_scale: float = 1.25        # node colour-disc radius, x stroke width
+    node_ball_scale: float = 2.2    # ...or this x the DETECTED ball radius, whichever is larger
+    node_min_px: float = 4.5        # absolute floor so a 320px source still gets a node
     node_core_scale: float = 0.38   # bright centre dot radius, x stroke width
+    node_pupil_min_px: float = 6.0  # SUPPRESS the pupil below this node outer radius: at
+                                    # r=4.75px the 0.38x pupil quantises to a literal 2x2
+                                    # white square sitting on the golf ball — the one place
+                                    # a viewer sees a rendering bug, not a style choice.
     spine_taper: float = 0.55       # spine narrows to this x stroke at BOTH tips (spindle)
     spine_taper_frac: float = 0.30
+    # Endpoint vocabulary: a measurement has ends, a mark just stops. The spine gets a
+    # perpendicular cross-tick at the C7 end and a filled dot at the pelvis end; the
+    # shoulder line gets acromion dots at both ends.
+    spine_tick_len: float = 2.60    # x stroke width, total length of the C7 cross-tick.
+                                    # ~13px on a 1080 frame: a tick has to clear the line
+                                    # it crosses by more than a pixel to read as a tick,
+                                    # and keying it to the stroke keeps it from dominating
+                                    # a 320px frame the way a fixed 8px does.
+    spine_tick_min_px: float = 5.0
+    spine_tick_width: float = 0.42  # x stroke width
+    spine_dot_scale: float = 0.52   # x stroke width, pelvis dot RADIUS
+    spine_dot_min_px: float = 1.5
+    shoulder_dot_scale: float = 0.52
+    shoulder_dot_min_px: float = 1.5
 
     # --- head ring ---------------------------------------------------------
     ring_alpha_scale: float = 0.95
@@ -284,6 +365,11 @@ class MarkingStyle:
     ring_falloff_enabled: bool = True
     ring_alpha_min: float = 0.55    # alpha multiplier at the top/bottom of the ring
     ring_falloff_steps: int = 72    # arc segments used to draw the ramp
+    ring_alpha_floor: float = 0.48  # the falloff and the support demotion must not simply
+                                    # multiply: 0.62 x 0.55 put a demoted ring's vertical
+                                    # arcs at 0.34 on a 2px stroke, so the ring read as
+                                    # BROKEN rather than as receding. A broken closed curve
+                                    # is worse than a uniform one, so the product is floored.
 
     # --- anti-aliasing -----------------------------------------------------
     # Supersample factor is chosen so the THINNEST stroke is at least this many pixels
@@ -519,7 +605,208 @@ def _facing_direction(kps) -> Optional[str]:
 # ---------------------------------------------------------------------------
 # Head circle (both views)
 # ---------------------------------------------------------------------------
-def _head_circle(kps, view_label: str, w: int, h: int) -> Tuple[Optional[Dict[str, float]], Optional[str]]:
+def _segment_head_silhouette(rgb: "np.ndarray", kps, w: int, h: int,
+                             cx_px: float, cy_px: float, r_kp: float):
+    """The head's own silhouette in the band ABOVE the shoulder line.
+
+    Returns ({bbox, w, h, cx, cy, roi, mask}, None) or (None, reason). Pure classical CV
+    (threshold sweep + Lab colour distance + connected components) — deterministic, so the
+    per-swing geometry stays byte-identical run to run.
+
+    Why a consensus rather than one threshold: a golfer's head is not one tone (dark cap,
+    lit face, shadowed jaw) and the background behind it is arbitrary (blown sky, treeline,
+    a clubhouse wall). No single threshold segments all four. Each candidate mask is grown
+    from seeds that are certainly ON the head, gated for head-plausibility, and a pixel
+    joins the silhouette only when HEAD_SEG_VOTE of a seed's surviving candidates agree.
+    """
+    if not _HAS_CV2:
+        return None, "opencv unavailable: head silhouette segmentation disabled"
+    for n in ("left_shoulder", "right_shoulder"):
+        if not _visible(kps, n):
+            return None, "shoulder line not confident enough to bound the head silhouette"
+
+    sh_y = min(kps["left_shoulder"]["y"], kps["right_shoulder"]["y"]) * h - HEAD_SEG_SHOULDER_GAP * h
+    half = HEAD_SEG_ROI * r_kp
+    x_lo, x_hi = int(max(0, cx_px - half)), int(min(w, cx_px + half))
+    y_lo = int(max(0, cy_px - half))
+    y_hi = int(min(h, min(cy_px + half, sh_y)))
+    if x_hi - x_lo < 10 or y_hi - y_lo < 10:
+        return None, "head silhouette ROI degenerate"
+    rw, rh = x_hi - x_lo, y_hi - y_lo
+
+    sigma = max(0.7, r_kp * 0.05)
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)[y_lo:y_hi, x_lo:x_hi]
+    gray = cv2.GaussianBlur(gray, (0, 0), sigma)
+    lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB).astype(np.float32)[y_lo:y_hi, x_lo:x_hi]
+    lab = cv2.GaussianBlur(lab, (0, 0), sigma)
+
+    def centroid(names):
+        good = [n for n in names if _visible(kps, n)]
+        if not good:
+            return None
+        return (float(np.mean([kps[n]["x"] for n in good])) * w - x_lo,
+                float(np.mean([kps[n]["y"] for n in good])) * h - y_lo)
+
+    # Seeds, best first: the skull above the ears is the most reliably "head" pixel in a
+    # bent-over address; the face centroid can fall BELOW the shoulder cut and drop out.
+    order = []
+    for base in (centroid(("left_ear", "right_ear")),
+                 centroid(("nose", "left_eye", "right_eye"))):
+        if base is None:
+            continue
+        order += [(base[0], base[1] - 0.25 * r_kp), base, (base[0], base[1] - 0.50 * r_kp)]
+    seeds = [(int(round(x)), int(round(y))) for x, y in order
+             if 1 <= x < rw - 1 and 1 <= y < rh - 1]
+    if not seeds:
+        return None, "no confident head keypoint inside the above-shoulder band"
+
+    masks = []
+    otsu = float(cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[0])
+    for t in [otsu] + [float(np.percentile(gray, p)) for p in (20, 30, 40, 50, 60, 70, 80)]:
+        m = (gray >= t).astype(np.uint8)
+        masks.append(m)
+        masks.append(1 - m)          # the head may be the dark side or the light side
+    dist = None
+    for sx, sy in seeds:
+        patch = lab[max(0, sy - 2):sy + 3, max(0, sx - 2):sx + 3].reshape(-1, 3)
+        d = np.linalg.norm(lab - np.median(patch, axis=0)[None, None, :], axis=2)
+        dist = d if dist is None else np.minimum(dist, d)
+    for tol in (8, 12, 16, 20, 26, 32, 40):
+        masks.append((dist <= tol).astype(np.uint8))
+
+    k = max(3, (int(round(r_kp * 0.14)) | 1))
+    kernel = np.ones((k, k), np.uint8)
+    head_kps = ("nose", "left_eye", "right_eye", "left_ear", "right_ear")
+
+    def plausible(x, y, bw, bh, area):
+        if not (HEAD_SEG_MIN_FRAC <= area / float(rw * rh) <= HEAD_SEG_MAX_FRAC):
+            return False
+        if x <= 0 or y <= 0 or x + bw >= rw:      # leaked out of the search box
+            return False
+        if not (HEAD_SEG_W_MIN * r_kp <= bw <= HEAD_SEG_W_MAX * r_kp):
+            return False
+        if bh < HEAD_SEG_H_MIN * r_kp:
+            return False
+        for n in head_kps:                        # a head region contains the head landmarks
+            if not _visible(kps, n):
+                continue
+            kx, ky = kps[n]["x"] * w - x_lo, kps[n]["y"] * h - y_lo
+            if 0 <= ky < rh and not (x - 2 <= kx <= x + bw + 2):
+                return False
+        return True
+
+    per_seed: Dict[Tuple[int, int], List["np.ndarray"]] = {}
+    n_pass = 0
+    for m in masks:
+        m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, kernel)
+        _, labels, stats, _ = cv2.connectedComponentsWithStats(m, 8)
+        for s in seeds:
+            lid = int(labels[s[1], s[0]])
+            if lid == 0:
+                continue
+            x, y, bw, bh, area = (int(v) for v in stats[lid])
+            if not plausible(x, y, bw, bh, area):
+                continue
+            per_seed.setdefault(s, []).append((labels == lid).astype(np.float32))
+            n_pass += 1
+    if n_pass < HEAD_SEG_MIN_CANDIDATES:
+        return None, f"head silhouette unreliable ({n_pass} candidate regions passed the gates)"
+
+    vote = np.zeros((rh, rw), np.uint8)
+    for comps in per_seed.values():
+        vote |= (np.mean(comps, axis=0) >= HEAD_SEG_VOTE).astype(np.uint8)
+    vote = cv2.morphologyEx(vote, cv2.MORPH_CLOSE, kernel)
+    _, labels, stats, _ = cv2.connectedComponentsWithStats(vote, 8)
+    lid, best_area = 0, 0
+    for s in seeds:
+        q = int(labels[s[1], s[0]])
+        if q and int(stats[q, cv2.CC_STAT_AREA]) > best_area:
+            lid, best_area = q, int(stats[q, cv2.CC_STAT_AREA])
+    if lid == 0:
+        return None, "head silhouette consensus empty at every seed"
+    x, y, bw, bh, area = (int(v) for v in stats[lid])
+    if not plausible(x, y, bw, bh, area):
+        return None, "merged head silhouette failed the plausibility gates"
+
+    bx0, by0, bx1, by1 = float(x + x_lo), float(y + y_lo), float(x + bw + x_lo), float(y + bh + y_lo)
+    # The shoulder cut truncates the jaw; the head certainly reaches its own landmarks.
+    for n in head_kps:
+        if not _visible(kps, n):
+            continue
+        kx, ky = kps[n]["x"] * w, kps[n]["y"] * h
+        bx0, bx1 = min(bx0, kx), max(bx1, kx)
+        by0, by1 = min(by0, ky), max(by1, ky)
+    return {
+        "bbox": (bx0, by0, bx1, by1),
+        "w": bx1 - bx0, "h": by1 - by0,
+        "cx": (bx0 + bx1) / 2.0, "cy": (by0 + by1) / 2.0,
+        "roi": (x_lo, y_lo, x_hi, y_hi),
+        "mask": (labels == lid).astype(np.uint8),
+    }, None
+
+
+def head_silhouette_edge(seg, cx: float, cy: float, deg: float, r_max: float):
+    """Distance from (cx, cy) px to the silhouette edge along `deg`, or None.
+
+    Returns None when the ray leaves the search box or exits through the shoulder cut
+    rather than crossing a real edge — those bearings carry no information about fit.
+    A real edge needs three consecutive background samples so single-pixel mask noise
+    cannot be mistaken for the outline.
+    """
+    mask = seg["mask"]
+    x_lo, y_lo = seg["roi"][0], seg["roi"][1]
+    rh, rw = mask.shape
+    a = math.radians(deg)
+    ca, sa = math.cos(a), math.sin(a)
+    t, run, run_start = 0.0, 0, 0.0
+    while t <= r_max:
+        px = int(round(cx - x_lo + ca * t))
+        py = int(round(cy - y_lo + sa * t))
+        if not (0 <= px < rw and 0 <= py < rh):
+            return None
+        if mask[py, px] == 0:
+            if run == 0:
+                run_start = t
+                if py >= rh - 2:       # exited through the shoulder cut, not an edge
+                    return None
+            run += 1
+            if run >= 3:
+                return run_start
+        else:
+            run = 0
+        t += 0.5
+    return None
+
+
+def head_ring_margins(seg, kps, w: int, h: int, cx: float, cy: float, r: float,
+                      bearings: int = HEAD_RING_MARGIN_BEARINGS,
+                      exclude_deg: float = HEAD_RING_SHOULDER_EXCLUDE):
+    """[(bearing_deg, margin_px)] of empty background between the head and the ring.
+
+    The 90-degree sector pointing at the shoulder midpoint is DISCARDED: that bearing runs
+    down the neck, and a ring tangent to the neck is not a ring fitted to the head. Reading
+    fit off those bearings is exactly how the v4 ring was passed as "already tangent".
+    """
+    sh_x = (kps["left_shoulder"]["x"] + kps["right_shoulder"]["x"]) / 2.0 * w
+    sh_y = (kps["left_shoulder"]["y"] + kps["right_shoulder"]["y"]) / 2.0 * h
+    sh_deg = math.degrees(math.atan2(sh_y - cy, sh_x - cx)) % 360.0
+    out = []
+    for i in range(bearings):
+        deg = 360.0 * i / bearings
+        if abs((deg - sh_deg + 180.0) % 360.0 - 180.0) <= exclude_deg:
+            continue
+        d = head_silhouette_edge(seg, cx, cy, deg, r * 2.4)
+        if d is None or d < HEAD_RING_MIN_EDGE * r:
+            # The ring centre is inside the head by construction, so an "edge" a third of
+            # a radius from it is a hole in the mask (a shadowed cheek that segmented as
+            # background), not the head's outline. Reading fit off it would be fiction.
+            continue
+        out.append((deg, r - d))
+    return out
+
+
+def _head_circle(kps, view_label: str, w: int, h: int,
+                 rgb: Optional["np.ndarray"] = None) -> Tuple[Optional[Dict[str, float]], Optional[str]]:
     """Circle around the WHOLE head at address. Radius PROPORTIONAL to detected head size.
 
     face_on: r = HEAD_RADIUS_FACTOR_FACE_ON x inter-ear distance
@@ -585,6 +872,37 @@ def _head_circle(kps, view_label: str, w: int, h: int) -> Tuple[Optional[Dict[st
     r_fit = (far * (1.0 + HEAD_FIT_CROWN_ALLOWANCE)) * (1.0 + HEAD_FIT_MARGIN)
     r_px = max(1.0, min(r_upper, r_fit))
 
+    # --- RE-CENTRE on the head's own silhouette, THEN fit --------------------
+    # The keypoint anchor above is built from FACE landmarks and therefore sits forward
+    # and low of the skull centre. Shrinking about it clips the face while leaving the
+    # back of the head empty, which is why v4's radius never moved. Re-centring first
+    # removes that constraint. Fail soft: any failure keeps the keypoint circle.
+    head_w = head_h = None
+    fit_source = "keypoints"
+    if rgb is not None:
+        seg, _why = _segment_head_silhouette(rgb, kps, w, h, cx * w, cy * h, r_upper)
+        if seg is not None:
+            scx, scy = seg["cx"], seg["cy"]
+            r_seg = HEAD_FIT_SEG_FACTOR * max(seg["w"], seg["h"]) + HEAD_FIT_SEG_PAD
+            # Containment floor: clear of the measured silhouette AND of every confident
+            # face keypoint, at the same margin the accuracy gate below demands.
+            far_edge = 0.0
+            for i in range(HEAD_RING_MARGIN_BEARINGS):
+                d = head_silhouette_edge(seg, scx, scy, 360.0 * i / HEAD_RING_MARGIN_BEARINGS,
+                                         r_seg * 2.0)
+                if d is not None:
+                    far_edge = max(far_edge, d)
+            far_kp = max(math.hypot(kps[n]["x"] * w - scx, kps[n]["y"] * h - scy) for n in vis)
+            # +0.05px so the accuracy gate below cannot trip on the JSON's 6-digit rounding.
+            r_contain = max(far_edge + HEAD_FIT_CLEARANCE, far_kp / HEAD_KP_MAX_DIST + 0.05)
+            r_new = min(r_seg, max(HEAD_FIT_KP_DEMOTE * r_upper, r_contain))
+            r_new = max(r_new, r_contain)                     # never clip the head
+            r_new = min(r_new, max(r_upper, r_contain))       # keypoint radius stays a ceiling
+            if r_new > 1.0:
+                cx, cy, r_px = scx / w, scy / h, r_new
+                head_w, head_h = seg["w"], seg["h"]
+                fit_source = "silhouette"
+
     # Anatomical sanity gates (research §2.1): every confident face keypoint must sit
     # inside the ring with margin; diameter plausible vs torso.
     for n in vis:
@@ -601,7 +919,14 @@ def _head_circle(kps, view_label: str, w: int, h: int) -> Tuple[Optional[Dict[st
     conf = float(np.mean([kps[n]["score"] for n in vis]))
     if conf < HEAD_MIN_CONFIDENCE:
         return None, f"head keypoint confidence {conf:.2f} < {HEAD_MIN_CONFIDENCE}"
-    return {"cx": cx, "cy": cy, "r": r_px / w, "confidence": round(conf, 4)}, None
+    out = {"cx": cx, "cy": cy, "r": r_px / w, "confidence": round(conf, 4),
+           "fit": fit_source}
+    if head_w is not None:
+        # The measured subject scale: stroke weights key off THIS, not off frame width,
+        # so a 320px source and a 1080px source read as one graphics package.
+        out["head_w"] = head_w / w
+        out["head_h"] = head_h / w
+    return out, None
 
 
 # ---------------------------------------------------------------------------
@@ -636,6 +961,33 @@ def _spine_line(kps, w: int, h: int,
     return {
         "x1": hip_mid["x"] - SPINE_EXTEND_BELOW_HIP * dx, "y1": hip_mid["y"] - SPINE_EXTEND_BELOW_HIP * dy,
         "x2": hip_mid["x"] + t_top * dx, "y2": hip_mid["y"] + t_top * dy,
+        "confidence": round(conf, 4),
+    }, None
+
+
+# ---------------------------------------------------------------------------
+# Shoulder line (face-on only)
+# ---------------------------------------------------------------------------
+def _shoulder_line(kps, w: int, h: int) -> Tuple[Optional[Dict[str, float]], Optional[str]]:
+    """Acromion to acromion — the shoulder tilt at address.
+
+    Face-on only: down the line the two shoulders project onto each other and the segment
+    collapses to a point, which is why the DTL views get the spine and the plane instead.
+    A face-on frame that carries only a head ring is not a telestration; shoulder tilt is
+    the standard face-on setup read and pose detects it directly.
+    """
+    ls, rs = kps["left_shoulder"], kps["right_shoulder"]
+    conf = float(min(ls["score"], rs["score"]))
+    if conf < SHOULDER_MIN_CONFIDENCE:
+        return None, f"shoulder confidence {conf:.2f} < {SHOULDER_MIN_CONFIDENCE}"
+    span = _dist_px(ls, rs, w, h)
+    torso = _dist_px(_mid(ls, rs), _mid(kps["left_hip"], kps["right_hip"]), w, h)
+    if torso <= 1 or span < SHOULDER_MIN_SPAN * torso:
+        return None, f"shoulder span {span:.0f}px too short vs torso {torso:.0f}px (view too oblique)"
+    dx, dy = ls["x"] - rs["x"], ls["y"] - rs["y"]
+    return {
+        "x1": rs["x"] - SHOULDER_EXTEND * dx, "y1": rs["y"] - SHOULDER_EXTEND * dy,
+        "x2": ls["x"] + SHOULDER_EXTEND * dx, "y2": ls["y"] + SHOULDER_EXTEND * dy,
         "confidence": round(conf, 4),
     }, None
 
@@ -805,6 +1157,54 @@ def _detect_ball(rgb: np.ndarray, cx: float, cy: float, w: int, h: int, shaft_le
     return unique, None
 
 
+def _refine_ball(rgb: "np.ndarray", ball: Dict[str, float], w: int, h: int) -> Dict[str, float]:
+    """Re-measure the ball's centre and radius at HALF MAXIMUM.
+
+    _detect_ball ranks candidates by brightness margin, which favours the ball's specular
+    CORE over the ball: on a 1080 frame it reported r = 2.3px for a visibly ~11px ball, a
+    5x under-read that then propagated into the plane line's bottom overshoot and the
+    anchor node's size. Half-max thresholding between the blob interior and its local
+    surround is the standard fix and is threshold-free. Fails soft: any implausible result
+    keeps the detection unchanged.
+    """
+    if not _HAS_CV2:
+        return ball
+    bright = rgb.max(axis=2).astype(np.float32)
+    bx, by, r0 = ball["x"] * w, ball["y"] * h, max(1.5, ball["r"] * w)
+    pad = int(max(8, 6.0 * r0))
+    x_lo, x_hi = int(max(0, bx - pad)), int(min(w, bx + pad + 1))
+    y_lo, y_hi = int(max(0, by - pad)), int(min(h, by + pad + 1))
+    if x_hi - x_lo < 6 or y_hi - y_lo < 6:
+        return ball
+    roi = bright[y_lo:y_hi, x_lo:x_hi]
+    yy, xx = np.mgrid[y_lo:y_hi, x_lo:x_hi]
+    rad = np.hypot(xx - bx, yy - by)
+    core, surround = rad <= max(1.0, 0.8 * r0), rad >= 4.0 * r0
+    if core.sum() < 1 or surround.sum() < 8:
+        return ball
+    hi, lo = float(roi[core].mean()), float(np.median(roi[surround]))
+    if hi - lo < BALL_BRIGHTNESS_MARGIN:
+        return ball
+    mask = (roi >= (hi + lo) / 2.0).astype(np.uint8)
+    n, labels, stats, cents = cv2.connectedComponentsWithStats(mask, 8)
+    lid = int(labels[int(round(by)) - y_lo, int(round(bx)) - x_lo])
+    if lid == 0:
+        return ball
+    area = float(stats[lid, cv2.CC_STAT_AREA])
+    bw, bh = float(stats[lid, cv2.CC_STAT_WIDTH]), float(stats[lid, cv2.CC_STAT_HEIGHT])
+    r_new = math.sqrt(area / math.pi)
+    if not (BALL_MIN_R * w <= r_new <= BALL_MAX_R * w):
+        return ball
+    if not (0.45 <= bw / max(1.0, bh) <= 2.2) or area / max(1.0, bw * bh) < 0.45:
+        return ball
+    if r_new < ball["r"] * w:            # the half-max blob can only be the ball or bigger
+        return ball
+    cxn, cyn = float(cents[lid][0]) + x_lo, float(cents[lid][1]) + y_lo
+    if math.hypot(cxn - bx, cyn - by) > 2.0 * r_new:
+        return ball
+    return dict(ball, x=cxn / w, y=cyn / h, r=r_new / w)
+
+
 def _ball_confirms_shaft(ball, shaft, w, h) -> Tuple[bool, str]:
     """Mutual confirmation: the ball must sit ON the shaft line, near its lower endpoint."""
     x1, y1 = shaft["x1"] * w, shaft["y1"] * h
@@ -902,16 +1302,18 @@ def analyze_setup(address_frame_path: str) -> SetupGeometry:
     img = ImageOps.exif_transpose(Image.open(address_frame_path)).convert("RGB")
     w, h = img.size
     kps = _run_pose(img)
+    rgb = np.asarray(img)
 
     failures: List[Dict[str, str]] = []
     markings: Dict[str, Dict[str, float]] = {}
     view: Dict[str, object] = {"label": "unknown", "confidence": 0.0, "spread_ratio": 0.0}
     facing = None
     ball = shaft = None
+    ALL = ("head_circle", "spine_line", "shoulder_line", "plane_line")
 
     ok, reason = _person_present(kps, w, h)
     if not ok:
-        for m in ("head_circle", "spine_line", "plane_line"):
+        for m in ALL:
             failures.append({"marking": m, "reason": f"no reliable pose: {reason}"})
         return SetupGeometry(MARKER_VERSION, w, h, _round_floats(kps), view, facing,
                              ball, shaft, markings, failures)
@@ -922,7 +1324,7 @@ def analyze_setup(address_frame_path: str) -> SetupGeometry:
     # --- head circle: legal in both views; requires only a confident view-independent pose,
     # but the radius rule differs per view, so an ambiguous view still withholds it.
     if view_ok:
-        head, why = _head_circle(kps, view["label"], w, h)
+        head, why = _head_circle(kps, view["label"], w, h, rgb if _HAS_CV2 else None)
         if head:
             markings["head_circle"] = head
         else:
@@ -931,14 +1333,14 @@ def analyze_setup(address_frame_path: str) -> SetupGeometry:
         failures.append({"marking": "head_circle",
                          "reason": f"view ambiguous (confidence {view['confidence']:.2f} < {VIEW_MIN_CONFIDENCE})"})
 
-    # --- spine + plane: DTL only.
+    # --- spine: BOTH views. Down the line it reads as forward bend; face-on it reads as
+    # spine tilt away from the target, which is standard telestration and uses the same
+    # shoulder-midpoint -> hip-midpoint segment. Only the PLANE line is DTL-only: it is
+    # built from a detected shaft, which face-on foreshortens into the body.
     if not view_ok:
-        for m in ("spine_line", "plane_line"):
+        for m in ("spine_line", "shoulder_line", "plane_line"):
             failures.append({"marking": m,
                              "reason": f"view ambiguous (confidence {view['confidence']:.2f} < {VIEW_MIN_CONFIDENCE})"})
-    elif view["label"] != "dtl":
-        for m in ("spine_line", "plane_line"):
-            failures.append({"marking": m, "reason": f"view={view['label']}: {m} is DTL-only"})
     else:
         spine, why = _spine_line(kps, w, h, markings.get("head_circle"))
         if spine:
@@ -946,13 +1348,30 @@ def analyze_setup(address_frame_path: str) -> SetupGeometry:
         else:
             failures.append({"marking": "spine_line", "reason": why})
 
+    # --- shoulder line: face-on only (DTL projects it onto a point).
+    if view_ok and view["label"] == "face_on":
+        shoulder, why = _shoulder_line(kps, w, h)
+        if shoulder:
+            markings["shoulder_line"] = shoulder
+        else:
+            failures.append({"marking": "shoulder_line", "reason": why})
+    elif view_ok:
+        failures.append({"marking": "shoulder_line",
+                         "reason": f"view={view['label']}: shoulder_line is face-on-only"})
+
+    # --- plane: DTL only.
+    if not view_ok:
+        pass
+    elif view["label"] != "dtl":
+        failures.append({"marking": "plane_line",
+                         "reason": f"view={view['label']}: plane_line is DTL-only"})
+    else:
         facing = _facing_direction(kps)
         if facing is None:
             failures.append({"marking": "plane_line", "reason": "cannot determine facing direction from pose"})
         elif not _HAS_CV2:
             failures.append({"marking": "plane_line", "reason": "opencv unavailable: shaft/ball detection disabled"})
         else:
-            rgb = np.asarray(img)
             gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
             shaft, why = _detect_shaft(gray, kps, facing, w, h)
             if shaft is None:
@@ -979,6 +1398,7 @@ def analyze_setup(address_frame_path: str) -> SetupGeometry:
                     failures.append({"marking": "plane_line",
                                      "reason": f"no ball confirmed at clubhead — refusing to guess ({reject_why})"})
                 else:
+                    ball = _refine_ball(rgb, ball, w, h)
                     plane, why = _plane_line(shaft, ball, markings.get("head_circle"), kps, w, h)
                     if plane and plane["confidence"] >= PLANE_MIN_CONFIDENCE:
                         markings["plane_line"] = plane
@@ -1068,7 +1488,8 @@ def _stroke_pass(draw, p1, p2, color, alpha, w_start, w_end,
         _disc(draw, p2, w_end / 2, (*color, int(round(alpha * tip_alpha))))
 
 
-def _ring_pass(draw, c, r, width, color, alpha, style=None, long_axis_deg=0.0):
+def _ring_pass(draw, c, r, width, color, alpha, style=None, long_axis_deg=0.0,
+               demotion=1.0):
     """One layer of the head ring: `width` wide, CENTERED on radius `r`.
 
     PIL grows an ellipse outline INWARD from its bounding box, so drawing a wider casing
@@ -1080,24 +1501,30 @@ def _ring_pass(draw, c, r, width, color, alpha, style=None, long_axis_deg=0.0):
     cosine-ramps from full on the head's long axis to `ring_alpha_min` at 90 degrees to
     it, so the crescent of empty background top and bottom recedes instead of being
     outlined at full strength.
+
+    `alpha` is the ring's alpha BEFORE support demotion and `demotion` is the role factor.
+    They are combined as max(ring_alpha_floor, demotion x falloff) rather than multiplied:
+    the raw product drove a demoted ring's vertical arcs to 0.34 and the closed curve
+    visibly broke where it crossed dark clothing.
     """
     rb = r + width / 2.0
     box = (c[0] - rb, c[1] - rb, c[0] + rb, c[1] + rb)
     wpx = max(1, int(round(width)))
     if not (style and getattr(style, "ring_falloff_enabled", False)):
-        draw.ellipse(box, outline=(*color, int(alpha)), width=wpx)
+        draw.ellipse(box, outline=(*color, int(alpha * demotion)), width=wpx)
         return
     n = max(12, int(getattr(style, "ring_falloff_steps", 72)))
     a_min = float(getattr(style, "ring_alpha_min", 0.55))
+    floor = float(getattr(style, "ring_alpha_floor", 0.48))
     step = 360.0 / n
     for i in range(n):
         a0 = i * step
         # 0 on the long axis, 1 at 90 degrees to it; cos^2 gives a smooth ramp.
         d = math.radians((a0 + step / 2.0) - long_axis_deg)
         t = math.sin(d) ** 2
-        seg_alpha = alpha * (1.0 - (1.0 - a_min) * t)
+        env = max(floor, demotion * (1.0 - (1.0 - a_min) * t))
         draw.arc(box, a0 - 0.6, a0 + step + 0.6,
-                 fill=(*color, max(0, int(seg_alpha))), width=wpx)
+                 fill=(*color, max(0, int(alpha * env))), width=wpx)
 
 
 def resolve_primary(names: Sequence[str], primary: Optional[str] = None) -> Optional[str]:
@@ -1161,7 +1588,16 @@ def render_overlay(size: Tuple[int, int], geometry: SetupGeometry,
         return v is not None and v > style.glow_bright_luma
 
     # --- role-relative widths ------------------------------------------------
-    stroke_p = min(style.stroke_max_px, max(style.stroke_min_px, style.stroke_ratio * w))
+    # Keyed off the SUBJECT (the measured head), so the same swing filmed at 320px and at
+    # 1080px gets proportionally matched strokes. Read from geometry.markings rather than
+    # the rendered subset, so `only=` cannot change a stroke's weight. Falls back to the
+    # frame-relative rule when the head was never measured.
+    head_px = None
+    hc_all = geometry.markings.get("head_circle") or {}
+    if hc_all.get("head_w") is not None:
+        head_px = max(float(hc_all["head_w"]), float(hc_all.get("head_h", 0.0))) * w
+    stroke_p = (style.stroke_head_ratio * head_px) if head_px else (style.stroke_ratio * w)
+    stroke_p = min(style.stroke_max_px, max(style.stroke_min_px, stroke_p))
     stroke_s = stroke_p * style.secondary_scale
     ss = int(min(style.supersample_max,
                  max(style.supersample_min,
@@ -1219,9 +1655,21 @@ def render_overlay(size: Tuple[int, int], geometry: SetupGeometry,
 
     plane, spine, head = (marks.get("plane_line"), marks.get("spine_line"),
                           marks.get("head_circle"))
+    shoulder = marks.get("shoulder_line")
     hcx = hcy = hr = 0.0
     if head:
         hcx, hcy, hr = head["cx"] * w, head["cy"] * h, head["r"] * w
+
+    # The anchor node marks the BALL, so it is drawn on the detected ball centre — not on
+    # the plane line's terminus, which sits deliberately past the ball and measured 19px
+    # away from it at 1080. Its radius follows the detected ball when that is bigger.
+    node_c = node_r = None
+    if plane and style.plane_node:
+        sw_p = width_of("plane_line")
+        node_c = ((plane["x1"] * w, plane["y1"] * h) if not geometry.ball
+                  else (geometry.ball["x"] * w, geometry.ball["y"] * h))
+        node_r = max(style.node_min_px, sw_p * style.node_scale,
+                     (geometry.ball["r"] * w * style.node_ball_scale) if geometry.ball else 0.0)
 
     # --- pass 1: soft dark glow, drawn at 1x and blurred ---------------------
     # One blurred mask PER marking, so a thin ring never inherits a thick line's radius.
@@ -1245,14 +1693,20 @@ def render_overlay(size: Tuple[int, int], geometry: SetupGeometry,
             d.line((*p1, *p2), fill=255, width=max(1, int(round(gw))))
             _disc(d, p1, gw / 2, 255)
             _disc(d, p2, gw * 0.5 * style.plane_taper, 255)
-            if style.plane_node:
-                _disc(d, p1, sw * style.node_scale + glow_pad(sw), 255)
+            if node_c is not None:
+                _disc(d, node_c, node_r + glow_pad(sw), 255)
         out = add_glow(out, _plane_glow, sw, style.plane_color, is_bright('plane_line'))
     if spine:
         q1, q2 = line_px(spine)
         out = add_glow(out, lambda d, gw: d.line((*q1, *q2), fill=255,
                                                  width=max(1, int(round(gw)))),
                        width_of("spine_line"), style.spine_color, is_bright('spine_line'))
+    if shoulder:
+        s1, s2 = line_px(shoulder)
+        out = add_glow(out, lambda d, gw: d.line((*s1, *s2), fill=255,
+                                                 width=max(1, int(round(gw)))),
+                       width_of("shoulder_line"), style.spine_color,
+                       is_bright('shoulder_line'))
     if head:
         def _head_glow(d, gw):
             rb = hr + gw / 2.0  # centre the band on the ring radius (see _ring_pass)
@@ -1261,14 +1715,26 @@ def render_overlay(size: Tuple[int, int], geometry: SetupGeometry,
         out = add_glow(out, _head_glow, ring_w, style.head_color, is_bright('head_circle'))
 
     # --- pass 2: crisp casing / body / core for the lines, supersampled ------
-    if plane or spine:
+    if plane or spine or shoulder:
         hi = Image.new("RGBA", (w * ss, h * ss), (0, 0, 0, 0))
         d = ImageDraw.Draw(hi)
 
         def sp(p):
             return (p[0] * S, p[1] * S)
 
-        # Spine first: where markings cross, the primary one must win the overlap.
+        if shoulder:
+            s1, s2 = line_px(shoulder)
+            sw = width_of("shoulder_line")
+            a = alpha_of("shoulder_line")
+            dot = max(style.shoulder_dot_min_px, sw * style.shoulder_dot_scale)
+            for color, alpha, bw in (
+                    (cas(style.spine_color), style.casing_alpha * a, casing_w(sw, sw)),
+                    (style.spine_color, style.body_alpha * a, sw)):
+                _stroke_pass(d, sp(s1), sp(s2), color, alpha, bw * S, bw * S)
+                for end in (s1, s2):     # acromion marks: the line measures BETWEEN them
+                    _disc(d, sp(end), (dot + (bw - sw) / 2.0) * S, (*color, int(alpha)))
+
+        # Spine before plane: where markings cross, the primary one must win the overlap.
         if spine:
             q1, q2 = line_px(spine)
             sw = width_of("spine_line")
@@ -1286,6 +1752,25 @@ def render_overlay(size: Tuple[int, int], geometry: SetupGeometry,
                 for end in (q1, q2):
                     _stroke_pass(d, sp(mid), sp(end), color, alpha, w0, w1,
                                  taper_frac=style.spine_taper_frac, cap_start=False)
+            # End anchors: a perpendicular cross-tick at C7 (q2) and a filled dot at the
+            # pelvis (q1). Both tips previously terminated in bare taper, which reads as a
+            # mark that stopped rather than a measurement between two landmarks.
+            ux, uy, _L = _unit(q1, q2)
+            nx, ny = -uy, ux
+            tick = max(style.spine_tick_min_px, sw * style.spine_tick_len) / 2.0
+            dot = max(style.spine_dot_min_px, sw * style.spine_dot_scale)
+            # ...but not when a shoulder line is already drawn across that same level:
+            # two horizontals a few pixels apart read as clutter, not as craft.
+            draw_tick = shoulder is None
+            for color, alpha, pad in ((cas(style.spine_color), style.casing_alpha * a,
+                                       casing_pad(sw)),
+                                      (style.spine_color, style.body_alpha * a, 0.0)):
+                if draw_tick:
+                    tw = max(1.0, sw * style.spine_tick_width) + 2 * pad
+                    _stroke_pass(d, sp((q2[0] - nx * tick, q2[1] - ny * tick)),
+                                 sp((q2[0] + nx * tick, q2[1] + ny * tick)),
+                                 color, alpha, tw * S, tw * S)
+                _disc(d, sp(q1), (dot + pad) * S, (*color, int(alpha)))
 
         if plane:
             p1, p2 = line_px(plane)              # p1 = ball end, p2 = far/top end
@@ -1303,19 +1788,25 @@ def render_overlay(size: Tuple[int, int], geometry: SetupGeometry,
                 _stroke_pass(d, sp(p1), sp(p2), color, alpha, w0, w1,
                              taper_frac=style.plane_taper_frac,
                              tip_alpha=style.plane_tip_alpha)
-            if style.plane_node:                 # anchor the line at the ball
-                nr = sw * style.node_scale * S
-                _disc(d, sp(p1), nr + casing_pad(sw) * S,
+            if node_c is not None:               # anchor the line ON the ball
+                nr = node_r * S
+                _disc(d, sp(node_c), nr + casing_pad(sw) * S,
                       (*cas(style.plane_color), int(style.casing_alpha * a)))
-                _disc(d, sp(p1), nr, (*style.plane_color, int(style.body_alpha * a)))
-                _disc(d, sp(p1), sw * style.node_core_scale * S,
-                      (*_mix_rgb(style.plane_color, _WHITE, 0.80), 255))
+                _disc(d, sp(node_c), nr, (*style.plane_color, int(style.body_alpha * a)))
+                # The pupil is suppressed on small nodes: below ~6px outer radius a 0.38x
+                # bright core cannot be drawn as anything but a 2x2 white square.
+                if node_r >= style.node_pupil_min_px:
+                    _disc(d, sp(node_c), sw * style.node_core_scale * S,
+                          (*_mix_rgb(style.plane_color, _WHITE, 0.80), 255))
 
         out = Image.alpha_composite(out, hi.resize((w, h), Image.LANCZOS))
 
     # --- pass 3: head ring, composited inside its own bounding box -----------
     if head:
-        a = style.ring_alpha_scale * alpha_of("head_circle")
+        # The demotion is handed to _ring_pass separately so it can be FLOORED against the
+        # falloff instead of multiplying with it (see ring_alpha_floor).
+        a = style.ring_alpha_scale
+        dem = alpha_of("head_circle")
         pad = int(math.ceil(ring_w * 3 + glow_pad(ring_w) * 2 + 8))
         x0, y0 = max(0, int(hcx - hr) - pad), max(0, int(hcy - hr) - pad)
         x1, y1 = min(w, int(hcx + hr) + pad), min(h, int(hcy + hr) + pad)
@@ -1326,13 +1817,14 @@ def render_overlay(size: Tuple[int, int], geometry: SetupGeometry,
             R = hr * S
             _ring_pass(ld, c, R, casing_w(ring_w, ring_w) * S,
                        cas(style.head_color), style.casing_alpha * a,
-                       style, head.get("long_axis_deg", 0.0))
+                       style, head.get("long_axis_deg", 0.0), dem)
             _ring_pass(ld, c, R, ring_w * S, style.head_color, style.body_alpha * a,
-                       style, head.get("long_axis_deg", 0.0))
+                       style, head.get("long_axis_deg", 0.0), dem)
             ca = core_alpha(ring_w) * a
             if ca > 2:
                 _ring_pass(ld, c, R, core_w(ring_w) * S,
-                           _mix_rgb(style.head_color, _WHITE, style.core_mix), ca)
+                           _mix_rgb(style.head_color, _WHITE, style.core_mix), ca,
+                           demotion=dem)
             small = lay.resize((x1 - x0, y1 - y0), Image.LANCZOS)
             region = out.crop((x0, y0, x1, y1))
             out.paste(Image.alpha_composite(region, small), (x0, y0))
