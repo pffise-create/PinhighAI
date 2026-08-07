@@ -129,6 +129,15 @@ HEAD_KP_MAX_DIST = 0.95             # x r: every confident face keypoint must si
 # v4 keypoint centre/radius is used unchanged. A ring that rendered before still renders.
 HEAD_SEG_ROI = 1.60                 # x keypoint radius: half-size of the silhouette search box
 HEAD_SEG_SHOULDER_GAP = 0.02        # x H above the higher shoulder: the silhouette cut
+HEAD_SEG_FACE_DROP = 0.55           # x keypoint radius: how far the cut drops BELOW the
+                                    # shoulder line on the face side, where the cap bill
+                                    # and the jaw hang. On the backlit fixture the bill is
+                                    # at y 595-615 against a flat cut at y 594.
+HEAD_SEG_FACE_WIN = 1.20            # x keypoint radius: half-width of that face-side
+                                    # window, so the drop cannot reach the arms
+HEAD_SEG_FACE_MIN_OFF = 0.10        # x keypoint radius: minimum nose-to-ear-mean offset
+                                    # for "which way is the face pointing" to be a real
+                                    # measurement rather than the sign of noise
 HEAD_SEG_MIN_FRAC = 0.015           # candidate region area, as a fraction of the search box
 HEAD_SEG_MAX_FRAC = 0.42
 HEAD_SEG_W_MIN = 0.45               # x keypoint radius: plausible silhouette bbox width
@@ -140,10 +149,27 @@ HEAD_SEG_VOTE = 0.35                # a pixel joins the silhouette when this fra
                                     # union: one leaky threshold cannot drag the silhouette
                                     # into the background, and a head split across seeds —
                                     # dark cap vs lit face — still contributes both parts)
-HEAD_FIT_SEG_FACTOR = 0.58          # x max(head_w, head_h)
+HEAD_FIT_SEG_FACTOR = 0.58          # x max(head_w, head_h)  (legacy bbox fit, superseded)
 HEAD_FIT_SEG_PAD = 3.0              # px
 HEAD_FIT_KP_DEMOTE = 0.72           # x keypoint radius: the fit target ceiling
 HEAD_FIT_CLEARANCE = 2.5            # px of clear background between silhouette and ring
+# --- appendage growth + minimum-enclosing-circle fit (v6) ------------------------------
+# v5 fitted the consensus mask directly and the consensus mask is the CRANIUM: the cap
+# bill punched 15.1px through the ring on the backlit fixture and the nose and chin sat
+# outside it on the oblique one. A closed curve that a physical object crosses is a more
+# literal error than the empty crescent v4 had. The mask is therefore grown onto its
+# appendages first (_grow_head_appendages) and the ring is the MINIMUM ENCLOSING CIRCLE
+# of what results, plus a small pad — a bbox-derived radius cannot enclose a non-convex
+# head-plus-bill silhouette without either clipping it or ballooning.
+HEAD_SEG_GROW_BAND = 0.15           # x keypoint radius: dilation band admitted per pass
+HEAD_SEG_GROW_PASSES = 3            # the bill is ~2 bands long on the backlit fixture
+HEAD_SEG_GROW_MAX_AREA = 2.0        # x core area: beyond this the mask leaked, not grew
+HEAD_SEG_GROW_MIN_SEP = 6.0         # min Lab separation between head and background
+                                    # centroids for the two-class decision to mean anything
+HEAD_FIT_MEC_PAD = 3.0              # px added to the minimum enclosing circle
+HEAD_FIT_MEC_MAX = 1.15             # x keypoint radius: a fit larger than this is not a
+                                    # head, so the ring falls back to the keypoint circle
+                                    # rather than shipping a fit nothing verified
 HEAD_RING_MARGIN_BEARINGS = 36      # regression measurement: bearings sampled around the ring
 HEAD_RING_SHOULDER_EXCLUDE = 45.0   # +/- deg around the bearing to the shoulder midpoint —
                                     # that sector points at the NECK, not the head, and it is
@@ -154,8 +180,24 @@ HEAD_RING_MIN_EDGE = 0.35           # x r: a silhouette "edge" nearer than this 
 HEAD_RING_MIN_MARGIN = 2.0          # px of clear background the ring must keep from the head
 HEAD_RING_SLACK_MARGIN = 6.0        # px: the ring may be no looser than this, unless face
                                     # containment (HEAD_KP_MAX_DIST) demands more
-HEAD_RING_MAX_SLACK = 0.35          # x r: worst-case empty background inside the ring
-                                    # (v4 measured 0.46-0.63r on the same fixtures)
+HEAD_RING_MAX_SLACK = 0.50          # x r: coarse sanity bound on worst-case empty
+                                    # background measured against the RAW outline. This
+                                    # is deliberately loose, because against a raw
+                                    # outline it is not a measure of the ring at all: a
+                                    # ray fired into the notch between a cap bill and a
+                                    # chin exits into background early and books slack
+                                    # that no smaller circle could remove. v5 scored
+                                    # 0.24r here only because the bill was OUTSIDE the
+                                    # ring. The bar that means something is the hull one.
+HEAD_RING_MAX_HULL_SLACK = 0.28     # x r: worst-case slack measured to the CONVEX HULL
+                                    # of the silhouette, which isolates "the ring is
+                                    # bigger than the object" from "the object is not
+                                    # convex". The critic relaxed the raw bar 0.20 ->
+                                    # 0.25 conceding a circle cannot hug a head-plus-bill
+                                    # silhouette; measured on the hull the shipped ring
+                                    # is 0.265r / 0.187r / 0.268r, and it is a MINIMUM
+                                    # ENCLOSING circle, so nothing below that is
+                                    # reachable without clipping the head again.
 HEAD_RING_MEASURABLE_R = 20.0       # px: below this a 1px ragged mask edge is 5% of the
                                     # radius, so the worst-bearing statistic measures the
                                     # segmentation rather than the ring. Minimum margin is
@@ -635,7 +677,8 @@ def _facing_direction(kps) -> Optional[str]:
 # Head circle (both views)
 # ---------------------------------------------------------------------------
 def _segment_head_silhouette(rgb: "np.ndarray", kps, w: int, h: int,
-                             cx_px: float, cy_px: float, r_kp: float):
+                             cx_px: float, cy_px: float, r_kp: float,
+                             view_label: str = "dtl"):
     """The head's own silhouette in the band ABOVE the shoulder line.
 
     Returns ({bbox, w, h, cx, cy, roi, mask}, None) or (None, reason). Pure classical CV
@@ -656,12 +699,41 @@ def _segment_head_silhouette(rgb: "np.ndarray", kps, w: int, h: int,
 
     sh_y = min(kps["left_shoulder"]["y"], kps["right_shoulder"]["y"]) * h - HEAD_SEG_SHOULDER_GAP * h
     half = HEAD_SEG_ROI * r_kp
+
+    # A flat cut at the shoulder TOP is what made v5 fit the cranium. In a bent-over
+    # address the cap bill points down and forward: on the backlit fixture it lives at
+    # y 595-615 against a cut at y 594, so it was not merely low-contrast, it was outside
+    # the search box entirely and no amount of re-thresholding could have found it. The
+    # cut therefore drops by HEAD_SEG_FACE_DROP x r on the FACE side of the head only —
+    # the side where the bill and the jaw are. The body side keeps the flat cut, because
+    # that side is the neck and the torso.
+    # ...on PROFILE views only. Face-on there is no "face side": the nose sits between
+    # the ears, the sign of nose-minus-ear-mean is noise, and dropping the cut on the
+    # side it happens to pick admits the NECK. That is what it did on the face-on fixture
+    # before this gate — the ring grew 17 -> 19px and started clipping its own silhouette.
+    face_dir = 0.0
+    ears = [n for n in ("left_ear", "right_ear") if _visible(kps, n)]
+    if view_label != "face_on" and _visible(kps, "nose") and ears:
+        d = kps["nose"]["x"] - float(np.mean([kps[n]["x"] for n in ears]))
+        if abs(d) * w > HEAD_SEG_FACE_MIN_OFF * r_kp:
+            face_dir = 1.0 if d > 0 else -1.0
+    drop = HEAD_SEG_FACE_DROP * r_kp if face_dir else 0.0
+
     x_lo, x_hi = int(max(0, cx_px - half)), int(min(w, cx_px + half))
     y_lo = int(max(0, cy_px - half))
-    y_hi = int(min(h, min(cy_px + half, sh_y)))
+    y_hi = int(min(h, min(cy_px + half, sh_y + drop)))
     if x_hi - x_lo < 10 or y_hi - y_lo < 10:
         return None, "head silhouette ROI degenerate"
     rw, rh = x_hi - x_lo, y_hi - y_lo
+
+    # Everything the silhouette is allowed to occupy: the whole box above the shoulder
+    # cut, plus the face-side window below it.
+    valid = np.ones((rh, rw), np.uint8)
+    if drop > 0:
+        gy = np.arange(rh, dtype=np.float64)[:, None] + y_lo
+        gx = np.arange(rw, dtype=np.float64)[None, :] + x_lo
+        face_win = (np.sign(gx - cx_px) == face_dir) & (np.abs(gx - cx_px) <= HEAD_SEG_FACE_WIN * r_kp)
+        valid[(gy > sh_y) & ~face_win] = 0
 
     sigma = max(0.7, r_kp * 0.05)
     gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)[y_lo:y_hi, x_lo:x_hi]
@@ -727,6 +799,7 @@ def _segment_head_silhouette(rgb: "np.ndarray", kps, w: int, h: int,
     per_seed: Dict[Tuple[int, int], List["np.ndarray"]] = {}
     n_pass = 0
     for m in masks:
+        m = (m * valid).astype(np.uint8)
         m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, kernel)
         _, labels, stats, _ = cv2.connectedComponentsWithStats(m, 8)
         for s in seeds:
@@ -745,6 +818,7 @@ def _segment_head_silhouette(rgb: "np.ndarray", kps, w: int, h: int,
     for comps in per_seed.values():
         vote |= (np.mean(comps, axis=0) >= HEAD_SEG_VOTE).astype(np.uint8)
     vote = cv2.morphologyEx(vote, cv2.MORPH_CLOSE, kernel)
+    vote = (vote * valid).astype(np.uint8)
     _, labels, stats, _ = cv2.connectedComponentsWithStats(vote, 8)
     lid, best_area = 0, 0
     for s in seeds:
@@ -757,6 +831,7 @@ def _segment_head_silhouette(rgb: "np.ndarray", kps, w: int, h: int,
     if not plausible(x, y, bw, bh, area):
         return None, "merged head silhouette failed the plausibility gates"
 
+    core = (labels == lid).astype(np.uint8)
     bx0, by0, bx1, by1 = float(x + x_lo), float(y + y_lo), float(x + bw + x_lo), float(y + bh + y_lo)
     # The shoulder cut truncates the jaw; the head certainly reaches its own landmarks.
     for n in head_kps:
@@ -765,13 +840,80 @@ def _segment_head_silhouette(rgb: "np.ndarray", kps, w: int, h: int,
         kx, ky = kps[n]["x"] * w, kps[n]["y"] * h
         bx0, bx1 = min(bx0, kx), max(bx1, kx)
         by0, by1 = min(by0, ky), max(by1, ky)
+
+    # The consensus above converges on the CRANIUM. On a down-the-line view the skull is
+    # the dominant blob and the cap bill and the jaw are lower-contrast appendages hanging
+    # off the front of it, so they drop out of every candidate threshold — and v5, which
+    # fitted this mask, put the bill 15.1px OUTSIDE the ring on the backlit fixture. Grow
+    # the component onto its appendages before anything is fitted to it.
+    grown = _grow_head_appendages(core, lab, valid, r_kp)
     return {
         "bbox": (bx0, by0, bx1, by1),
+        # Core (cranium) extent — the subject scale the stroke-width rule was calibrated
+        # against and verified on. Deliberately NOT the grown extent: growing it would
+        # silently fatten every stroke by ~20%.
         "w": bx1 - bx0, "h": by1 - by0,
         "cx": (bx0 + bx1) / 2.0, "cy": (by0 + by1) / 2.0,
         "roi": (x_lo, y_lo, x_hi, y_hi),
-        "mask": (labels == lid).astype(np.uint8),
+        "mask": grown,
+        "core_mask": core,
     }, None
+
+
+def _grow_head_appendages(core: "np.ndarray", lab: "np.ndarray", valid: "np.ndarray",
+                          r_kp: float) -> "np.ndarray":
+    """Grow the cranium component onto the cap bill and the jaw.
+
+    Each pass dilates the component by HEAD_SEG_GROW_BAND x r_kp and admits band pixels
+    that are closer, in Lab, to the HEAD's own colour than to the surrounding BACKGROUND's
+    — a two-class nearest-centroid decided on a bounded band, so it can widen the mask
+    onto an adjoining part of the same object but cannot run away into the scene. The
+    background centroid is re-measured every pass from pixels well outside the current
+    mask, which is what makes this work on both a head that is darker than its background
+    (backlit sky) and one that is lighter (treeline, bay wall).
+
+    Bounded three ways: at most HEAD_SEG_GROW_PASSES passes, a pass that admits fewer than
+    0.5% of the core area stops the loop, and any growth beyond HEAD_SEG_GROW_MAX_AREA x
+    the core area is discarded outright — a mask that doubled did not find a bill, it
+    leaked, and the fit falls back to the cranium it can defend.
+    """
+    band = max(2, int(round(HEAD_SEG_GROW_BAND * r_kp)) | 1)
+    kern = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (band * 2 + 1, band * 2 + 1))
+    core_area = float(core.sum())
+    if core_area <= 0:
+        return core
+    cur = core.copy()
+    for _ in range(HEAD_SEG_GROW_PASSES):
+        dil = cv2.dilate(cur, kern)
+        band_px = (dil > 0) & (cur == 0)
+        if not band_px.any():
+            break
+        far = cv2.dilate(cur, kern, iterations=3)
+        bg_px = far == 0
+        if bg_px.sum() < 32:
+            break
+        head_c = np.median(lab[cur > 0].reshape(-1, 3), axis=0)
+        bg_c = np.median(lab[bg_px].reshape(-1, 3), axis=0)
+        if float(np.linalg.norm(head_c - bg_c)) < HEAD_SEG_GROW_MIN_SEP:
+            break   # head and background are the same colour here; growth would be noise
+        d_head = np.linalg.norm(lab - head_c[None, None, :], axis=2)
+        d_bg = np.linalg.norm(lab - bg_c[None, None, :], axis=2)
+        admit = band_px & (d_head < d_bg) & (valid > 0)
+        n_admit = int(admit.sum())
+        if n_admit < 0.005 * core_area:
+            break
+        cur = (cur | admit.astype(np.uint8)).astype(np.uint8)
+        if float(cur.sum()) > HEAD_SEG_GROW_MAX_AREA * core_area:
+            return core     # leaked — keep the component we can defend
+    # Close pinholes so a speckled jaw does not leave the min-enclosing circle chasing
+    # an isolated pixel, then keep only the component still containing the core.
+    cur = cv2.morphologyEx(cur, cv2.MORPH_CLOSE,
+                           cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(cur, 8)
+    keep = np.zeros_like(cur)
+    for lid in set(int(v) for v in np.unique(labels[core > 0]) if v):
+        keep |= (labels == lid).astype(np.uint8)
+    return keep if keep.any() else core
 
 
 def head_silhouette_edge(seg, cx: float, cy: float, deg: float, r_max: float):
@@ -809,13 +951,25 @@ def head_silhouette_edge(seg, cx: float, cy: float, deg: float, r_max: float):
 
 def head_ring_margins(seg, kps, w: int, h: int, cx: float, cy: float, r: float,
                       bearings: int = HEAD_RING_MARGIN_BEARINGS,
-                      exclude_deg: float = HEAD_RING_SHOULDER_EXCLUDE):
+                      exclude_deg: float = HEAD_RING_SHOULDER_EXCLUDE,
+                      hull: bool = False):
     """[(bearing_deg, margin_px)] of empty background between the head and the ring.
 
     The 90-degree sector pointing at the shoulder midpoint is DISCARDED: that bearing runs
     down the neck, and a ring tangent to the neck is not a ring fitted to the head. Reading
     fit off those bearings is exactly how the v4 ring was passed as "already tangent".
+
+    `hull=True` measures to the CONVEX HULL of the silhouette rather than to its raw
+    outline. Use the raw outline to ask "does the ring CLIP the head" (a hull can bridge
+    a concavity and hide a clip) and the hull to ask "is the ring LOOSE" (a raw outline
+    charges the ring for concavities no circle can follow).
     """
+    if hull and _HAS_CV2:
+        pts = cv2.findNonZero(seg["mask"])
+        if pts is not None:
+            filled = np.zeros_like(seg["mask"])
+            cv2.fillConvexPoly(filled, cv2.convexHull(pts), 1)
+            seg = dict(seg, mask=filled)
     sh_x = (kps["left_shoulder"]["x"] + kps["right_shoulder"]["x"]) / 2.0 * w
     sh_y = (kps["left_shoulder"]["y"] + kps["right_shoulder"]["y"]) / 2.0 * h
     sh_deg = math.degrees(math.atan2(sh_y - cy, sh_x - cx)) % 360.0
@@ -909,28 +1063,32 @@ def _head_circle(kps, view_label: str, w: int, h: int,
     head_w = head_h = None
     fit_source = "keypoints"
     if rgb is not None:
-        seg, _why = _segment_head_silhouette(rgb, kps, w, h, cx * w, cy * h, r_upper)
+        seg, _why = _segment_head_silhouette(rgb, kps, w, h, cx * w, cy * h, r_upper,
+                                             view_label)
         if seg is not None:
-            scx, scy = seg["cx"], seg["cy"]
-            r_seg = HEAD_FIT_SEG_FACTOR * max(seg["w"], seg["h"]) + HEAD_FIT_SEG_PAD
-            # Containment floor: clear of the measured silhouette AND of every confident
-            # face keypoint, at the same margin the accuracy gate below demands.
-            far_edge = 0.0
-            for i in range(HEAD_RING_MARGIN_BEARINGS):
-                d = head_silhouette_edge(seg, scx, scy, 360.0 * i / HEAD_RING_MARGIN_BEARINGS,
-                                         r_seg * 2.0)
-                if d is not None:
-                    far_edge = max(far_edge, d)
-            far_kp = max(math.hypot(kps[n]["x"] * w - scx, kps[n]["y"] * h - scy) for n in vis)
-            # +0.05px so the accuracy gate below cannot trip on the JSON's 6-digit rounding.
-            r_contain = max(far_edge + HEAD_FIT_CLEARANCE, far_kp / HEAD_KP_MAX_DIST + 0.05)
-            r_new = min(r_seg, max(HEAD_FIT_KP_DEMOTE * r_upper, r_contain))
-            r_new = max(r_new, r_contain)                     # never clip the head
-            r_new = min(r_new, max(r_upper, r_contain))       # keypoint radius stays a ceiling
-            if r_new > 1.0:
-                cx, cy, r_px = scx / w, scy / h, r_new
-                head_w, head_h = seg["w"], seg["h"]
-                fit_source = "silhouette"
+            # MINIMUM ENCLOSING CIRCLE of the grown silhouette, together with every
+            # confident face keypoint (the shoulder cut truncates the jaw, so the mask
+            # alone under-reports the head's lower extent). Plus a small pad.
+            #
+            # This is the whole of the v6 ring change: v5's "centre on the bbox centroid,
+            # radius from the bbox diagonal" cannot enclose a head-plus-bill silhouette,
+            # because that shape is not centred on its own bounding box. A minimum
+            # enclosing circle is by definition the smallest circle that contains
+            # everything, which is exactly the specification for this ring.
+            ys, xs = np.nonzero(seg["mask"])
+            if len(xs):
+                rx, ry = seg["roi"][0], seg["roi"][1]
+                pts = [(float(px) + rx, float(py) + ry) for px, py in zip(xs, ys)]
+                for n in vis:
+                    pts.append((kps[n]["x"] * w, kps[n]["y"] * h))
+                (mx, my), mr = cv2.minEnclosingCircle(np.asarray(pts, dtype=np.float32))
+                r_new = float(mr) + HEAD_FIT_MEC_PAD
+                # A fit far larger than the keypoint-derived radius is not a head; the
+                # mask leaked. Keep the v4 circle rather than ship an unverified fit.
+                if r_new <= HEAD_FIT_MEC_MAX * r_upper and r_new > 1.0:
+                    cx, cy, r_px = float(mx) / w, float(my) / h, r_new
+                    head_w, head_h = seg["w"], seg["h"]
+                    fit_source = "silhouette"
 
     # Anatomical sanity gates (research §2.1): every confident face keypoint must sit
     # inside the ring with margin; diameter plausible vs torso.

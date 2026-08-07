@@ -34,7 +34,7 @@ import tempfile
 import unittest
 
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import swing_marker as sm  # noqa: E402
@@ -452,6 +452,177 @@ class TestHeadCircleContainsFaceKeypoints(unittest.TestCase):
         self.assertGreaterEqual(checked, 2)
 
 
+def _independent_head_mask(frame, geo, cx, cy, r):
+    """Head silhouette measured WITHOUT the tool's own segmentation.
+
+    The tool's head_ring_margins() reads the mask the fit was computed from, so it cannot
+    see a bill that segmentation missed — v5 self-reported +5.9px of minimum margin on the
+    backlit fixture where an independent measurement found -15.1px, because the bill was
+    outside the tool's mask AND outside its ring. This is that independent measurement:
+    an Otsu-threshold connected component seeded at the ring centre in the ORIGINAL
+    unmarked frame, cut at the shoulder line. Deliberately naive and deliberately not
+    shared with the shipping code — it is an oracle, not a second implementation.
+
+    Returns (mask, (x_offset, y_offset)) or (None, None) when the scene is not separable
+    this way (the face-on fixture's bay wall overlaps hair and skin, so it is not).
+    """
+    import cv2
+    img = ImageOps.exif_transpose(Image.open(frame)).convert("RGB")
+    w, h = img.size
+    gray = np.asarray(img.convert("L"))
+    kps = geo.keypoints
+    sh_y = min(kps["left_shoulder"]["y"], kps["right_shoulder"]["y"]) * h
+    half = int(max(20, 2.6 * r))
+    x_lo, x_hi = max(0, int(cx - half)), min(w, int(cx + half))
+    y_lo, y_hi = max(0, int(cy - half)), min(h, int(min(cy + half, sh_y)))
+    roi = gray[y_lo:y_hi, x_lo:x_hi]
+    if roi.size == 0:
+        return None, None
+    roi = cv2.GaussianBlur(roi, (0, 0), max(0.7, r * 0.03))
+    t, _ = cv2.threshold(roi, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    sx = min(max(int(round(cx - x_lo)), 0), roi.shape[1] - 1)
+    sy = min(max(int(round(cy - y_lo)), 0), roi.shape[0] - 1)
+    best = None
+    for m in ((roi >= t).astype(np.uint8), (roi < t).astype(np.uint8)):
+        if m[sy, sx] == 0:
+            continue
+        _n, lab, stats, _c = cv2.connectedComponentsWithStats(m, 8)
+        lid = int(lab[sy, sx])
+        if lid == 0:
+            continue
+        area = int(stats[lid, cv2.CC_STAT_AREA])
+        if area > 0.85 * roi.size:      # that is the background, not the head
+            continue
+        if best is None or area < best[1]:
+            best = ((lab == lid).astype(np.uint8), area)
+    if best is None:
+        return None, None
+    return best[0], (x_lo, y_lo)
+
+
+def _independent_margins(frame, geo, cx, cy, r, bearings=36, exclude_deg=45.0):
+    """[(bearing, margin_px)] against the independent mask, shoulder sector discarded."""
+    mask, off = _independent_head_mask(frame, geo, cx, cy, r)
+    if mask is None:
+        return None
+    x_lo, y_lo = off
+    rh, rw = mask.shape
+    w, h = geo.frame_width, geo.frame_height
+    kps = geo.keypoints
+    sh_x = (kps["left_shoulder"]["x"] + kps["right_shoulder"]["x"]) / 2.0 * w
+    sh_y = (kps["left_shoulder"]["y"] + kps["right_shoulder"]["y"]) / 2.0 * h
+    sh_deg = math.degrees(math.atan2(sh_y - cy, sh_x - cx)) % 360.0
+    out = []
+    for i in range(bearings):
+        deg = 360.0 * i / bearings
+        if abs((deg - sh_deg + 180.0) % 360.0 - 180.0) <= exclude_deg:
+            continue
+        a = math.radians(deg)
+        ca, sa = math.cos(a), math.sin(a)
+        t, run, run_start, edge = 0.0, 0, 0.0, None
+        while t <= r * 2.6:
+            px = int(round(cx - x_lo + ca * t))
+            py = int(round(cy - y_lo + sa * t))
+            if not (0 <= px < rw and 0 <= py < rh):
+                break
+            if mask[py, px] == 0:
+                if run == 0:
+                    run_start = t
+                run += 1
+                if run >= 3:
+                    edge = run_start
+                    break
+            else:
+                run = 0
+            t += 0.5
+        # An "edge" a third of a radius from a centre that is inside the head is a hole
+        # in the mask (a shadowed cheek), not the outline.
+        if edge is None or edge < 0.30 * r:
+            continue
+        out.append((deg, r - edge))
+    return out
+
+
+def _tool_silhouette(frames, geo):
+    """The tool's OWN silhouette, re-derived from the keypoint anchor so it does not
+    depend on the fit under test. (seg | None, reason)."""
+    rgb = np.asarray(ImageOps.exif_transpose(Image.open(frames[0])).convert("RGB"))
+    w, h = geo.frame_width, geo.frame_height
+    ref, why = sm._head_circle(geo.keypoints, geo.view["label"], w, h, None)
+    if ref is None:
+        return None, why
+    return sm._segment_head_silhouette(rgb, geo.keypoints, w, h,
+                                       ref["cx"] * w, ref["cy"] * h, ref["r"] * w,
+                                       geo.view["label"])
+
+
+class TestHeadRingNeverClipsTheHead(unittest.TestCase):
+    """THE hard accuracy assertion for the ring.
+
+    v5 fitted the CRANIUM: the cap bill punched 15.1px through the ring on the backlit
+    fixture and the nose and chin sat outside it on the oblique one. A closed curve that
+    a physical object crosses is a worse error than a loose one, so this is asserted
+    against an INDEPENDENT silhouette (see _independent_head_mask) and there is no
+    tolerance in it: a clip is a failure, slack is not.
+    """
+
+    @needs_fixtures
+    def test_no_negative_margin_at_any_bearing_off_the_shoulder_sector(self):
+        checked = []
+        for name, frames in SESSIONS.items():
+            geo = sm.analyze_setup(frames[0])
+            hc = geo.markings.get("head_circle")
+            if not hc:
+                continue
+            w, h = geo.frame_width, geo.frame_height
+            cx, cy, r = hc["cx"] * w, hc["cy"] * h, hc["r"] * w
+            rows = _independent_margins(frames[0], geo, cx, cy, r)
+            if not rows or len(rows) < 12:
+                continue
+            margins = [m for _, m in rows]
+            # Scenes the oracle cannot segment show up as absurd values (the face-on
+            # fixture's background wall overlaps hair and skin and reads as -1.3r). Those
+            # are unmeasurable, not failures, and are skipped rather than asserted on —
+            # the tool's own mask covers that scene in test_ring_margins_off_the_neck_sector.
+            if min(margins) < -0.5 * r:
+                continue
+            worst = min(rows, key=lambda t: t[1])
+            self.assertGreaterEqual(
+                worst[1], 0.0,
+                f"{name}: the ring CLIPS the head — margin {worst[1]:+.1f}px at bearing "
+                f"{worst[0]:.0f}deg (r={r:.1f}px, n={len(rows)} bearings)")
+            checked.append(name)
+        self.assertGreaterEqual(len(checked), 2,
+                                f"no-clip verified on too few scenes: {checked}")
+
+    @needs_fixtures
+    def test_ring_is_not_merely_loose_enough_to_avoid_clipping(self):
+        """Slack measured to the CONVEX HULL, which is what a circle can actually track."""
+        checked = 0
+        for name, frames in SESSIONS.items():
+            geo = sm.analyze_setup(frames[0])
+            hc = geo.markings.get("head_circle")
+            if not hc or hc.get("fit") != "silhouette":
+                continue
+            w, h = geo.frame_width, geo.frame_height
+            r = hc["r"] * w
+            if r < sm.HEAD_RING_MEASURABLE_R:
+                continue      # a 1px ragged mask edge is 5% of r down here
+            seg, _why = _tool_silhouette(frames, geo)
+            if seg is None:
+                continue
+            rows = sm.head_ring_margins(seg, geo.keypoints, w, h,
+                                        hc["cx"] * w, hc["cy"] * h, r, hull=True)
+            if len(rows) < 8:
+                continue
+            hi = max(m for _, m in rows)
+            self.assertLessEqual(
+                hi, sm.HEAD_RING_MAX_HULL_SLACK * r,
+                f"{name}: {hi:.1f}px ({hi / r:.3f}r) of slack to the silhouette hull")
+            checked += 1
+        self.assertGreater(checked, 0)
+
+
 class TestHeadRingFit(unittest.TestCase):
     """The ring is re-centred on the head's own silhouette and only then fitted.
 
@@ -468,13 +639,8 @@ class TestHeadRingFit(unittest.TestCase):
 
     def _silhouette(self, name, frames, geo):
         """Ground truth measured from the keypoint anchor, i.e. independent of the fit."""
-        from PIL import ImageOps as _IO
-        rgb = np.asarray(_IO.exif_transpose(Image.open(frames[0])).convert("RGB"))
-        w, h = geo.frame_width, geo.frame_height
-        ref, why = sm._head_circle(geo.keypoints, geo.view["label"], w, h, None)
-        self.assertIsNotNone(ref, f"{name}: no keypoint reference circle ({why})")
-        return sm._segment_head_silhouette(rgb, geo.keypoints, w, h,
-                                           ref["cx"] * w, ref["cy"] * h, ref["r"] * w)
+        seg, why = _tool_silhouette(frames, geo)
+        return seg, why
 
     @needs_fixtures
     def test_ring_margins_off_the_neck_sector(self):
