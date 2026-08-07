@@ -34,7 +34,7 @@ import tempfile
 import unittest
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import swing_marker as sm  # noqa: E402
@@ -148,7 +148,8 @@ class TestFailClosed(unittest.TestCase):
             self.assertEqual(geo.markings, {})
             self.assertTrue(geo.failures)
             withheld = {f["marking"] for f in geo.failures}
-            self.assertEqual(withheld, {"head_circle", "spine_line", "plane_line"})
+            self.assertEqual(withheld,
+                             {"head_circle", "spine_line", "shoulder_line", "plane_line"})
             for f in geo.failures:
                 self.assertTrue(f["reason"])
 
@@ -258,16 +259,37 @@ class TestViewClassification(unittest.TestCase):
                                     f"{name}: view confidence below gate: {geo.view}")
 
     @needs_fixtures
-    def test_face_on_withholds_dtl_only_markings(self):
+    def test_face_on_withholds_the_plane_line_only(self):
+        """The plane line is built from a DETECTED SHAFT, which a face-on camera
+        foreshortens into the body — it stays withheld. The spine and the shoulder line
+        are not shaft-derived and are standard face-on setup reads, so a face-on frame
+        must NOT come back carrying a lone head ring."""
+        checked = 0
         for name, frames in SESSIONS.items():
             if FIXTURE_VIEWS.get(name) != "face_on":
                 continue
             geo = sm.analyze_setup(frames[0])
-            self.assertNotIn("spine_line", geo.markings)
             self.assertNotIn("plane_line", geo.markings)
-            withheld = {f["marking"] for f in geo.failures}
-            self.assertIn("spine_line", withheld)
-            self.assertIn("plane_line", withheld)
+            self.assertIn("plane_line", {f["marking"] for f in geo.failures})
+            self.assertIn("spine_line", geo.markings,
+                          f"{name}: face-on spine withheld — {geo.failures}")
+            self.assertIn("shoulder_line", geo.markings,
+                          f"{name}: face-on shoulder line withheld — {geo.failures}")
+            self.assertGreaterEqual(len(geo.markings), 3,
+                                    f"{name}: a face-on frame must carry more than a ring")
+            checked += 1
+        self.assertGreater(checked, 0)
+
+    @needs_fixtures
+    def test_dtl_withholds_the_shoulder_line(self):
+        """Down the line the two acromions project onto each other; a shoulder line there
+        would be a few pixels of noise."""
+        for name, frames in SESSIONS.items():
+            if FIXTURE_VIEWS.get(name) != "dtl":
+                continue
+            geo = sm.analyze_setup(frames[0])
+            self.assertNotIn("shoulder_line", geo.markings)
+            self.assertIn("shoulder_line", {f["marking"] for f in geo.failures})
 
 
 class TestPlaneLineAccuracy(unittest.TestCase):
@@ -427,6 +449,107 @@ class TestHeadCircleContainsFaceKeypoints(unittest.TestCase):
         self.assertGreaterEqual(checked, 2)
 
 
+class TestHeadRingFit(unittest.TestCase):
+    """The ring is re-centred on the head's own silhouette and only then fitted.
+
+    This is the test that would have caught v4's bad reasoning. v4 was accepted as
+    "already tangent to the hair" on the strength of near-zero margins measured at
+    bearings that point down the NECK. Every bearing in the 90-degree sector aimed at the
+    shoulder midpoint is therefore discarded here, and what remains — the crown, the
+    occiput and the face side — is where v4 carried 21-42px of empty background.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.geos = {n: sm.analyze_setup(f[0]) for n, f in SESSIONS.items()}
+
+    def _silhouette(self, name, frames, geo):
+        """Ground truth measured from the keypoint anchor, i.e. independent of the fit."""
+        from PIL import ImageOps as _IO
+        rgb = np.asarray(_IO.exif_transpose(Image.open(frames[0])).convert("RGB"))
+        w, h = geo.frame_width, geo.frame_height
+        ref, why = sm._head_circle(geo.keypoints, geo.view["label"], w, h, None)
+        self.assertIsNotNone(ref, f"{name}: no keypoint reference circle ({why})")
+        return sm._segment_head_silhouette(rgb, geo.keypoints, w, h,
+                                           ref["cx"] * w, ref["cy"] * h, ref["r"] * w)
+
+    @needs_fixtures
+    def test_ring_margins_off_the_neck_sector(self):
+        checked = 0
+        for name, frames in SESSIONS.items():
+            geo = self.geos[name]
+            hc = geo.markings.get("head_circle")
+            if not hc or hc.get("fit") != "silhouette":
+                continue
+            seg, why = self._silhouette(name, frames, geo)
+            if seg is None:
+                continue
+            w, h = geo.frame_width, geo.frame_height
+            cx, cy, r = hc["cx"] * w, hc["cy"] * h, hc["r"] * w
+            rows = sm.head_ring_margins(seg, geo.keypoints, w, h, cx, cy, r)
+            self.assertGreaterEqual(len(rows), 8,
+                                    f"{name}: too few measurable bearings ({len(rows)})")
+            margins = [m for _, m in rows]
+            lo, hi = min(margins), max(margins)
+            # (1) never clips the head, and (2) never carries more slack than the fit or
+            # face containment requires.
+            far_kp = max(math.hypot(geo.keypoints[n]["x"] * w - cx,
+                                    geo.keypoints[n]["y"] * h - cy)
+                         for n in ("nose", "left_eye", "right_eye", "left_ear", "right_ear")
+                         if geo.keypoints[n]["score"] >= sm.KP_MIN_SCORE)
+            allowed = max(sm.HEAD_RING_SLACK_MARGIN, r - far_kp)
+            self.assertGreaterEqual(lo, sm.HEAD_RING_MIN_MARGIN,
+                                    f"{name}: ring clips the head (min margin {lo:+.1f}px)")
+            self.assertLessEqual(lo, allowed,
+                                 f"{name}: ring is loose everywhere (min margin {lo:+.1f}px "
+                                 f"> {allowed:.1f}px)")
+            if r >= sm.HEAD_RING_MEASURABLE_R:
+                self.assertLessEqual(
+                    hi, sm.HEAD_RING_MAX_SLACK * r,
+                    f"{name}: {hi:.1f}px ({hi / r:.2f}r) of empty background inside the "
+                    f"ring at its worst bearing")
+            checked += 1
+        self.assertGreaterEqual(checked, 2, "the ring fit was verified on nothing")
+
+    @needs_fixtures
+    def test_ring_is_recentred_and_tighter_than_the_keypoint_ring(self):
+        checked = 0
+        for name, frames in SESSIONS.items():
+            geo = self.geos[name]
+            hc = geo.markings.get("head_circle")
+            if not hc or hc.get("fit") != "silhouette":
+                continue
+            w, h = geo.frame_width, geo.frame_height
+            ref, _ = sm._head_circle(geo.keypoints, geo.view["label"], w, h, None)
+            self.assertLess(hc["r"], ref["r"],
+                            f"{name}: silhouette fit did not tighten the keypoint radius")
+            moved = math.hypot((hc["cx"] - ref["cx"]) * w, (hc["cy"] - ref["cy"]) * h)
+            self.assertGreaterEqual(moved, 0.0)
+            self.assertLess(moved, ref["r"] * w,
+                            f"{name}: re-centred {moved:.0f}px — implausibly far")
+            self.assertIn("head_w", hc)
+            checked += 1
+        self.assertGreaterEqual(checked, 2)
+
+    @needs_fixtures
+    def test_segmentation_failure_falls_back_to_the_keypoint_ring(self):
+        """Fail soft: a ring that rendered before must still render."""
+        name, frames = _dtl_session()
+        real = sm._segment_head_silhouette
+        sm._segment_head_silhouette = lambda *a, **k: (None, "forced failure")
+        try:
+            geo = sm.analyze_setup(frames[0])
+        finally:
+            sm._segment_head_silhouette = real
+        hc = geo.markings.get("head_circle")
+        self.assertIsNotNone(hc, f"{name}: ring withheld when segmentation failed")
+        self.assertEqual(hc.get("fit"), "keypoints")
+        self.assertNotIn("head_w", hc)
+        # ...and the renderer falls back to the frame-relative stroke without crashing.
+        ov = sm.render_overlay((geo.frame_width, geo.frame_height), geo)
+        self.assertGreater(int((np.asarray(ov)[:, :, 3] > 0).sum()), 0)
+
+
 class TestSpineLineClearsHead(unittest.TestCase):
     @needs_fixtures
     def test_spine_top_end_stops_short_of_head_circle(self):
@@ -471,22 +594,52 @@ class TestMarkingSubsets(unittest.TestCase):
                 return name, frames, geo
         return None, None, None
 
+    # The spine and the shoulder line share the teal hue on purpose — they are one
+    # "body posture" system and the palette is a deliberate three-hue triad — so a subset
+    # probe cannot be colour-only. Every probe below is colour AND path constrained.
     @staticmethod
-    def _body_pixels(overlay, marking, style=None):
-        """Count pixels painted with a marking's own colour (body or core highlight).
+    def _distance_map(geo, marking):
+        """Per-pixel distance (px) to a marking's own path."""
+        w, h = geo.frame_width, geo.frame_height
+        m = geo.markings[marking]
+        yy, xx = np.mgrid[0:h, 0:w].astype(np.float64)
+        if marking == "head_circle":
+            d = np.hypot(xx - m["cx"] * w, yy - m["cy"] * h)
+            return np.abs(d - m["r"] * w)
+        x1, y1 = m["x1"] * w, m["y1"] * h
+        x2, y2 = m["x2"] * w, m["y2"] * h
+        dx, dy = x2 - x1, y2 - y1
+        L2 = max(1e-9, dx * dx + dy * dy)
+        t = np.clip(((xx - x1) * dx + (yy - y1) * dy) / L2, 0.0, 1.0)
+        return np.hypot(xx - (x1 + t * dx), yy - (y1 + t * dy))
 
-        Colour-matched rather than alpha-matched: the soft glow of one marking can
-        legitimately touch another marking's pixels, so a bare alpha probe is ambiguous.
-        """
+    @classmethod
+    def _corridor(cls, geo, marking):
+        """Everything a marking is allowed to paint: its path plus endpoint furniture
+        (anchor node at the ball, spine cross-tick, acromion dots) plus the halo."""
+        w, h = geo.frame_width, geo.frame_height
+        pad = max(24.0, 0.035 * max(w, h))
+        d = cls._distance_map(geo, marking)
+        if marking == "plane_line" and geo.ball:
+            yy, xx = np.mgrid[0:h, 0:w].astype(np.float64)
+            d = np.minimum(d, np.hypot(xx - geo.ball["x"] * w, yy - geo.ball["y"] * h))
+        return d <= pad
+
+    @classmethod
+    def _body_pixels(cls, overlay, marking, geo=None, style=None):
+        """Pixels painted with a marking's own colour, ON that marking's own path."""
         style = style or sm.DEFAULT_STYLE
         colors = {"plane_line": style.plane_color, "spine_line": style.spine_color,
-                  "head_circle": style.head_color}
+                  "shoulder_line": style.spine_color, "head_circle": style.head_color}
         arr = np.asarray(overlay).astype(np.int32)
         rgb, a = arr[:, :, :3], arr[:, :, 3]
         body = np.array(colors[marking])
         core = np.array(sm._mix_rgb(colors[marking], (255, 255, 255), style.core_mix))
         near = (np.abs(rgb - body).sum(-1) <= 60) | (np.abs(rgb - core).sum(-1) <= 60)
-        return int(((a >= 150) & near).sum())
+        hit = (a >= 150) & near
+        if geo is not None:
+            hit &= cls._corridor(geo, marking)
+        return int(hit.sum())
 
     @needs_fixtures
     def test_subset_draws_only_the_requested_markings(self):
@@ -495,12 +648,12 @@ class TestMarkingSubsets(unittest.TestCase):
         size = (geo.frame_width, geo.frame_height)
         for keep in geo.markings:
             ov = sm.render_overlay(size, geo, only=[keep])
-            self.assertGreater(self._body_pixels(ov, keep), 0, f"{keep}: nothing drawn")
-            for other in geo.markings:
-                if other == keep:
-                    continue
-                self.assertEqual(self._body_pixels(ov, other), 0,
-                                 f"{keep}-only render still painted {other}")
+            self.assertGreater(self._body_pixels(ov, keep, geo), 0, f"{keep}: nothing drawn")
+            # Nothing at all was painted away from the requested marking's own path.
+            painted = np.asarray(ov)[:, :, 3] >= 150
+            stray = int((painted & ~self._corridor(geo, keep)).sum())
+            self.assertEqual(stray, 0,
+                             f"{keep}-only render painted {stray}px away from {keep}")
 
     @needs_fixtures
     def test_lone_marking_renders_at_primary_weight(self):
@@ -509,10 +662,10 @@ class TestMarkingSubsets(unittest.TestCase):
         name, frames, geo = self._all_marks_session()
         size = (geo.frame_width, geo.frame_height)
         support = next(m for m in geo.markings if m != sm.resolve_primary(list(geo.markings)))
-        alone = self._body_pixels(sm.render_overlay(size, geo, only=[support]), support)
+        alone = self._body_pixels(sm.render_overlay(size, geo, only=[support]), support, geo)
         promoted = self._body_pixels(
-            sm.render_overlay(size, geo, primary=support), support)
-        supporting = self._body_pixels(sm.render_overlay(size, geo), support)
+            sm.render_overlay(size, geo, primary=support), support, geo)
+        supporting = self._body_pixels(sm.render_overlay(size, geo), support, geo)
         self.assertGreater(alone, supporting,
                            f"{support} alone is not heavier than as a supporting marking")
         self.assertGreater(promoted, supporting,
@@ -552,6 +705,162 @@ class TestMarkingSubsets(unittest.TestCase):
         self.assertEqual(sm.resolve_primary(["spine_line"], primary="plane_line"),
                          "spine_line")
         self.assertIsNone(sm.resolve_primary([]))
+
+
+class TestStrokeScalesWithTheSubject(unittest.TestCase):
+    """Stroke weight keyed to frame width made a 320px render 2.4x proportionally fatter
+    than a 1080px one, so the two did not read as one graphics package."""
+
+    @needs_fixtures
+    def test_stroke_tracks_head_size_not_frame_width(self):
+        ratios = {}
+        for name, frames in SESSIONS.items():
+            geo = sm.analyze_setup(frames[0])
+            hc = geo.markings.get("head_circle")
+            if not hc or "head_w" not in hc:
+                continue
+            w = geo.frame_width
+            head_px = max(hc["head_w"], hc["head_h"]) * w
+            style = sm.DEFAULT_STYLE
+            stroke = min(style.stroke_max_px,
+                         max(style.stroke_min_px, style.stroke_head_ratio * head_px))
+            ratios[name] = stroke / head_px
+        self.assertGreaterEqual(len(ratios), 2)
+        unclamped = {k: v for k, v in ratios.items()
+                     if abs(v - sm.DEFAULT_STYLE.stroke_head_ratio) < 1e-9}
+        self.assertGreaterEqual(len(unclamped), 2,
+                                f"every fixture hit a clamp — nothing verified: {ratios}")
+        vals = sorted(unclamped.values())
+        self.assertLess(vals[-1] / vals[0], 1.02,
+                        f"stroke/head ratio is not constant across resolutions: {ratios}")
+
+
+class TestNodeAndEndpointCraft(unittest.TestCase):
+    @needs_fixtures
+    def test_node_sits_on_the_detected_ball(self):
+        checked = 0
+        for name, frames in SESSIONS.items():
+            geo = sm.analyze_setup(frames[0])
+            if "plane_line" not in geo.markings or not geo.ball:
+                continue
+            w, h = geo.frame_width, geo.frame_height
+            ov = sm.render_overlay((w, h), geo, only=["plane_line"])
+            arr = np.asarray(ov).astype(np.int32)
+            solid = arr[:, :, 3] >= 200
+            bx, by = geo.ball["x"] * w, geo.ball["y"] * h
+            yy, xx = np.mgrid[0:h, 0:w]
+            # the node is a filled disc, so the ball centre itself must be opaque
+            self.assertTrue(bool(solid[int(round(by)), int(round(bx))]),
+                            f"{name}: the anchor node is not ON the detected ball")
+            near = solid & (np.hypot(xx - bx, yy - by) <= 2.0)
+            self.assertGreaterEqual(int(near.sum()), 4, name)
+            # ...and it is the NODE, not merely the line passing by: the node disc is
+            # wider than the stroke, so a perpendicular probe at the ball must be opaque
+            # well beyond half a stroke width.
+            p = geo.markings["plane_line"]
+            ux, uy = (p["x2"] - p["x1"]) * w, (p["y2"] - p["y1"]) * h
+            L = math.hypot(ux, uy)
+            nx, ny = -uy / L, ux / L
+            probe = int(round(sm.DEFAULT_STYLE.node_min_px * 0.8))
+            self.assertTrue(bool(solid[int(round(by + ny * probe)), int(round(bx + nx * probe))]),
+                            f"{name}: no anchor node at the ball, only the line")
+            checked += 1
+        self.assertGreater(checked, 0)
+
+    @needs_fixtures
+    def test_small_node_has_no_white_pupil(self):
+        """At a ~4.75px node radius the 0.38x pupil quantises to a literal 2x2 white
+        square on the golf ball — a rendering bug, not a style."""
+        checked = 0
+        for name, frames in SESSIONS.items():
+            geo = sm.analyze_setup(frames[0])
+            if "plane_line" not in geo.markings or not geo.ball:
+                continue
+            w, h = geo.frame_width, geo.frame_height
+            ov = sm.render_overlay((w, h), geo, only=["plane_line"])
+            arr = np.asarray(ov).astype(np.int32)
+            pupil = np.array(sm._mix_rgb(sm.DEFAULT_STYLE.plane_color, (255, 255, 255), 0.80))
+            hit = (np.abs(arr[:, :, :3] - pupil).sum(-1) <= 30) & (arr[:, :, 3] >= 200)
+            style = sm.DEFAULT_STYLE
+            hc = geo.markings.get("head_circle") or {}
+            head_px = max(hc.get("head_w", 0.0), hc.get("head_h", 0.0)) * w
+            sw = min(style.stroke_max_px, max(style.stroke_min_px,
+                                              style.stroke_head_ratio * head_px if head_px
+                                              else style.stroke_ratio * w))
+            node_r = max(style.node_min_px, sw * style.node_scale,
+                         geo.ball["r"] * w * style.node_ball_scale)
+            if node_r < style.node_pupil_min_px:
+                self.assertEqual(int(hit.sum()), 0,
+                                 f"{name}: node radius {node_r:.1f}px still drew a pupil")
+                checked += 1
+        self.assertGreater(checked, 0, "no fixture exercised the small-node pupil gate")
+
+    @needs_fixtures
+    def test_spine_has_end_anchors(self):
+        """A cross-tick at C7 and a filled dot at the pelvis: a measurement has ends."""
+        checked = 0
+        for name, frames in SESSIONS.items():
+            geo = sm.analyze_setup(frames[0])
+            spine = geo.markings.get("spine_line")
+            if not spine:
+                continue
+            w, h = geo.frame_width, geo.frame_height
+            ov = sm.render_overlay((w, h), geo, only=["spine_line"])
+            arr = np.asarray(ov).astype(np.int32)
+            teal = np.array(sm.DEFAULT_STYLE.spine_color)
+            solid = (np.abs(arr[:, :, :3] - teal).sum(-1) <= 60) & (arr[:, :, 3] >= 150)
+            x1, y1 = spine["x1"] * w, spine["y1"] * h
+            x2, y2 = spine["x2"] * w, spine["y2"] * h
+            ux, uy = x2 - x1, y2 - y1
+            L = math.hypot(ux, uy)
+            ux, uy = ux / L, uy / L
+            yy, xx = np.mgrid[0:h, 0:w].astype(np.float64)
+            # C7 tick: the tip must be painted WIDER than the stroke itself, otherwise it
+            # is just the line's own cap rather than a cross-tick.
+            hc = geo.markings.get("head_circle") or {}
+            head_px = max(hc.get("head_w", 0.0), hc.get("head_h", 0.0)) * w
+            st = sm.DEFAULT_STYLE
+            sw = min(st.stroke_max_px, max(st.stroke_min_px,
+                                           st.stroke_head_ratio * head_px if head_px
+                                           else st.stroke_ratio * w))
+            perp = np.abs((xx - x2) * -uy + (yy - y2) * ux)
+            along = np.abs((xx - x2) * ux + (yy - y2) * uy)
+            tick = solid & (along <= 1.0) & (perp >= sw * 0.5 + 1.0)
+            self.assertGreater(int(tick.sum()), 0, f"{name}: no cross-tick at the C7 end")
+            # pelvis dot: solid coverage right at the tip
+            dot = solid & (np.hypot(xx - x1, yy - y1) <= 1.5)
+            self.assertGreater(int(dot.sum()), 3, f"{name}: no filled dot at the pelvis end")
+            checked += 1
+        self.assertGreater(checked, 0)
+
+
+class TestRingAlphaFloor(unittest.TestCase):
+    """The support demotion and the ring falloff must not simply multiply: the raw
+    product put a demoted ring's vertical arcs at 0.34 and the closed curve broke."""
+
+    def _arc_alpha(self, demotion):
+        style = sm.DEFAULT_STYLE
+        img = Image.new("RGBA", (200, 200), (0, 0, 0, 0))
+        sm._ring_pass(ImageDraw.Draw(img), (100, 100), 70, 6, style.head_color,
+                      255, style, 0.0, demotion)
+        arr = np.asarray(img)[:, :, 3].astype(np.int32)
+        return int(arr.max()), int(arr[arr > 0].min())
+
+    def test_demoted_ring_never_drops_below_the_floor(self):
+        style = sm.DEFAULT_STYLE
+        top_p, _ = self._arc_alpha(1.0)
+        _, low_s = self._arc_alpha(style.secondary_alpha_scale)
+        raw = style.secondary_alpha_scale * style.ring_alpha_min
+        self.assertLess(raw, style.ring_alpha_floor,
+                        "test is vacuous unless the raw product is below the floor")
+        self.assertGreaterEqual(low_s / 255.0, style.ring_alpha_floor - 0.02,
+                                "demoted ring arcs fell below the alpha floor")
+
+    def test_primary_ring_keeps_the_specified_falloff(self):
+        """The 1.0 -> 0.55 falloff itself is verified broadcast-correct: unchanged."""
+        style = sm.DEFAULT_STYLE
+        hi, lo = self._arc_alpha(1.0)
+        self.assertAlmostEqual(lo / float(hi), style.ring_alpha_min, delta=0.03)
 
 
 if __name__ == "__main__":
