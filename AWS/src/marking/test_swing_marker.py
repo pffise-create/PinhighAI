@@ -1176,6 +1176,104 @@ class TestNodeAndEndpointCraft(unittest.TestCase):
         self.assertGreater(checked, 0)
 
 
+CASING_DL_BAR = -55.0       # acceptance: dL no worse than this at +2px on a >=220 background
+CASING_DL_BG_MIN = 220      # "blown-out sky" — the background the bar was set against
+
+
+def _ring_dl(frame, geo, offset=2.0, bg_min=CASING_DL_BG_MIN, bearings=360):
+    """[dL] of marked-minus-original luminance at ring radius + `offset`, restricted to
+    bearings whose ORIGINAL background luminance is at least `bg_min`."""
+    hc = geo.markings.get("head_circle")
+    if not hc:
+        return []
+    img = ImageOps.exif_transpose(Image.open(frame)).convert("RGB")
+    w, h = img.size
+    ov = sm.render_overlay((w, h), geo)
+    marked = Image.alpha_composite(img.convert("RGBA"), ov).convert("RGB")
+    o = np.asarray(img.convert("L")).astype(np.float64)
+    m = np.asarray(marked.convert("L")).astype(np.float64)
+    cx, cy, r = hc["cx"] * w, hc["cy"] * h, hc["r"] * w
+    out = []
+    for i in range(bearings):
+        a = 2 * math.pi * i / bearings
+        x = int(round(cx + (r + offset) * math.cos(a)))
+        y = int(round(cy + (r + offset) * math.sin(a)))
+        if not (0 <= x < w and 0 <= y < h) or o[y, x] < bg_min:
+            continue
+        out.append(m[y, x] - o[y, x])
+    return out
+
+
+class TestCasingDoesNotReadAsABlackKeyline(unittest.TestCase):
+    """A near-black rim around a graphic on blown-out sky is the clearest 'pasted on'
+    tell there is. The acceptance bar has existed since v4 and was checked by hand each
+    time; v5 shipped a casing change that measured as noise (-71 -> -64 against a -55
+    bar) because the dominant dark pixel at +2px is the blurred HALO, not the casing.
+    It is a regression gate now."""
+
+    @needs_fixtures
+    def test_worst_dl_at_plus_2px_on_blown_background(self):
+        checked, worst_seen = 0, {}
+        for name, frames in SESSIONS.items():
+            geo = sm.analyze_setup(frames[0])
+            vals = _ring_dl(frames[0], geo)
+            if len(vals) < 20:
+                continue      # this scene has no blown-out background to test against
+            worst = min(vals)
+            worst_seen[name] = round(worst, 1)
+            self.assertGreaterEqual(
+                worst, CASING_DL_BAR,
+                f"{name}: casing/halo darkens a {CASING_DL_BG_MIN}+ background by "
+                f"{worst:.0f} at +2px (bar {CASING_DL_BAR:.0f}); n={len(vals)} bearings")
+            checked += 1
+        self.assertGreater(checked, 0,
+                           "no fixture has a blown-out background — the gate is vacuous")
+
+    @needs_fixtures
+    def test_the_halo_does_not_reach_far_from_the_stroke(self):
+        """The bar is about the EDGE, so it must not be met by simply spreading the same
+        darkness further: at +6px the background has to be substantially recovered."""
+        for name, frames in SESSIONS.items():
+            geo = sm.analyze_setup(frames[0])
+            near = _ring_dl(frames[0], geo, offset=2.0)
+            far = _ring_dl(frames[0], geo, offset=6.0)
+            if len(near) < 20 or len(far) < 20:
+                continue
+            self.assertGreater(min(far), min(near) * 0.5,
+                               f"{name}: halo at +6px ({min(far):.0f}) is more than half "
+                               f"as dark as at +2px ({min(near):.0f}) — that is a smudge")
+
+    @needs_fixtures
+    def test_the_gate_would_catch_a_regression(self):
+        """Non-vacuity, measured rather than asserted: restoring v5's alpha pair must
+        make the bar fail on the same fixture that passes it now."""
+        import dataclasses
+        v5 = dataclasses.replace(sm.DEFAULT_STYLE, casing_alpha=91, glow_alpha_bright=31)
+        checked = 0
+        for name, frames in SESSIONS.items():
+            geo = sm.analyze_setup(frames[0])
+            if len(_ring_dl(frames[0], geo)) < 20:
+                continue
+            img = ImageOps.exif_transpose(Image.open(frames[0])).convert("RGB")
+            w, h = img.size
+            hc = geo.markings["head_circle"]
+            ov = sm.render_overlay((w, h), geo, v5)
+            marked = Image.alpha_composite(img.convert("RGBA"), ov).convert("RGB")
+            o = np.asarray(img.convert("L")).astype(np.float64)
+            m = np.asarray(marked.convert("L")).astype(np.float64)
+            cx, cy, r = hc["cx"] * w, hc["cy"] * h, hc["r"] * w
+            vals = []
+            for i in range(360):
+                a = 2 * math.pi * i / 360
+                x, y = int(round(cx + (r + 2) * math.cos(a))), int(round(cy + (r + 2) * math.sin(a)))
+                if 0 <= x < w and 0 <= y < h and o[y, x] >= CASING_DL_BG_MIN:
+                    vals.append(m[y, x] - o[y, x])
+            self.assertLess(min(vals), CASING_DL_BAR,
+                            f"{name}: the v5 alphas pass the bar, so the gate proves nothing")
+            checked += 1
+        self.assertGreater(checked, 0)
+
+
 class TestRingAlphaFloor(unittest.TestCase):
     """The support demotion and the ring falloff must not simply multiply: the raw
     product put a demoted ring's vertical arcs at 0.34 and the closed curve broke."""

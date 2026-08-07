@@ -341,10 +341,14 @@ class MarkingStyle:
     casing_min_px: float = 0.75
     casing_width_ratio: float = 0.0011   # absolute casing pad = ratio x frame width (>=1px).
                                          # Supersedes casing_ratio when larger of the two.
-    casing_alpha: int = 91          # 210 -> 115 (v4) -> 91. The casing is a separation edge,
-                                    # not an outline. At 115 the worst bearing on the head
-                                    # ring still measured dL -70 at +2px against a 231-luma
-                                    # sky, against a -55 acceptance bar; 115 x 55/70 = 91.
+    casing_alpha: int = 78          # 210 -> 115 (v4) -> 91 (v5) -> 78. The casing is a
+                                    # separation edge, not an outline. 91 x 55/64 = 78,
+                                    # the arithmetic the critic asked for. But note what
+                                    # the sweep showed: from 91 to 66 the worst bearing
+                                    # moved only -60 -> -58. At +2px the dark pixel on
+                                    # blown sky is mostly the blurred HALO, not the
+                                    # casing, which is why v5's casing-only change
+                                    # measured as noise. See glow_alpha_bright.
     casing_taper_floor: float = 0.55  # the casing pad shrinks with a tapering body down
                                       # to this fraction — a constant pad around a taper
                                       # turns the tip into a dark blob
@@ -375,9 +379,15 @@ class MarkingStyle:
                                     # ~6px neutral blur held bright sky 15-25% below true
                                     # value out to +13px.
     glow_alpha: int = 64            # was 95
-    glow_alpha_bright: int = 31     # halo alpha where the local background is already
-                                    # bright (see glow_bright_luma) — over blown-out sky a
-                                    # dark halo is what makes graphics look pasted on.
+    glow_alpha_bright: int = 20     # 95 -> 31 (v4/v5) -> 20. Halo alpha where the local
+                                    # background is already bright (see glow_bright_luma).
+                                    # This is the knob that actually moves the acceptance
+                                    # measurement: at casing 78 the worst bearing at +2px
+                                    # on a >=220 background goes -58 (glow 31) -> -55
+                                    # (22) -> -54 (20), against a -55 bar. Over blown-out
+                                    # sky a dark halo is the thing that makes a graphic
+                                    # look pasted on, and it is doing least work there
+                                    # anyway — there is nothing busy to separate from.
     glow_bright_luma: float = 170.0
 
     # --- endpoint treatment ------------------------------------------------
@@ -2149,12 +2159,19 @@ def render_overlay(size: Tuple[int, int], geometry: SetupGeometry,
 
 def _background_luma(img, geometry: "SetupGeometry",
                      only: Optional[Sequence[str]] = None) -> Dict[str, float]:
-    """Mean luminance of the frame along each marking's own path.
+    """Upper-quartile luminance of the frame along each marking's own path.
 
     The dark halo exists to separate a stroke from busy video; over already-bright
     background (blown-out sky) it is the thing that makes a graphic look pasted on.
     Sampling under each marking individually matters because one stroke can sit on
     sky while another sits on grass in the same frame.
+
+    The statistic is the 75th percentile, not the mean, and the difference is not
+    cosmetic: a head ring is half on a dark head and half on bright sky, so its MEAN
+    lands mid-grey and the bright gate never fires — on the oblique fixture 71% of the
+    ring sits over sky and the mean still read 150 against a 170 threshold. The upper
+    quartile answers the question actually being asked, which is "does this marking cross
+    blown-out background anywhere", not "what is it on average".
     """
     marks = select_markings(geometry, only)
     if not marks:
@@ -2181,7 +2198,7 @@ def _background_luma(img, geometry: "SetupGeometry",
             for i in range(24):
                 t = i / 23.0
                 vals.append(at(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t))
-        out[name] = sum(vals) / float(len(vals)) if vals else 0.0
+        out[name] = float(np.percentile(np.asarray(vals, dtype=np.float64), 75)) if vals else 0.0
     return out
 
 
