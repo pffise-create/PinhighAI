@@ -113,9 +113,14 @@ class TestPixelStability(unittest.TestCase):
     @needs_fixtures
     def test_marked_frames_carry_the_same_overlay(self):
         """Every written marked frame must equal original composited with the ONE overlay
-        (lossless PNG output so the comparison is exact)."""
+        (lossless PNG output so the comparison is exact).
+
+        This is the test that caught the halo's background-luminance gate being sampled
+        per FRAME: coordinates were stable but pixels were not, because a marking over
+        sky at address and over a treeline later got two different halo alphas."""
         name, frames = _dtl_session()
         geo = sm.analyze_setup(frames[0])
+        self.assertTrue(geo.bg_luma, "bg_luma must be measured once, on the address frame")
         overlay = sm.render_overlay((geo.frame_width, geo.frame_height), geo)
         with tempfile.TemporaryDirectory() as td:
             for i, fp in enumerate(frames):
@@ -386,24 +391,22 @@ class TestPlaneLineClampedBounds(unittest.TestCase):
                 self.assertLessEqual(x, 1 - sm.PLANE_EDGE_MARGIN + 1e-4, name)
                 self.assertGreaterEqual(y, sm.PLANE_EDGE_MARGIN - 1e-4, name)
                 self.assertLessEqual(y, 1 - sm.PLANE_EDGE_MARGIN + 1e-4, name)
-            # Bottom end: just past the ball, never further.
-            max_over = max(sm.PLANE_BOTTOM_OVERSHOOT * geo.ball["r"] * w, sm.PLANE_BOTTOM_MIN_PX * h)
+            # Bottom end: ON the anchor, not past it (v6 — the node and the line's own
+            # terminus are the same point; v5 left the endpoint 19.2px beyond it).
             d_ball = math.hypot((plane["x1"] - geo.ball["x"]) * w, (plane["y1"] - geo.ball["y"]) * h)
-            self.assertLessEqual(d_ball, max_over + 0.5,
-                                 f"{name}: bottom end {d_ball:.1f}px from the ball (max {max_over:.1f})")
-            self.assertGreaterEqual(plane["y1"], geo.ball["y"] - 1e-6,
-                                    f"{name}: bottom end sits above the ball")
-            # Top end: at/above the head circle's top region — never below the shoulders,
-            # and (unless clamped at a frame edge) not more than ~2 head radii above the ring.
+            self.assertLessEqual(d_ball, 0.5,
+                                 f"{name}: bottom end {d_ball:.1f}px from its anchor")
+            # Top end: above head height, unless it left the frame first (a line that
+            # exits the side of the frame below head height has still terminated on the
+            # edge, which is the broadcast idiom; see test_plane_far_end_reaches_the_edge_clamp).
             hc = geo.markings.get("head_circle")
-            if hc:
+            at_edge = (abs(plane["x2"] - sm.PLANE_EDGE_MARGIN) < 1e-3
+                       or abs(plane["x2"] - (1 - sm.PLANE_EDGE_MARGIN)) < 1e-3
+                       or abs(plane["y2"] - sm.PLANE_EDGE_MARGIN) < 1e-3)
+            if hc and not at_edge:
                 head_top_y = hc["cy"] - hc["r"] * w / h
-                at_edge = plane["x2"] <= sm.PLANE_EDGE_MARGIN + 1e-4 or plane["y2"] <= sm.PLANE_EDGE_MARGIN + 1e-4
-                if not at_edge:
-                    self.assertLessEqual(plane["y2"], head_top_y + 1e-3,
-                                         f"{name}: top end below head height")
-                    self.assertGreaterEqual(plane["y2"], head_top_y - 2.0 * hc["r"] * w / h,
-                                            f"{name}: top end far above the head (sky/roof)")
+                self.assertLessEqual(plane["y2"], head_top_y + 1e-3,
+                                     f"{name}: top end below head height")
             checked += 1
         self.assertGreater(checked, 0)
 
@@ -735,6 +738,128 @@ class TestStrokeScalesWithTheSubject(unittest.TestCase):
                         f"stroke/head ratio is not constant across resolutions: {ratios}")
 
 
+def _trusted_ball_geo(geo, r_over_w=0.007, confidence=0.9):
+    """`geo` with its ball forced to pass the node gate — the fixtures have none.
+
+    Every DTL fixture's detection is refuted by _measure_ball_radius (a rim highlight on
+    a dull teed ball; a facet of a clubhead crown), so the POSITIVE node path has no
+    natural fixture. Forcing the gate inputs keeps that path under test without
+    pretending any fixture contains a clean ball.
+    """
+    import copy
+    g = copy.deepcopy(geo)
+    g.ball = dict(g.ball, r=r_over_w, confidence=confidence,
+                  r_verdict="measured", r_reason="")
+    ok, why = sm._ball_node_ok(g.ball, g.frame_width)
+    assert ok, why
+    g.ball["node"] = True
+    return g
+
+
+class TestBallNodeGate(unittest.TestCase):
+    """The node is the most emphatic mark the system draws and it asserts "the ball is
+    HERE". v5 snapped it to the detection, which on two of four fixture scenes is the
+    CLUBHEAD — so the node sat confidently on the wrong object, and geometry.json told
+    Mode 1 the same thing. The node now carries its own gate."""
+
+    def test_gate_rejects_low_confidence_and_implausible_radius(self):
+        base = {"x": 0.5, "y": 0.5, "r": 0.007, "confidence": 0.9,
+                "r_verdict": "measured", "r_reason": ""}
+        W = 1080
+        self.assertTrue(sm._ball_node_ok(base, W)[0])
+        # confidence
+        ok, why = sm._ball_node_ok(dict(base, confidence=0.5), W)
+        self.assertFalse(ok)
+        self.assertIn("confidence", why)
+        ok, _ = sm._ball_node_ok(dict(base, confidence=sm.BALL_NODE_MIN_CONFIDENCE), W)
+        self.assertTrue(ok, "the gate must admit exactly at the confidence bound")
+        # radius, both ends
+        for r in (sm.BALL_NODE_R_MIN - 1e-4, sm.BALL_NODE_R_MAX + 1e-4):
+            ok, why = sm._ball_node_ok(dict(base, r=r), W)
+            self.assertFalse(ok, f"radius {r} should not pass")
+            self.assertIn("radius", why)
+        for r in (sm.BALL_NODE_R_MIN, sm.BALL_NODE_R_MAX):
+            self.assertTrue(sm._ball_node_ok(dict(base, r=r), W)[0])
+        # a REFUTED radius outranks any confidence
+        ok, why = sm._ball_node_ok(
+            dict(base, r=None, confidence=0.99, r_verdict="refuted",
+                 r_reason="half-max blob circularity 0.35 < 0.60 — not a disc"), W)
+        self.assertFalse(ok, "a refuted ball must not draw a node at any confidence")
+        self.assertIn("not a ball", why)
+        # ...whereas an merely UNMEASURABLE radius falls back to confidence alone
+        self.assertTrue(sm._ball_node_ok(
+            dict(base, r=None, r_verdict="unavailable", r_reason="no cv2"), W)[0])
+        self.assertFalse(sm._ball_node_ok(None, W)[0])
+
+    def test_radius_estimator_measures_a_real_disc(self):
+        """The estimator is accurate on an actual disc across two decades of radius —
+        so 'refuted' on the fixtures is a statement about the fixtures, not about it."""
+        for R in (3, 8, 13, 40):
+            arr = np.full((200, 200, 3), 90, np.uint8)
+            yy, xx = np.mgrid[0:200, 0:200]
+            arr[np.hypot(xx - 100, yy - 100) <= R] = 245
+            ball = {"x": 0.5, "y": 0.5, "r": (R * 0.5) / 200, "confidence": 0.9}
+            r, c, verdict, why = sm._measure_ball_radius(arr, ball, 200, 200)
+            self.assertEqual(verdict, "measured", f"R={R}: {why}")
+            self.assertAlmostEqual(r, R, delta=max(0.5, 0.05 * R),
+                                   msg=f"R={R}: measured {r:.2f}")
+            self.assertAlmostEqual(c[0], 100.0, delta=1.0)
+
+    def test_radius_estimator_refutes_a_highlight_on_a_larger_object(self):
+        """A bright patch on a bigger bright object — the clubhead crown case."""
+        arr = np.full((200, 200, 3), 90, np.uint8)
+        yy, xx = np.mgrid[0:200, 0:200]
+        arr[(np.abs(xx - 100) <= 45) & (np.abs(yy - 100) <= 12)] = 175   # the clubhead
+        arr[np.hypot(xx - 100, yy - 100) <= 6] = 245                      # the highlight
+        ball = {"x": 0.5, "y": 0.5, "r": 6 / 200, "confidence": 0.95}
+        r, _c, verdict, why = sm._measure_ball_radius(arr, ball, 200, 200)
+        self.assertEqual(verdict, "refuted", why)
+        self.assertIsNone(r)
+
+    @needs_fixtures
+    def test_no_node_is_drawn_when_the_gate_fails(self):
+        checked = 0
+        for name, frames in SESSIONS.items():
+            geo = sm.analyze_setup(frames[0])
+            if "plane_line" not in geo.markings or not geo.ball:
+                continue
+            if geo.ball.get("node"):
+                continue
+            w, h = geo.frame_width, geo.frame_height
+            # the refusal is recorded for Mode 1, not merely acted on
+            reasons = [f["reason"] for f in geo.failures if f["marking"] == "ball_node"]
+            self.assertTrue(reasons, f"{name}: node withheld without a recorded reason")
+            ov = sm.render_overlay((w, h), geo, only=["plane_line"])
+            solid = np.asarray(ov).astype(np.int32)[:, :, 3] >= 200
+            bx, by = geo.ball["x"] * w, geo.ball["y"] * h
+            p = geo.markings["plane_line"]
+            ux, uy = (p["x2"] - p["x1"]) * w, (p["y2"] - p["y1"]) * h
+            L = math.hypot(ux, uy)
+            nx, ny = -uy / L, ux / L
+            # nothing wider than the stroke at the detection: no disc was painted there
+            probe = int(round(sm.DEFAULT_STYLE.node_min_px * 0.8))
+            self.assertFalse(
+                bool(solid[int(round(by + ny * probe)), int(round(bx + nx * probe))]),
+                f"{name}: a node was drawn on a detection the gate refused")
+            checked += 1
+        self.assertGreater(checked, 0, "no fixture exercised the node refusal path")
+
+    @needs_fixtures
+    def test_the_plane_line_survives_a_refused_node(self):
+        """Deliberate: the ball CLAIM is withheld, the shaft MEASUREMENT is kept. The
+        line's direction is the Hough shaft's and its origin is that shaft's confirmed
+        lower end, neither of which depends on the object being a ball."""
+        checked = 0
+        for name, frames in SESSIONS.items():
+            geo = sm.analyze_setup(frames[0])
+            if not geo.ball or geo.ball.get("node"):
+                continue
+            self.assertIn("plane_line", geo.markings,
+                          f"{name}: a refused node also took the plane line with it")
+            checked += 1
+        self.assertGreater(checked, 0)
+
+
 class TestNodeAndEndpointCraft(unittest.TestCase):
     @needs_fixtures
     def test_node_sits_on_the_detected_ball(self):
@@ -743,6 +868,7 @@ class TestNodeAndEndpointCraft(unittest.TestCase):
             geo = sm.analyze_setup(frames[0])
             if "plane_line" not in geo.markings or not geo.ball:
                 continue
+            geo = _trusted_ball_geo(geo)      # the fixtures carry no gate-passing ball
             w, h = geo.frame_width, geo.frame_height
             ov = sm.render_overlay((w, h), geo, only=["plane_line"])
             arr = np.asarray(ov).astype(np.int32)
@@ -768,6 +894,52 @@ class TestNodeAndEndpointCraft(unittest.TestCase):
         self.assertGreater(checked, 0)
 
     @needs_fixtures
+    def test_plane_line_terminates_on_its_own_node(self):
+        """v5 moved the node to the ball and left the line's endpoint 19.2px past it, so
+        the stroke poked out beyond its own terminus."""
+        checked = 0
+        for name, frames in SESSIONS.items():
+            geo = sm.analyze_setup(frames[0])
+            plane = geo.markings.get("plane_line")
+            if not plane or not geo.ball:
+                continue
+            w, h = geo.frame_width, geo.frame_height
+            d = math.hypot((plane["x1"] - geo.ball["x"]) * w,
+                           (plane["y1"] - geo.ball["y"]) * h)
+            self.assertLessEqual(d, 0.5,
+                                 f"{name}: plane line overshoots its anchor by {d:.1f}px")
+            checked += 1
+        self.assertGreater(checked, 0)
+
+    @needs_fixtures
+    def test_plane_far_end_reaches_the_edge_clamp(self):
+        """A taper that fades out in mid-sky reads as the renderer running out of line.
+        The far end must reach PLANE_EDGE_MARGIN on some frame edge — or stop clear of
+        the head ring, which is a landmark."""
+        checked = 0
+        m = sm.PLANE_EDGE_MARGIN
+        for name, frames in SESSIONS.items():
+            geo = sm.analyze_setup(frames[0])
+            plane = geo.markings.get("plane_line")
+            if not plane:
+                continue
+            x2, y2 = plane["x2"], plane["y2"]
+            at_edge = (abs(x2 - m) < 1e-3 or abs(x2 - (1 - m)) < 1e-3
+                       or abs(y2 - m) < 1e-3 or abs(y2 - (1 - m)) < 1e-3)
+            on_ring = False
+            hc = geo.markings.get("head_circle")
+            if hc:
+                w, h = geo.frame_width, geo.frame_height
+                d = math.hypot((x2 - hc["cx"]) * w, (y2 - hc["cy"]) * h)
+                clear = hc["r"] * w * (1.0 + sm.PLANE_TOP_CLEARANCE)
+                on_ring = abs(d - clear) < 1.5
+            self.assertTrue(at_edge or on_ring,
+                            f"{name}: plane far end at ({x2:.4f}W, {y2:.4f}H) reaches "
+                            f"neither the {m}W edge clamp nor the head ring")
+            checked += 1
+        self.assertGreater(checked, 0)
+
+    @needs_fixtures
     def test_small_node_has_no_white_pupil(self):
         """At a ~4.75px node radius the 0.38x pupil quantises to a literal 2x2 white
         square on the golf ball — a rendering bug, not a style."""
@@ -777,22 +949,26 @@ class TestNodeAndEndpointCraft(unittest.TestCase):
             if "plane_line" not in geo.markings or not geo.ball:
                 continue
             w, h = geo.frame_width, geo.frame_height
-            ov = sm.render_overlay((w, h), geo, only=["plane_line"])
-            arr = np.asarray(ov).astype(np.int32)
-            pupil = np.array(sm._mix_rgb(sm.DEFAULT_STYLE.plane_color, (255, 255, 255), 0.80))
-            hit = (np.abs(arr[:, :, :3] - pupil).sum(-1) <= 30) & (arr[:, :, 3] >= 200)
             style = sm.DEFAULT_STYLE
             hc = geo.markings.get("head_circle") or {}
             head_px = max(hc.get("head_w", 0.0), hc.get("head_h", 0.0)) * w
             sw = min(style.stroke_max_px, max(style.stroke_min_px,
                                               style.stroke_head_ratio * head_px if head_px
                                               else style.stroke_ratio * w))
+            # Force through the gate at the smallest radius the gate admits: that is the
+            # smallest node the system can ever draw, and the one the pupil quantises on.
+            geo = _trusted_ball_geo(geo, r_over_w=sm.BALL_NODE_R_MIN)
             node_r = max(style.node_min_px, sw * style.node_scale,
                          geo.ball["r"] * w * style.node_ball_scale)
-            if node_r < style.node_pupil_min_px:
-                self.assertEqual(int(hit.sum()), 0,
-                                 f"{name}: node radius {node_r:.1f}px still drew a pupil")
-                checked += 1
+            if node_r >= style.node_pupil_min_px:
+                continue
+            ov = sm.render_overlay((w, h), geo, only=["plane_line"])
+            arr = np.asarray(ov).astype(np.int32)
+            pupil = np.array(sm._mix_rgb(sm.DEFAULT_STYLE.plane_color, (255, 255, 255), 0.80))
+            hit = (np.abs(arr[:, :, :3] - pupil).sum(-1) <= 30) & (arr[:, :, 3] >= 200)
+            self.assertEqual(int(hit.sum()), 0,
+                             f"{name}: node radius {node_r:.1f}px still drew a pupil")
+            checked += 1
         self.assertGreater(checked, 0, "no fixture exercised the small-node pupil gate")
 
     @needs_fixtures

@@ -66,7 +66,7 @@ except ImportError:  # pragma: no cover
     cv2 = None
     _HAS_CV2 = False
 
-MARKER_VERSION = "5.0.0"
+MARKER_VERSION = "6.0.0"
 
 MODEL_FILENAME = "movenet_singlepose_thunder_f16.tflite"
 MODEL_SHA256 = "41641538679ec79b07d4101e591dda47d098c09af29607674b2a40b8a3798dd3"
@@ -175,6 +175,26 @@ BALL_SHAFT_PERP_MAX = 0.018    # x W: base max perpendicular distance ball-cente
 BALL_SHAFT_ANGLE_TOL_DEG = 6.0  # angular tolerance of the Hough shaft line, measured from its hands-side anchor
 BALL_ALONG_RANGE = (-0.15, 0.90)  # ball position along the shaft beyond its lower endpoint, x segment length
                                   # (lower bound is tight: a bright glint UP the shaft must not pass as the ball)
+
+# --- ball NODE gate -------------------------------------------------------------------
+# The node is the most emphatic mark the system draws: a filled, fully-opaque disc that
+# asserts "the ball is HERE". v5 snapped it to the detection, which on the oblique DTL
+# fixture is the CROWN OF THE CLUBHEAD (confidence 0.50) and at 320px rendered as a solid
+# blob covering the club. Snapping made a detection error more visible, not less, and
+# because geometry.json is what Mode 1 feeds the coaching model, an unverified "ball"
+# reported as a confirmed one corrupts the grounding as well as the picture.
+#
+# The node therefore carries its own gate, stricter than the one that admits the
+# detection into the plane-line construction: the detection may be good enough to say
+# "this is the clubhead end of the shaft" (which is all the LINE needs) and still not be
+# good enough to say "this is the ball" (which is all the NODE says).
+BALL_NODE_MIN_CONFIDENCE = 0.70   # detection confidence required to draw a node
+BALL_NODE_R_MIN = 0.004           # x W: below this the "ball" is a specular highlight
+BALL_NODE_R_MAX = 0.012           # x W: above this it is a clubhead, a shoe, a range marker
+BALL_R_OCTANTS = 8                # octants sampled by the ball-radius validity check
+BALL_R_FALL_FRAC = 0.25           # brightness must fall to floor + this x (peak - floor)
+                                  # on EVERY octant by 2x the estimated radius, or the
+                                  # blob is a highlight ON something rather than a disc
 
 SHAFT_MIN_CONFIDENCE = 0.45    # below this the Hough shaft fit is untrusted -> NO plane line
                                # (fail closed; never fall back to a ball->body construction)
@@ -403,6 +423,13 @@ class SetupGeometry:
     shaft: Optional[Dict[str, float]]                # {x1, y1, x2, y2, confidence}
     markings: Dict[str, Dict[str, float]]            # subset of {head_circle, spine_line, plane_line}
     failures: List[Dict[str, str]]                   # [{marking, reason}, ...]
+    # Mean background luminance under each marking, measured ONCE on the address frame.
+    # It gates the dark halo down over blown-out sky (see MarkingStyle.glow_bright_luma).
+    # It lives in the geometry rather than being sampled per frame because sampling it
+    # per frame made the overlay frame-dependent: a marking over sky at address and over
+    # a treeline at the top of the backswing got two different halo alphas, so the
+    # "one overlay, every frame" rule held for coordinates but not for pixels.
+    bg_luma: Dict[str, float] = field(default_factory=dict)
 
     def to_json(self) -> str:
         """Deterministic, versioned serialization (sorted keys, fixed float precision)."""
@@ -411,9 +438,11 @@ class SetupGeometry:
     @classmethod
     def from_json(cls, text: str) -> "SetupGeometry":
         d = json.loads(text)
-        return cls(**{k: d[k] for k in (
+        out = cls(**{k: d[k] for k in (
             "marker_version", "frame_width", "frame_height", "keypoints", "view",
             "facing", "ball", "shaft", "markings", "failures")})
+        out.bg_luma = d.get("bg_luma") or {}
+        return out
 
 
 def _round_floats(obj, ndigits: int = 6):
@@ -1157,52 +1186,139 @@ def _detect_ball(rgb: np.ndarray, cx: float, cy: float, w: int, h: int, shaft_le
     return unique, None
 
 
-def _refine_ball(rgb: "np.ndarray", ball: Dict[str, float], w: int, h: int) -> Dict[str, float]:
-    """Re-measure the ball's centre and radius at HALF MAXIMUM.
+def _measure_ball_radius(rgb: "np.ndarray", ball: Dict[str, float], w: int, h: int
+                         ) -> Tuple[Optional[float], Optional[Tuple[float, float]], str, str]:
+    """(radius_px | None, centre_px | None, verdict, reason) for the detected blob.
 
-    _detect_ball ranks candidates by brightness margin, which favours the ball's specular
-    CORE over the ball: on a 1080 frame it reported r = 2.3px for a visibly ~11px ball, a
-    5x under-read that then propagated into the plane line's bottom overshoot and the
-    anchor node's size. Half-max thresholding between the blob interior and its local
-    surround is the standard fix and is threshold-free. Fails soft: any implausible result
-    keeps the detection unchanged.
+    `verdict` is the part the node gate actually reasons about:
+      "measured"    — a radius was obtained and survived every consistency check
+      "refuted"     — the measurement ACTIVELY CONTRADICTS the ball hypothesis: the blob
+                      is not a disc, or it is a bright patch on a larger bright object
+      "unavailable" — no measurement was possible at all (no cv2, degenerate window, too
+                      little contrast to measure anything)
+
+    The distinction is load-bearing. "Refuted" and "unavailable" both yield r=None, but
+    only "unavailable" may fall back to gating on confidence alone: at 320px the clubhead
+    crown is detected with confidence 0.91, and treating "that blob is a highlight on
+    something bigger" as a mere absence of evidence put a filled node straight back onto
+    the club.
+
+    THREE versions of this estimator have now been wrong, so this one refuses rather than
+    guesses. v3/v4 measured the specular CORE (2.3px against a ~15px teed ball on the
+    backlit fixture). v5 added half-max refinement, which did not move the number at all,
+    and the reason is visible in the pixels: on that fixture the ball is DARKER than the
+    mat it sits on and only its rim highlight is bright, so a brightness blob centred
+    there measures the highlight however it is thresholded. On the oblique fixture the
+    blob is a facet of the clubhead crown and there is no ball within 85px.
+
+    A brightness-blob radius is therefore not a measurement of a ball; it is a
+    measurement of whatever highlight the detector locked onto. So a radius is returned
+    ONLY when the blob is self-evidently a free-standing bright disc:
+
+      * its half-max component is closed inside the measurement window (a component that
+        touches the window edge is part of something larger),
+      * it is roughly circular by contour, and
+      * brightness falls back to the local floor on EVERY octant within 2x the estimated
+        radius — a rim highlight fails this, because the object it sits on continues.
+
+    Anything else returns None with a reason, and the caller gates the node on confidence
+    alone rather than on a number it cannot defend. Shipping a fourth confident-looking
+    wrong number would be worse than shipping no number.
     """
     if not _HAS_CV2:
-        return ball
+        return None, None, "unavailable", "opencv unavailable: ball radius not measurable"
     bright = rgb.max(axis=2).astype(np.float32)
     bx, by, r0 = ball["x"] * w, ball["y"] * h, max(1.5, ball["r"] * w)
-    pad = int(max(8, 6.0 * r0))
+    pad = int(max(10, 8.0 * r0))
     x_lo, x_hi = int(max(0, bx - pad)), int(min(w, bx + pad + 1))
     y_lo, y_hi = int(max(0, by - pad)), int(min(h, by + pad + 1))
-    if x_hi - x_lo < 6 or y_hi - y_lo < 6:
-        return ball
+    if x_hi - x_lo < 8 or y_hi - y_lo < 8:
+        return None, None, "unavailable", "ball radius window degenerate"
     roi = bright[y_lo:y_hi, x_lo:x_hi]
     yy, xx = np.mgrid[y_lo:y_hi, x_lo:x_hi]
     rad = np.hypot(xx - bx, yy - by)
-    core, surround = rad <= max(1.0, 0.8 * r0), rad >= 4.0 * r0
+    core, surround = rad <= max(1.0, 0.8 * r0), (rad >= 3.0 * r0) & (rad <= 5.0 * r0)
     if core.sum() < 1 or surround.sum() < 8:
-        return ball
-    hi, lo = float(roi[core].mean()), float(np.median(roi[surround]))
-    if hi - lo < BALL_BRIGHTNESS_MARGIN:
-        return ball
-    mask = (roi >= (hi + lo) / 2.0).astype(np.uint8)
+        return None, None, "unavailable", "ball radius window has no measurable surround"
+    peak, floor = float(roi[core].mean()), float(np.median(roi[surround]))
+    if peak - floor < BALL_BRIGHTNESS_MARGIN:
+        return None, None, "unavailable", (
+            f"blob is only {peak - floor:.0f} brighter than its surround "
+            f"(need {BALL_BRIGHTNESS_MARGIN:.0f}) — radius not measurable")
+
+    mask = (roi >= (peak + floor) / 2.0).astype(np.uint8)
     n, labels, stats, cents = cv2.connectedComponentsWithStats(mask, 8)
     lid = int(labels[int(round(by)) - y_lo, int(round(bx)) - x_lo])
     if lid == 0:
-        return ball
+        return None, None, "refuted", "half-max component empty at the detection centre"
+    bxx, byy = int(stats[lid, cv2.CC_STAT_LEFT]), int(stats[lid, cv2.CC_STAT_TOP])
+    bw, bh = int(stats[lid, cv2.CC_STAT_WIDTH]), int(stats[lid, cv2.CC_STAT_HEIGHT])
+    if bxx <= 0 or byy <= 0 or bxx + bw >= mask.shape[1] or byy + bh >= mask.shape[0]:
+        return None, None, "refuted", "half-max blob runs out of the window — it is part of something larger"
     area = float(stats[lid, cv2.CC_STAT_AREA])
-    bw, bh = float(stats[lid, cv2.CC_STAT_WIDTH]), float(stats[lid, cv2.CC_STAT_HEIGHT])
     r_new = math.sqrt(area / math.pi)
-    if not (BALL_MIN_R * w <= r_new <= BALL_MAX_R * w):
-        return ball
-    if not (0.45 <= bw / max(1.0, bh) <= 2.2) or area / max(1.0, bw * bh) < 0.45:
-        return ball
-    if r_new < ball["r"] * w:            # the half-max blob can only be the ball or bigger
-        return ball
+    # NOTE: no ball-size plausibility test here, deliberately. Whether a measured radius
+    # is ball-sized is the NODE GATE's question (_ball_node_ok); folding it in here would
+    # turn "this blob is 1.3px across" — a perfectly sound measurement, and the one that
+    # proves the 320px detection is not a ball — into "radius unmeasurable", which the
+    # gate then treats as license to fall back to confidence alone. That inversion put a
+    # node back on the clubhead at 320px on the first cut of this change.
+    comp = (labels == lid).astype(np.uint8)
+    contours, _ = cv2.findContours(comp, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if not contours:
+        return None, None, "refuted", "half-max blob has no contour"
+    per = cv2.arcLength(contours[0], True)
+    circ = 4.0 * math.pi * area / (per * per) if per > 0 else 0.0
+    if circ < 0.60:
+        return None, None, "refuted", f"half-max blob circularity {circ:.2f} < 0.60 — not a disc"
     cxn, cyn = float(cents[lid][0]) + x_lo, float(cents[lid][1]) + y_lo
-    if math.hypot(cxn - bx, cyn - by) > 2.0 * r_new:
-        return ball
-    return dict(ball, x=cxn / w, y=cyn / h, r=r_new / w)
+    if math.hypot(cxn - bx, cyn - by) > 1.5 * r_new:
+        return None, None, "refuted", "half-max centroid inconsistent with the detection centre"
+
+    # Free-standing check: on a real ball the brightness has returned to the local floor
+    # all the way round by 2r. On a highlight sitting on a clubhead (or on the lit rim of
+    # a dull ball) at least one octant is still bright, because the object continues.
+    cutoff = floor + BALL_R_FALL_FRAC * (peak - floor)
+    probe = 2.0 * r_new
+    for k in range(BALL_R_OCTANTS):
+        a = 2.0 * math.pi * k / BALL_R_OCTANTS
+        px = int(round(cxn + probe * math.cos(a)))
+        py = int(round(cyn + probe * math.sin(a)))
+        if not (0 <= px < w and 0 <= py < h):
+            return None, None, "refuted", "ball radius probe left the frame"
+        if bright[py, px] > cutoff:
+            return None, None, "refuted", (
+                f"blob is still bright at 2r on bearing {math.degrees(a):.0f}deg "
+                f"— a highlight ON something, not a free-standing ball")
+    return r_new, (cxn, cyn), "measured", ""
+
+
+def _ball_node_ok(ball: Optional[Dict[str, float]], w: int) -> Tuple[bool, str]:
+    """Whether the detection is trustworthy enough to carry an anchor NODE.
+
+    Three ways to fail, in order of how much they tell us:
+      1. the radius measurement REFUTED the ball hypothesis  -> no node, at any confidence
+      2. detection confidence below BALL_NODE_MIN_CONFIDENCE -> no node
+      3. a measured radius outside [BALL_NODE_R_MIN, BALL_NODE_R_MAX] x W -> no node
+    When no radius could be measured AT ALL (verdict "unavailable") the gate falls back
+    to confidence alone rather than inventing a number to test.
+    """
+    if not ball:
+        return False, "no ball detected"
+    if ball.get("r_verdict") == "refuted":
+        return False, (f"node withheld — the detection is not a ball: "
+                       f"{ball.get('r_reason') or 'radius measurement refuted'}")
+    conf = float(ball.get("confidence") or 0.0)
+    if conf < BALL_NODE_MIN_CONFIDENCE:
+        return False, (f"ball detection confidence {conf:.2f} < {BALL_NODE_MIN_CONFIDENCE} — "
+                       f"node withheld (the detection may not be a ball)")
+    r = ball.get("r")
+    if r is None:
+        return True, ""
+    if not (BALL_NODE_R_MIN <= r <= BALL_NODE_R_MAX):
+        return False, (f"ball radius {r:.5f}W outside [{BALL_NODE_R_MIN}, {BALL_NODE_R_MAX}]W "
+                       f"— node withheld (the detection is not ball-sized)")
+    return True, ""
 
 
 def _ball_confirms_shaft(ball, shaft, w, h) -> Tuple[bool, str]:
@@ -1251,40 +1367,50 @@ def _plane_line(shaft, ball, head, kps, w, h) -> Tuple[Optional[Dict[str, float]
         return None, "shaft direction not upward"
 
     bx, by = ball["x"] * w, ball["y"] * h
-    r_ball = ball["r"] * w
 
-    # Bottom end: just past the ball, opposite the hands-ward direction (clamped in-frame).
-    t_bot = -max(PLANE_BOTTOM_OVERSHOOT * r_ball, PLANE_BOTTOM_MIN_PX * h)
+    # Bottom end: ON the anchor, not past it. v5 drew the node at the ball but left the
+    # line's own endpoint where v4 had put it — PLANE_BOTTOM_OVERSHOOT past the ball —
+    # so the stroke poked 19.2px out beyond its own terminus on both 1080 fixtures. A
+    # measurement ends where it is anchored, so t_bot is now 0 by construction and the
+    # overshoot constants below only survive as the in-frame clamp.
+    t_bot = 0.0
     t_bot = max(t_bot, ((1.0 - PLANE_EDGE_MARGIN) * h - by) / uy)  # uy < 0: y <= 1-margin
     if ux > 0:
         t_bot = max(t_bot, (PLANE_EDGE_MARGIN * w - bx) / ux)
     elif ux < 0:
         t_bot = max(t_bot, ((1.0 - PLANE_EDGE_MARGIN) * w - bx) / ux)
+    t_bot = min(t_bot, 0.0)
 
-    # Top end: just above head height.
-    if head:
-        top_y = (head["cy"] * h - head["r"] * w) - PLANE_TOP_CLEARANCE * head["r"] * w
-    else:
-        vis_head = [n for n in ("nose", "left_eye", "right_eye", "left_ear", "right_ear")
-                    if _visible(kps, n)]
-        if not vis_head:
-            return None, "no head reference to bound the plane line's top end"
-        top_y = min(kps[n]["y"] for n in vis_head) * h - 0.05 * h
-    t_top = (top_y - by) / uy  # uy < 0, top_y < by  =>  t_top > 0
-    # Keep the top end inside the frame (with margin); the x-clamp trims a shallow line
-    # that would exit the frame side before reaching head height.
+    # Top end: run to the frame-edge clamp. v5 stopped it just above head height, which on
+    # the oblique fixture put the terminus at x = 0.199W — fading out in the middle of
+    # empty sky with nothing at the end, which reads as the renderer running out of line.
+    # Broadcast plane lines run off the frame or stop on a landmark, so the line now runs
+    # to PLANE_EDGE_MARGIN on whichever edge it reaches first...
+    t_top = float("inf")
     if ux < 0:
         t_top = min(t_top, (PLANE_EDGE_MARGIN * w - bx) / ux)
     elif ux > 0:
         t_top = min(t_top, ((1.0 - PLANE_EDGE_MARGIN) * w - bx) / ux)
     t_top = min(t_top, (PLANE_EDGE_MARGIN * h - by) / uy)  # uy < 0: y >= margin
-    if t_top < 0.10 * h:
+    # ...unless the head ring is in the way, in which case the ring IS the landmark and
+    # the line stops clear of it rather than crossing another marking.
+    if head:
+        cxp, cyp = head["cx"] * w, head["cy"] * h
+        clear = head["r"] * w + PLANE_TOP_CLEARANCE * head["r"] * w
+        # nearest approach of the ray (bx,by)+t*(ux,uy) to the ring centre
+        t_near = (cxp - bx) * ux + (cyp - by) * uy
+        if t_near > 0:
+            d_near = math.hypot(bx + t_near * ux - cxp, by + t_near * uy - cyp)
+            if d_near < clear:
+                back = math.sqrt(max(0.0, clear * clear - d_near * d_near))
+                t_top = min(t_top, t_near - back)
+    if not math.isfinite(t_top) or t_top < 0.10 * h:
         return None, "clamped plane line degenerate (top end reaches no higher than the ball)"
 
     conf = float(min(1.0, min(shaft["confidence"], ball["confidence"])))
     return {
-        "x1": (bx + t_bot * ux) / w, "y1": (by + t_bot * uy) / h,   # bottom: just past the ball
-        "x2": (bx + t_top * ux) / w, "y2": (by + t_top * uy) / h,   # top: just above the head
+        "x1": (bx + t_bot * ux) / w, "y1": (by + t_bot * uy) / h,   # bottom: ON the anchor
+        "x2": (bx + t_top * ux) / w, "y2": (by + t_top * uy) / h,   # top: frame edge / ring
         "confidence": round(conf, 4),
     }, None
 
@@ -1398,7 +1524,21 @@ def analyze_setup(address_frame_path: str) -> SetupGeometry:
                     failures.append({"marking": "plane_line",
                                      "reason": f"no ball confirmed at clubhead — refusing to guess ({reject_why})"})
                 else:
-                    ball = _refine_ball(rgb, ball, w, h)
+                    # Re-measure the radius, and record BOTH the number and whether it
+                    # could be validated. `r: None` is a real answer here, not a missing
+                    # one: Mode 1 must be able to tell "a ball of this size" from "a
+                    # bright blob whose size we could not defend".
+                    r_px, centre, r_verdict, r_why = _measure_ball_radius(rgb, ball, w, h)
+                    if r_px is None:
+                        ball = dict(ball, r=None, r_verdict=r_verdict, r_reason=r_why)
+                    else:
+                        ball = dict(ball, r=r_px / w, r_verdict=r_verdict, r_reason=r_why)
+                        if centre is not None:
+                            ball = dict(ball, x=centre[0] / w, y=centre[1] / h)
+                    node_ok, node_why = _ball_node_ok(ball, w)
+                    ball = dict(ball, node=node_ok)
+                    if not node_ok:
+                        failures.append({"marking": "ball_node", "reason": node_why})
                     plane, why = _plane_line(shaft, ball, markings.get("head_circle"), kps, w, h)
                     if plane and plane["confidence"] >= PLANE_MIN_CONFIDENCE:
                         markings["plane_line"] = plane
@@ -1408,10 +1548,13 @@ def analyze_setup(address_frame_path: str) -> SetupGeometry:
                     else:
                         failures.append({"marking": "plane_line", "reason": why})
 
-    return SetupGeometry(MARKER_VERSION, w, h, _round_floats(kps), _round_floats(view),
-                         facing, _round_floats(ball) if ball else None,
-                         _round_floats(shaft) if shaft else None,
-                         _round_floats(markings), failures)
+    geo = SetupGeometry(MARKER_VERSION, w, h, _round_floats(kps), _round_floats(view),
+                        facing, _round_floats(ball) if ball else None,
+                        _round_floats(shaft) if shaft else None,
+                        _round_floats(markings), failures)
+    # Measured once, here, on the address frame — see SetupGeometry.bg_luma.
+    geo.bg_luma = _round_floats(_background_luma(img, geo))
+    return geo
 
 
 # ---------------------------------------------------------------------------
@@ -1564,9 +1707,10 @@ def render_overlay(size: Tuple[int, int], geometry: SetupGeometry,
                    bg_luma: Optional[Dict[str, float]] = None) -> Image.Image:
     """Render the markings alone onto a transparent RGBA canvas of `size`.
 
-    `bg_luma` — optional {marking_name: mean background luminance under that marking},
-    supplied by render_markings which has the frame. Used only to gate the dark halo
-    down over already-bright background; absent => halo at full strength.
+    `bg_luma` — optional {marking_name: mean background luminance under that marking}.
+    Defaults to `geometry.bg_luma`, measured once on the address frame; pass an explicit
+    value only to probe alternatives. Used only to gate the dark halo down over
+    already-bright background.
 
     `only`    — render just this subset (default: every marking the geometry carries).
     `primary` — which marking gets primary weight (default: MARKING_PRIORITY order).
@@ -1581,7 +1725,7 @@ def render_overlay(size: Tuple[int, int], geometry: SetupGeometry,
         return out
 
     lead = resolve_primary(list(marks), primary)
-    luma = bg_luma or {}
+    luma = bg_luma if bg_luma is not None else (getattr(geometry, "bg_luma", None) or {})
 
     def is_bright(name):
         v = luma.get(name)
@@ -1660,16 +1804,29 @@ def render_overlay(size: Tuple[int, int], geometry: SetupGeometry,
     if head:
         hcx, hcy, hr = head["cx"] * w, head["cy"] * h, head["r"] * w
 
-    # The anchor node marks the BALL, so it is drawn on the detected ball centre — not on
-    # the plane line's terminus, which sits deliberately past the ball and measured 19px
-    # away from it at 1080. Its radius follows the detected ball when that is bigger.
+    # The anchor node asserts "the ball is HERE", so it is drawn only when the detection
+    # was trustworthy enough to make that assertion (see _ball_node_ok). The plane LINE
+    # is deliberately NOT withheld with it, and the distinction is not a compromise:
+    #
+    #   * the line's DIRECTION is the Hough shaft's own, verified to +/-6 deg against the
+    #     visible shaft on every DTL fixture, and it never depended on the ball;
+    #   * the line's ORIGIN is the clubhead end of that shaft, confirmed twice — the blob
+    #     had to sit within the perpendicular tolerance of the shaft line and inside
+    #     BALL_ALONG_RANGE of its lower endpoint — so "the shaft ends here" is sound even
+    #     when "this object is a ball" is not. On the oblique fixture the blob IS the
+    #     clubhead, which is precisely where the shaft's lower end belongs.
+    #
+    # What fails with the detection is the ball CLAIM, and the node is the only mark that
+    # makes it. So the claim is withheld and the measurement is kept, rather than losing
+    # a verified swing plane to an unverified ball. geometry.failures records the withheld
+    # node and geometry.ball carries node=False, so Mode 1 sees the same distinction.
     node_c = node_r = None
-    if plane and style.plane_node:
+    if plane and style.plane_node and geometry.ball and geometry.ball.get("node"):
         sw_p = width_of("plane_line")
-        node_c = ((plane["x1"] * w, plane["y1"] * h) if not geometry.ball
-                  else (geometry.ball["x"] * w, geometry.ball["y"] * h))
+        node_c = (geometry.ball["x"] * w, geometry.ball["y"] * h)
+        ball_r = geometry.ball.get("r")
         node_r = max(style.node_min_px, sw_p * style.node_scale,
-                     (geometry.ball["r"] * w * style.node_ball_scale) if geometry.ball else 0.0)
+                     (float(ball_r) * w * style.node_ball_scale) if ball_r else 0.0)
 
     # --- pass 1: soft dark glow, drawn at 1x and blurred ---------------------
     # One blurred mask PER marking, so a thin ring never inherits a thick line's radius.
@@ -1882,8 +2039,9 @@ def render_markings(frame_path: str, geometry: SetupGeometry, out_path: str,
     if not select_markings(geometry, only):
         return False
     img = ImageOps.exif_transpose(Image.open(frame_path)).convert("RGB")
-    overlay = render_overlay(img.size, geometry, style, only=only, primary=primary,
-                             bg_luma=_background_luma(img, geometry, only))
+    # bg_luma comes from the geometry (address frame), NOT from this frame — see
+    # SetupGeometry.bg_luma. Sampling it here is what made the overlay frame-dependent.
+    overlay = render_overlay(img.size, geometry, style, only=only, primary=primary)
     out = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     if os.path.splitext(out_path)[1].lower() in (".jpg", ".jpeg"):
