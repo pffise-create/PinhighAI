@@ -56,7 +56,7 @@ from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageOps
+from PIL import Image, ImageDraw, ImageFilter, ImageOps
 
 try:  # OpenCV is only needed for shaft/ball detection (plane line). Pose-only paths work without it.
     import cv2  # opencv-python-headless
@@ -66,7 +66,7 @@ except ImportError:  # pragma: no cover
     cv2 = None
     _HAS_CV2 = False
 
-MARKER_VERSION = "2.1.0"
+MARKER_VERSION = "3.0.0"
 
 MODEL_FILENAME = "movenet_singlepose_thunder_f16.tflite"
 MODEL_SHA256 = "41641538679ec79b07d4101e591dda47d098c09af29607674b2a40b8a3798dd3"
@@ -136,28 +136,112 @@ SPINE_EXTEND_BELOW_HIP = 0.08
 
 
 # ---------------------------------------------------------------------------
-# Style
+# Style — broadcast telestration (TrackMan / Golf Channel / Sky Sports idiom)
+#
+# Every marking is a LAYERED stroke, not a flat line:
+#
+#     soft dark glow  ->  dark casing  ->  colour body  ->  lighter core highlight
+#
+# The glow separates the marking from any background (bright sky, silhouette, grass,
+# concrete); the casing gives it a crisp edge; the core makes it read as a lit object
+# rather than a painted stripe. Line ends are treated: the plane line is anchored at
+# the ball with a node and tapers/fades away at its far end, the spine is a spindle
+# that narrows toward both tips, and the head ring is the same material bent into a
+# circle. Every value below is a named, tunable constant.
 # ---------------------------------------------------------------------------
+
+# Order used to pick the PRIMARY marking when the caller does not name one.
+# Weight is RELATIVE to the render set, never fixed per marking type: whatever is
+# primary carries full width and alpha, everything else recedes. A marking rendered
+# on its own is therefore always primary — it is the whole message.
+MARKING_PRIORITY = ("plane_line", "spine_line", "head_circle")
+
+
 @dataclass(frozen=True)
 class MarkingStyle:
-    """Visual constants. One color per marking type; widths scale with frame width.
+    """Visual constants, grouped by the layer they drive. All px values are at 1x
+    (final frame scale) and are multiplied by the supersample factor when drawn.
 
     Palette rule: colors must be distinct from objects commonly IN a golf scene —
     alignment sticks are orange/yellow (a real orange stick collided with the old amber
     plane line), flags red/white, grass green. Magenta / teal / violet occur in none of
-    those, and are mutually distinct. The dark casing (halo) behind every stroke stays.
+    those, and are mutually distinct.
     """
 
+    # --- palette -----------------------------------------------------------
     plane_color: Tuple[int, int, int] = (255, 45, 149)    # magenta  (never orange/yellow)
     spine_color: Tuple[int, int, int] = (46, 196, 182)    # teal
     head_color: Tuple[int, int, int] = (170, 110, 255)    # violet
-    stroke_alpha: int = 235
-    halo_color: Tuple[int, int, int] = (10, 12, 14)       # near-black halo behind every stroke
-    halo_alpha: int = 110
-    line_width_ratio: float = 0.006                        # stroke width = ratio x frame width (min 2 px)
-    halo_extra_ratio: float = 1.9                          # halo width = stroke width x this
-    head_ring_width_ratio: float = 0.005                   # ring is slightly thinner than lines
-    supersample: int = 3                                   # draw at Nx and LANCZOS-downsample for AA
+    casing_color: Tuple[int, int, int] = (8, 10, 12)      # near-black casing/glow base
+    casing_tint: float = 0.16       # fraction of the marking's OWN hue blended into its
+                                    # casing+glow. A pure-black casing on a bright sky
+                                    # reads as "black ring with a colour fringe"; a
+                                    # hue-tinted casing stays dark enough to separate
+                                    # while the marking still reads as its colour.
+
+    # --- stroke widths (relative to frame width, then to role) -------------
+    stroke_ratio: float = 0.0056    # PRIMARY stroke width = ratio x frame width
+    stroke_min_px: float = 2.6      # floor: below this a layered stroke has no pixels to work with
+    stroke_max_px: float = 9.0      # ceiling: keeps 4K frames from getting a slab
+    secondary_scale: float = 0.70   # non-primary markings are thinner...
+    secondary_alpha_scale: float = 0.90   # ...and very slightly quieter
+    ring_scale_primary: float = 0.78      # head ring width vs PRIMARY stroke, ring is primary
+    ring_scale_secondary: float = 0.66    # ...and when it is a supporting marking
+    ring_min_px: float = 2.0
+
+    # --- dark casing (crisp edge definition) -------------------------------
+    casing_ratio: float = 0.32      # casing extends this x stroke width on EACH side
+    casing_min_px: float = 0.75
+    casing_alpha: int = 210
+    casing_taper_floor: float = 0.55  # the casing pad shrinks with a tapering body down
+                                      # to this fraction — a constant pad around a taper
+                                      # turns the tip into a dark blob
+
+    # --- colour body -------------------------------------------------------
+    body_alpha: int = 242
+
+    # --- core highlight (the "lit object" read) ----------------------------
+    core_ratio: float = 0.26        # core width vs stroke width
+    core_min_px: float = 0.85
+    core_mix: float = 0.50          # body colour -> white
+    core_alpha: int = 250
+    core_fade_lo: float = 3.0       # stroke px at/below which the core is suppressed
+    core_fade_hi: float = 4.6       # stroke px at/above which it is at full strength.
+                                    # Below ~3px the core desaturates the body and beads
+                                    # along a diagonal, so thin strokes degrade to a
+                                    # clean 2-layer casing+body instead.
+
+    # --- soft dark glow (depth / separation from any background) -----------
+    glow_ratio: float = 0.85        # glow extends this x stroke beyond the casing, each side
+    glow_min_px: float = 1.0
+    glow_blur_ratio: float = 1.15   # Gaussian radius = ratio x stroke width
+    glow_blur_min_px: float = 1.6
+    glow_alpha: int = 95
+
+    # --- endpoint treatment ------------------------------------------------
+    plane_taper: float = 0.50       # plane-line width at its far (top) end, x stroke
+    plane_taper_frac: float = 0.65  # taper spans this fraction of the run, from the far end
+    plane_tip_alpha: float = 0.80   # alpha multiplier at the far tip (dissolve, not a blunt cap)
+    plane_node: bool = True         # anchor node at the ball end
+    node_scale: float = 1.25        # node colour-disc radius, x stroke width
+    node_core_scale: float = 0.38   # bright centre dot radius, x stroke width
+    spine_taper: float = 0.55       # spine narrows to this x stroke at BOTH tips (spindle)
+    spine_taper_frac: float = 0.30
+
+    # --- head ring ---------------------------------------------------------
+    ring_alpha_scale: float = 0.95
+
+    # --- anti-aliasing -----------------------------------------------------
+    # Supersample factor is chosen so the THINNEST stroke is at least this many pixels
+    # on the hi-res canvas: stair-stepping is a fixed fraction of the stroke, so a
+    # 320px-wide source (2.6px strokes) needs 5x where a 1080px source needs 3x.
+    supersample_target_px: float = 14.0
+    supersample_min: int = 3
+    supersample_max: int = 5
+
+    # --- output ------------------------------------------------------------
+    jpeg_quality: int = 95
+    jpeg_subsampling: int = 0       # 4:4:4 — chroma subsampling smears saturated magenta
 
 
 DEFAULT_STYLE = MarkingStyle()
@@ -846,79 +930,335 @@ def analyze_setup(address_frame_path: str) -> SetupGeometry:
 
 
 # ---------------------------------------------------------------------------
-# Rendering (PIL, supersampled for anti-aliasing, halo behind every stroke)
+# Rendering — layered broadcast strokes, supersampled
 # ---------------------------------------------------------------------------
+_WHITE = (255, 255, 255)
+
+
+def _mix_rgb(c, target, t):
+    return tuple(int(round(c[i] + (target[i] - c[i]) * t)) for i in range(3))
+
+
+def _unit(p1, p2):
+    dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+    L = math.hypot(dx, dy)
+    if L < 1e-9:
+        return 0.0, 0.0, 0.0
+    return dx / L, dy / L, L
+
+
+def _seg_quad(p1, p2, w1, w2):
+    """Quad covering the segment p1->p2, `w1` wide at p1 and `w2` wide at p2."""
+    ux, uy, _ = _unit(p1, p2)
+    nx, ny = -uy, ux
+    return [
+        (p1[0] + nx * w1 / 2, p1[1] + ny * w1 / 2),
+        (p2[0] + nx * w2 / 2, p2[1] + ny * w2 / 2),
+        (p2[0] - nx * w2 / 2, p2[1] - ny * w2 / 2),
+        (p1[0] - nx * w1 / 2, p1[1] - ny * w1 / 2),
+    ]
+
+
+def _disc(draw, c, r, fill):
+    if r > 0:
+        draw.ellipse((c[0] - r, c[1] - r, c[0] + r, c[1] + r), fill=fill)
+
+
+_TAPER_STEPS = 28  # segments used to approximate a width/alpha ramp
+
+
+def _stroke_pass(draw, p1, p2, color, alpha, w_start, w_end,
+                 taper_frac=1.0, tip_alpha=1.0, cap_start=True, cap_end=True):
+    """One layer of a stroke, from p1 (full width) to p2 (tapered).
+
+    Drawn with direct writes rather than alpha blending, so the casing/body/core passes
+    of one marking stack by draw order inside a single layer with no double-blending —
+    the narrower pass simply replaces the wider one it sits inside.
+    """
+    ux, uy, L = _unit(p1, p2)
+    if L <= 0:
+        return
+    flat = max(0.0, 1.0 - taper_frac)
+
+    def _ramp(t, a, b):
+        if t <= flat or taper_frac <= 0:
+            return a
+        return a + (b - a) * (t - flat) / max(1e-9, 1.0 - flat)
+
+    n = 1 if (abs(w_end - w_start) < 1e-9 and abs(tip_alpha - 1.0) < 1e-9) else _TAPER_STEPS
+    for i in range(n):
+        t0, t1 = i / n, (i + 1) / n
+        a0 = (p1[0] + ux * L * t0, p1[1] + uy * L * t0)
+        a1 = (p1[0] + ux * L * t1, p1[1] + uy * L * t1)
+        w0, w1 = _ramp(t0, w_start, w_end), _ramp(t1, w_start, w_end)
+        al = int(round(min(255.0, max(0.0, (_ramp(t0, alpha, alpha * tip_alpha)
+                                            + _ramp(t1, alpha, alpha * tip_alpha)) / 2))))
+        fill = (*color, al)
+        draw.polygon(_seg_quad(a0, a1, w0, w1), fill=fill)
+        if n > 1:  # bridge the joint so no notch survives the downsample
+            _disc(draw, a1, w1 / 2, fill)
+    if cap_start:
+        _disc(draw, p1, w_start / 2, (*color, int(alpha)))
+    if cap_end:
+        _disc(draw, p2, w_end / 2, (*color, int(round(alpha * tip_alpha))))
+
+
+def _ring_pass(draw, c, r, width, color, alpha):
+    """One layer of the head ring: `width` wide, CENTERED on radius `r`.
+
+    PIL grows an ellipse outline INWARD from its bounding box, so drawing a wider casing
+    ring on the same bbox leaves it flush with the body ring's outer edge — all the dark
+    inside, none outside, which reads as a black circle with a colour fringe. Expanding
+    the bbox by width/2 re-centers every pass on the same radius.
+    """
+    rb = r + width / 2.0
+    draw.ellipse((c[0] - rb, c[1] - rb, c[0] + rb, c[1] + rb),
+                 outline=(*color, int(alpha)), width=max(1, int(round(width))))
+
+
+def resolve_primary(names: Sequence[str], primary: Optional[str] = None) -> Optional[str]:
+    """Which marking of `names` carries PRIMARY visual weight.
+
+    Explicit choice wins (the caller knows which question is being answered); otherwise
+    MARKING_PRIORITY decides. A single-marking render always makes that marking primary.
+    """
+    present = [n for n in names if n]
+    if not present:
+        return None
+    if primary in present:
+        return primary
+    for n in MARKING_PRIORITY:
+        if n in present:
+            return n
+    return present[0]
+
+
+def select_markings(geometry: SetupGeometry, only: Optional[Sequence[str]] = None
+                    ) -> Dict[str, Dict[str, float]]:
+    """The subset of the swing's markings to draw. `only=None` means all of them.
+
+    Markings named in `only` that were withheld by the confidence gates stay withheld —
+    fail closed still wins over a display request.
+    """
+    if only is None:
+        return dict(geometry.markings)
+    wanted = set(only)
+    return {k: v for k, v in geometry.markings.items() if k in wanted}
+
+
 def render_overlay(size: Tuple[int, int], geometry: SetupGeometry,
-                   style: MarkingStyle = DEFAULT_STYLE) -> Image.Image:
+                   style: MarkingStyle = DEFAULT_STYLE,
+                   only: Optional[Sequence[str]] = None,
+                   primary: Optional[str] = None) -> Image.Image:
     """Render the markings alone onto a transparent RGBA canvas of `size`.
 
-    Deterministic: identical geometry + size + style => byte-identical overlay.
-    Exposed publicly so the pixel-stability acceptance test can compare overlays directly.
+    `only`    — render just this subset (default: every marking the geometry carries).
+    `primary` — which marking gets primary weight (default: MARKING_PRIORITY order).
+
+    Deterministic: identical geometry + size + style + only + primary => byte-identical
+    overlay. Exposed publicly so the pixel-stability acceptance test can compare overlays.
     """
     w, h = size
-    ss = style.supersample
-    hi = Image.new("RGBA", (w * ss, h * ss), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(hi)
+    marks = select_markings(geometry, only)
+    out = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    if not marks:
+        return out
 
-    stroke_w = max(2, round(style.line_width_ratio * w)) * ss
-    halo_w = int(round(stroke_w * style.halo_extra_ratio))
-    ring_w = max(2, round(style.head_ring_width_ratio * w)) * ss
-    ring_halo_w = int(round(ring_w * style.halo_extra_ratio))
+    lead = resolve_primary(list(marks), primary)
+
+    # --- role-relative widths ------------------------------------------------
+    stroke_p = min(style.stroke_max_px, max(style.stroke_min_px, style.stroke_ratio * w))
+    stroke_s = stroke_p * style.secondary_scale
+    ss = int(min(style.supersample_max,
+                 max(style.supersample_min,
+                     math.ceil(style.supersample_target_px / max(1e-9, stroke_p)))))
+    S = float(ss)
+
+    def width_of(name):
+        return stroke_p if name == lead else stroke_s
+
+    def alpha_of(name):
+        return 1.0 if name == lead else style.secondary_alpha_scale
+
+    ring_w = max(style.ring_min_px, stroke_p * (style.ring_scale_primary
+                                                if lead == "head_circle"
+                                                else style.ring_scale_secondary))
+
+    def casing_pad(sw):
+        return max(style.casing_min_px, sw * style.casing_ratio)
+
+    def casing_w(body_w, sw, taper=1.0):
+        return body_w + 2 * casing_pad(sw) * max(style.casing_taper_floor, taper)
+
+    def glow_pad(sw):
+        return casing_pad(sw) + max(style.glow_min_px, sw * style.glow_ratio)
+
+    def core_w(sw):
+        return max(style.core_min_px, sw * style.core_ratio)
+
+    def core_alpha(sw):
+        t = (sw - style.core_fade_lo) / max(1e-9, style.core_fade_hi - style.core_fade_lo)
+        return style.core_alpha * max(0.0, min(1.0, t))
+
+    def cas(color):
+        return _mix_rgb(style.casing_color, color, style.casing_tint)
 
     def line_px(m):
-        return (m["x1"] * w * ss, m["y1"] * h * ss, m["x2"] * w * ss, m["y2"] * h * ss)
+        return (m["x1"] * w, m["y1"] * h), (m["x2"] * w, m["y2"] * h)
 
-    def draw_capped_line(xy, color, width):
-        x1, y1, x2, y2 = xy
-        draw.line((x1, y1, x2, y2), fill=color, width=width)
-        r = width / 2.0
-        for (cx, cy) in ((x1, y1), (x2, y2)):  # round caps
-            draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=color)
+    plane, spine, head = (marks.get("plane_line"), marks.get("spine_line"),
+                          marks.get("head_circle"))
+    hcx = hcy = hr = 0.0
+    if head:
+        hcx, hcy, hr = head["cx"] * w, head["cy"] * h, head["r"] * w
 
-    halo = (*style.halo_color, style.halo_alpha)
-    ordered = [  # halo pass then stroke pass, per marking, so overlaps stay clean
-        ("plane_line", style.plane_color),
-        ("spine_line", style.spine_color),
-    ]
-    for name, color in ordered:
-        m = geometry.markings.get(name)
-        if not m:
-            continue
-        xy = line_px(m)
-        draw_capped_line(xy, halo, halo_w)
-        draw_capped_line(xy, (*color, style.stroke_alpha), stroke_w)
+    # --- pass 1: soft dark glow, drawn at 1x and blurred ---------------------
+    # One blurred mask PER marking, so a thin ring never inherits a thick line's radius.
+    def add_glow(canvas, paint, sw, color):
+        m = Image.new("L", (w, h), 0)
+        paint(ImageDraw.Draw(m), sw + 2 * glow_pad(sw))
+        m = m.filter(ImageFilter.GaussianBlur(
+            max(style.glow_blur_min_px, style.glow_blur_ratio * sw)))
+        lay = Image.new("RGBA", (w, h), (*cas(color), 0))
+        lay.putalpha(m.point(lambda v: int(v * style.glow_alpha / 255)))
+        return Image.alpha_composite(canvas, lay)
 
-    hc = geometry.markings.get("head_circle")
-    if hc:
-        cx, cy = hc["cx"] * w * ss, hc["cy"] * h * ss
-        r = hc["r"] * w * ss
-        for width, color in ((ring_halo_w, halo), (ring_w, (*style.head_color, style.stroke_alpha))):
-            draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=color, width=width)
+    if plane:
+        p1, p2 = line_px(plane)
+        sw = width_of("plane_line")
 
-    return hi.resize((w, h), Image.LANCZOS)
+        def _plane_glow(d, gw):
+            d.line((*p1, *p2), fill=255, width=max(1, int(round(gw))))
+            _disc(d, p1, gw / 2, 255)
+            _disc(d, p2, gw * 0.5 * style.plane_taper, 255)
+            if style.plane_node:
+                _disc(d, p1, sw * style.node_scale + glow_pad(sw), 255)
+        out = add_glow(out, _plane_glow, sw, style.plane_color)
+    if spine:
+        q1, q2 = line_px(spine)
+        out = add_glow(out, lambda d, gw: d.line((*q1, *q2), fill=255,
+                                                 width=max(1, int(round(gw)))),
+                       width_of("spine_line"), style.spine_color)
+    if head:
+        def _head_glow(d, gw):
+            rb = hr + gw / 2.0  # centre the band on the ring radius (see _ring_pass)
+            d.ellipse((hcx - rb, hcy - rb, hcx + rb, hcy + rb),
+                      outline=255, width=max(1, int(round(gw))))
+        out = add_glow(out, _head_glow, ring_w, style.head_color)
+
+    # --- pass 2: crisp casing / body / core for the lines, supersampled ------
+    if plane or spine:
+        hi = Image.new("RGBA", (w * ss, h * ss), (0, 0, 0, 0))
+        d = ImageDraw.Draw(hi)
+
+        def sp(p):
+            return (p[0] * S, p[1] * S)
+
+        # Spine first: where markings cross, the primary one must win the overlap.
+        if spine:
+            q1, q2 = line_px(spine)
+            sw = width_of("spine_line")
+            a = alpha_of("spine_line")
+            tp = style.spine_taper
+            mid = ((q1[0] + q2[0]) / 2, (q1[1] + q2[1]) / 2)
+            passes = [(cas(style.spine_color), style.casing_alpha * a,
+                       casing_w(sw, sw) * S, casing_w(sw * tp, sw, tp) * S),
+                      (style.spine_color, style.body_alpha * a, sw * S, sw * tp * S)]
+            ca = core_alpha(sw) * a
+            if ca > 2:
+                passes.append((_mix_rgb(style.spine_color, _WHITE, style.core_mix), ca,
+                               core_w(sw) * S, core_w(sw) * tp * S))
+            for color, alpha, w0, w1 in passes:      # spindle: midpoint out to both tips
+                for end in (q1, q2):
+                    _stroke_pass(d, sp(mid), sp(end), color, alpha, w0, w1,
+                                 taper_frac=style.spine_taper_frac, cap_start=False)
+
+        if plane:
+            p1, p2 = line_px(plane)              # p1 = ball end, p2 = far/top end
+            sw = width_of("plane_line")
+            a = alpha_of("plane_line")
+            tp = style.plane_taper
+            passes = [(cas(style.plane_color), style.casing_alpha * a,
+                       casing_w(sw, sw) * S, casing_w(sw * tp, sw, tp) * S),
+                      (style.plane_color, style.body_alpha * a, sw * S, sw * tp * S)]
+            ca = core_alpha(sw) * a
+            if ca > 2:
+                passes.append((_mix_rgb(style.plane_color, _WHITE, style.core_mix), ca,
+                               core_w(sw) * S, core_w(sw) * tp * S))
+            for color, alpha, w0, w1 in passes:
+                _stroke_pass(d, sp(p1), sp(p2), color, alpha, w0, w1,
+                             taper_frac=style.plane_taper_frac,
+                             tip_alpha=style.plane_tip_alpha)
+            if style.plane_node:                 # anchor the line at the ball
+                nr = sw * style.node_scale * S
+                _disc(d, sp(p1), nr + casing_pad(sw) * S,
+                      (*cas(style.plane_color), int(style.casing_alpha * a)))
+                _disc(d, sp(p1), nr, (*style.plane_color, int(style.body_alpha * a)))
+                _disc(d, sp(p1), sw * style.node_core_scale * S,
+                      (*_mix_rgb(style.plane_color, _WHITE, 0.80), 255))
+
+        out = Image.alpha_composite(out, hi.resize((w, h), Image.LANCZOS))
+
+    # --- pass 3: head ring, composited inside its own bounding box -----------
+    if head:
+        a = style.ring_alpha_scale * alpha_of("head_circle")
+        pad = int(math.ceil(ring_w * 3 + glow_pad(ring_w) * 2 + 8))
+        x0, y0 = max(0, int(hcx - hr) - pad), max(0, int(hcy - hr) - pad)
+        x1, y1 = min(w, int(hcx + hr) + pad), min(h, int(hcy + hr) + pad)
+        if x1 > x0 and y1 > y0:
+            lay = Image.new("RGBA", ((x1 - x0) * ss, (y1 - y0) * ss), (0, 0, 0, 0))
+            ld = ImageDraw.Draw(lay)
+            c = ((hcx - x0) * S, (hcy - y0) * S)
+            R = hr * S
+            _ring_pass(ld, c, R, casing_w(ring_w, ring_w) * S,
+                       cas(style.head_color), style.casing_alpha * a)
+            _ring_pass(ld, c, R, ring_w * S, style.head_color, style.body_alpha * a)
+            ca = core_alpha(ring_w) * a
+            if ca > 2:
+                _ring_pass(ld, c, R, core_w(ring_w) * S,
+                           _mix_rgb(style.head_color, _WHITE, style.core_mix), ca)
+            small = lay.resize((x1 - x0, y1 - y0), Image.LANCZOS)
+            region = out.crop((x0, y0, x1, y1))
+            out.paste(Image.alpha_composite(region, small), (x0, y0))
+
+    return out
 
 
 def render_markings(frame_path: str, geometry: SetupGeometry, out_path: str,
-                    style: MarkingStyle = DEFAULT_STYLE) -> bool:
-    """Composite the swing's markings onto one frame. Returns False (writes nothing)
-    if the geometry contains no renderable markings."""
-    if not geometry.markings:
+                    style: MarkingStyle = DEFAULT_STYLE,
+                    only: Optional[Sequence[str]] = None,
+                    primary: Optional[str] = None) -> bool:
+    """Composite a swing's markings onto one frame.
+
+    `only`/`primary` select and rank the subset shown to the user (see render_overlay).
+    Returns False (writes nothing) when the selected subset is empty.
+    """
+    if not select_markings(geometry, only):
         return False
     img = ImageOps.exif_transpose(Image.open(frame_path)).convert("RGB")
-    overlay = render_overlay(img.size, geometry, style)
+    overlay = render_overlay(img.size, geometry, style, only=only, primary=primary)
     out = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
-    out.save(out_path, quality=92)
+    if os.path.splitext(out_path)[1].lower() in (".jpg", ".jpeg"):
+        # 4:4:4 — chroma subsampling smears the saturated magenta/violet edges.
+        out.save(out_path, quality=style.jpeg_quality, subsampling=style.jpeg_subsampling)
+    else:
+        out.save(out_path)
     return True
 
 
 def mark_swing(frame_paths: Sequence[str], out_dir: str,
-               style: MarkingStyle = DEFAULT_STYLE) -> Dict[str, object]:
+               style: MarkingStyle = DEFAULT_STYLE,
+               only: Optional[Sequence[str]] = None,
+               primary: Optional[str] = None) -> Dict[str, object]:
     """Compute geometry ONCE from the first frame (address), render it on every frame.
 
     Returns {"geometry_json": <path to geometry.json>, "marked_paths": [...], "skipped": [...]}.
     Frames whose dimensions differ from the address frame are skipped (a marking computed
     for one camera geometry must not be rescaled onto another).
+
+    `only`/`primary` restrict and rank what is DRAWN; geometry.json still records every
+    marking that passed the gates (Mode 1 grounding sees all of them).
     """
     if not frame_paths:
         raise ValueError("mark_swing requires at least one frame path")
@@ -931,6 +1271,7 @@ def mark_swing(frame_paths: Sequence[str], out_dir: str,
 
     marked, skipped = [], []
     ref_size = (geometry.frame_width, geometry.frame_height)
+    selected = select_markings(geometry, only)
     for fp in frame_paths:
         name = os.path.basename(fp)
         try:
@@ -941,11 +1282,11 @@ def mark_swing(frame_paths: Sequence[str], out_dir: str,
         if size != ref_size:
             skipped.append({"frame": fp, "reason": f"size {size} != address frame {ref_size}"})
             continue
-        if not geometry.markings:
+        if not selected:
             skipped.append({"frame": fp, "reason": "no markings passed confidence gates (fail closed)"})
             continue
         out_path = os.path.join(out_dir, f"marked_{name}")
-        render_markings(fp, geometry, out_path, style)
+        render_markings(fp, geometry, out_path, style, only=only, primary=primary)
         marked.append(out_path)
 
     return {"geometry_json": geo_path, "marked_paths": marked, "skipped": skipped}

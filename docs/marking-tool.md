@@ -1,6 +1,17 @@
 # Swing Marking Tool — `AWS/src/marking/swing_marker.py`
 
-**Version:** `marker_version 2.1.0` · **Built:** 2026-08-02 · **Wired into production:** 2026-08-03 (see § Production wiring) · Requirement: `docs/backlog/swing-marking-tool.md` · Research: `docs/marking-research-2026-08-02.md`
+**Version:** `marker_version 3.0.0` · **Built:** 2026-08-02 · **Wired into production:** 2026-08-03 (see § Production wiring) · Requirement: `docs/backlog/swing-marking-tool.md` · Research: `docs/marking-research-2026-08-02.md`
+
+> v3.0.0 (**rendering only — no geometry change**): broadcast-telestration rendering.
+> Every marking is now a layered stroke (soft dark glow → hue-tinted casing → colour body
+> → lighter core highlight) with treated endpoints: the plane line is anchored at the ball
+> with a node and tapers/dissolves at its far end, the spine is a spindle, the head ring is
+> the same material bent into a circle. `render_overlay`/`render_markings`/`mark_swing`
+> gained `only=` (render an arbitrary SUBSET of the markings) and `primary=` (which
+> marking carries primary weight); visual weight is **relative to the render set**, so a
+> marking shown alone is always primary. Fixed: PIL grows ellipse outlines inward, which
+> had left the head ring's dark casing flush with its outer edge (it read as a black circle
+> with a violet fringe).
 
 > v2.1.0: oblique-DTL head circle sized from `max(eye→ear × 1.80, nose→far-ear × 1.43)` —
 > eye→ear foreshortens on a three-quarter face and undersized the ring ~15%. Face-on
@@ -53,16 +64,49 @@ All geometry is computed **once per swing** from the address frame (frame 1) and
 
 Palette rule: colors must be distinct from objects commonly in a golf scene — alignment sticks are orange/yellow (a real orange stick collided with v1's amber plane line), flags red/white, grass green. Magenta/teal/violet occur in none of those and are mutually distinct. One color per marking type, everywhere.
 
+Every marking is drawn as a **layered stroke**, not a flat line — the same idiom TrackMan /
+Golf Channel / Sky Sports telestration uses:
+
+```
+soft dark glow  →  dark casing  →  colour body  →  lighter core highlight
+```
+
+The glow separates the marking from any background (bright sky, backlit silhouette, grass,
+concrete); the casing gives it a crisp edge; the core makes it read as a lit object rather
+than a painted stripe.
+
 | Constant | Value | Purpose |
 |---|---|---|
 | `plane_color` | `#FF2D95` magenta | never orange/yellow (alignment-stick colors) |
 | `spine_color` | `#2EC4B6` teal | |
 | `head_color` | `#AA6EFF` violet, ring only | never a filled blob |
-| `halo` | `#0A0C0E` @ alpha 110, 1.9× stroke width | reads on grass, sky, mats, concrete (eval-praised; kept) |
-| `line_width_ratio` | 0.006 × frame width (min 2 px) | weight scales with resolution |
-| `supersample` | 3× draw + LANCZOS downsample | anti-aliasing; round caps drawn explicitly |
+| `casing_color` / `casing_tint` | `#080A0C` @ alpha 210, **0.16 of the marking's own hue** | a pure-black casing on a bright sky reads as "black shape with a colour fringe"; the tint keeps colour identity while staying dark enough to separate |
+| `glow_*` | extends 0.85× stroke past the casing, Gaussian blur 1.15× stroke, alpha 95 | depth / legibility on any background |
+| `stroke_ratio` | 0.0056 × frame width, clamped to 2.6–9.0 px | PRIMARY weight; supporting markings are ×0.70 |
+| `core_*` | 0.26× stroke, 50% toward white, **suppressed below 3.0 px** | below ~3 px the core desaturates the body and beads along a diagonal, so thin strokes degrade to a clean 2-layer casing+body |
+| `plane_taper` / `plane_tip_alpha` | 0.50 width, 0.80 alpha at the far tip | the line dissolves rather than ending in a blunt cap |
+| `node_scale` | 1.25× stroke, with a bright centre dot | anchors the plane line at the ball |
+| `spine_taper` | 0.55 at both tips (spindle) | reads as an axis, not a segment |
+| `supersample_target_px` | 14 px → ss 3–5, LANCZOS downsample | ss scales with stroke thinness: a 320 px source gets 5×, a 1080 px source 3× |
+| `jpeg_quality` / `jpeg_subsampling` | 95 / 4:4:4 | chroma subsampling smears saturated magenta edges |
 
-No text labels on frames in v1. Rendering is deterministic (same geometry + size + style ⇒ byte-identical overlay).
+### Which markings are shown, and how they rank
+
+The user-facing render shows **only the markings relevant to the question** — a swing-plane
+question shows the plane line alone. (Mode 1 grounding for the model still sees every
+marking that passed the gates; this is display only.)
+
+- `render_overlay(size, geo, style, only=[...], primary="...")` — `only=None` draws
+  everything; a marking withheld by the confidence gates stays withheld even if requested.
+- Visual weight is **relative to the render set**, never fixed per marking type. Whatever is
+  primary gets full width and alpha; everything else is ×0.70 width and ×0.90 alpha, and the
+  primary marking wins the overlap where two markings cross. A marking shown alone is
+  therefore always primary — it is the whole message.
+- `primary=` is the caller's explicit choice (it knows which question is being answered);
+  the default falls back to `MARKING_PRIORITY = (plane_line, spine_line, head_circle)`.
+
+No text labels on frames. Rendering is deterministic (same geometry + size + style + `only`
++ `primary` ⇒ byte-identical overlay), so the pixel-stability rule holds for subsets too.
 
 ## What fails closed, and when
 
