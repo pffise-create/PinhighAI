@@ -169,12 +169,29 @@ describe('VideoService', () => {
           ai_analysis_completed: true,
           ai_analysis: JSON.stringify({ coaching_response: 'Great sequencing.' }),
           analysis_results: { frames_extracted: 16 },
+          video_breakdown: {
+            status: 'completed',
+            title: 'Swing Breakdown',
+            video_url: 'https://example.com/breakdown.mp4',
+            poster_url: 'https://example.com/poster.jpg',
+            muted_default: true,
+            scenes: [
+              {
+                id: 'scene_1',
+                caption: 'Chest keeps moving through impact.',
+                start_seconds: 0,
+                end_seconds: 4.2,
+              },
+            ],
+          },
         }),
       });
 
       const result = await videoService.getAnalysisResults('analysis-2', {});
       expect(result.status).toBe('completed');
       expect(result.coaching_response).toBe('Great sequencing.');
+      expect(result.video_breakdown.video_url).toBe('https://example.com/breakdown.mp4');
+      expect(result.video_breakdown.scenes).toHaveLength(1);
     });
 
     it('normalizes DynamoDB document-style item payload', () => {
@@ -184,10 +201,77 @@ describe('VideoService', () => {
         ai_analysis: JSON.stringify({ coaching_response: 'Hold your finish.' }),
         analysis_results: { frames_extracted: 12 },
         progress_message: 'Done',
+        video_breakdown: {
+          status: 'processing',
+          title: 'Swing Breakdown',
+          muted_default: true,
+        },
       });
 
       expect(result.status).toBe('completed');
       expect(result.coaching_response).toBe('Hold your finish.');
+      expect(result.video_breakdown.status).toBe('processing');
+    });
+  });
+
+  describe('video breakdown requests', () => {
+    it('requests breakdown generation and normalizes preview payload', async () => {
+      global.fetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          jobId: 'analysis-9',
+          status: 'queued',
+          video_breakdown: {
+            status: 'queued',
+            title: 'Swing Breakdown',
+            muted_default: true,
+          },
+        }),
+      });
+
+      const result = await videoService.requestVideoBreakdown('analysis-9', {
+        Authorization: 'Bearer token',
+      });
+
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringContaining('/api/video/breakdown'),
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ jobId: 'analysis-9' }),
+        })
+      );
+      expect(result.status).toBe('queued');
+      expect(result.video_breakdown.title).toBe('Swing Breakdown');
+    });
+
+    it('waits for completed breakdown via analysis results polling', async () => {
+      jest.spyOn(videoService, 'getAnalysisResults')
+        .mockResolvedValueOnce({
+          status: 'completed',
+          video_breakdown: { status: 'processing', title: 'Swing Breakdown' },
+        })
+        .mockResolvedValueOnce({
+          status: 'completed',
+          video_breakdown: {
+            status: 'completed',
+            title: 'Swing Breakdown',
+            video_url: 'https://example.com/breakdown.mp4',
+            poster_url: 'https://example.com/poster.jpg',
+            muted_default: true,
+            scenes: [],
+          },
+        });
+
+      const result = await videoService.waitForBreakdownComplete(
+        'analysis-9',
+        jest.fn(),
+        3,
+        0,
+        {},
+      );
+
+      expect(result.video_url).toBe('https://example.com/breakdown.mp4');
+      expect(videoService.getAnalysisResults).toHaveBeenCalledTimes(2);
     });
   });
 });

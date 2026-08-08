@@ -38,6 +38,7 @@ import {
 import ChatHeader from '../components/chat/ChatHeader';
 import MessageBubble from '../components/chat/MessageBubble';
 import VideoModal from '../components/chat/VideoModal';
+import BreakdownVideoModal from '../components/chat/BreakdownVideoModal';
 import TypingIndicator from '../components/chat/TypingIndicator';
 import ComposerBar from '../components/chat/ComposerBar';
 
@@ -59,6 +60,7 @@ const createMessage = ({
   videoTrimData,
   lockedAnalysis,
   jobId,
+  videoBreakdown,
 }) => ({
   id: id || `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
   sender,
@@ -71,6 +73,7 @@ const createMessage = ({
   videoTrimData: videoTrimData || null,
   lockedAnalysis: lockedAnalysis || null,
   jobId: jobId || null,
+  videoBreakdown: videoBreakdown || null,
 });
 
 // ─── Storage Helpers ────────────────────────────────────────────────────────
@@ -91,6 +94,7 @@ const normalizeStoredMessages = (stored = []) =>
         videoTrimData: msg.videoTrimData || null,
         lockedAnalysis: msg.lockedAnalysis || null,
         jobId: msg.jobId || null,
+        videoBreakdown: msg.videoBreakdown || msg.video_breakdown || null,
       })
     )
     .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
@@ -126,11 +130,17 @@ const ChatScreen = ({ navigation }) => {
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [playbackVideoUri, setPlaybackVideoUri] = useState(null);
   const [playbackTrimData, setPlaybackTrimData] = useState(null);
+  const [playbackBreakdown, setPlaybackBreakdown] = useState(null);
 
   // Refs
   const flatListRef = useRef(null);
+  const messagesRef = useRef([]);
   const prevMessageCountRef = useRef(0);
   const isNearBottomRef = useRef(true);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   // ─── Load Chat History ──────────────────────────────────────────────────
   useEffect(() => {
@@ -143,7 +153,11 @@ const ChatScreen = ({ navigation }) => {
         const history = await ChatHistoryManager.loadConversation(userId);
         if (!mounted) return;
         const normalized = normalizeStoredMessages(history?.messages || []);
-        setMessages((prev) => mergeMessageLists(prev, normalized));
+        setMessages((prev) => {
+          const merged = mergeMessageLists(prev, normalized);
+          messagesRef.current = merged;
+          return merged;
+        });
 
         // Welcome message: if first-time user, auto-send init to get AI greeting
         if (history?.userProfile?.isFirstTime && normalized.length === 0) {
@@ -219,7 +233,11 @@ const ChatScreen = ({ navigation }) => {
 
   // ─── Message Persistence ───────────────────────────────────────────────
   const appendMessage = useCallback((message, persist = true) => {
-    setMessages((prev) => [...prev, message]);
+    setMessages((prev) => {
+      const nextMessages = [...prev, message];
+      messagesRef.current = nextMessages;
+      return nextMessages;
+    });
     if (persist) {
       ChatHistoryManager.saveMessage(userId, {
         id: message.id,
@@ -233,16 +251,29 @@ const ChatScreen = ({ navigation }) => {
         videoTrimData: message.videoTrimData || null,
         lockedAnalysis: message.lockedAnalysis || null,
         jobId: message.jobId || null,
+        videoBreakdown: message.videoBreakdown || null,
       }).catch((err) => console.warn('Failed to persist message', err));
     }
   }, [userId]);
 
   // Replace a message in place (state + persisted copy)
   const replaceMessage = useCallback((messageId, updater) => {
-    setMessages((prev) =>
-      prev.map((msg) => (msg.id === messageId ? updater(msg) : msg))
+    const currentMessages = messagesRef.current;
+    let nextMessage = null;
+    const nextMessages = currentMessages.map((msg) => {
+      if (msg.id !== messageId) return msg;
+      nextMessage = updater(msg);
+      return nextMessage;
+    });
+
+    if (!nextMessage) return;
+
+    messagesRef.current = nextMessages;
+    setMessages(nextMessages);
+    Promise.resolve(ChatHistoryManager.updateMessage(userId, messageId, nextMessage)).catch(
+      (err) => console.warn('Failed to update persisted message', err)
     );
-  }, []);
+  }, [userId]);
 
   // ─── Paywall Unlock Flow ───────────────────────────────────────────────
   // CTA on a locked teaser: present the RevenueCat paywall; on purchase or
@@ -483,7 +514,8 @@ const ChatScreen = ({ navigation }) => {
           text: aiResponse || 'Your swing has been processed, but I was unable to retrieve the analysis. Please try again.',
           type: aiResponse ? (isLocked ? 'locked_analysis' : 'analysis') : 'error',
           lockedAnalysis: isLocked ? analysisResult.locked_analysis : null,
-          jobId: isLocked ? uploadResult.jobId : null,
+          jobId: uploadResult.jobId,
+          videoBreakdown: analysisResult?.video_breakdown || null,
         })
       );
     } catch (error) {
@@ -515,6 +547,78 @@ const ChatScreen = ({ navigation }) => {
     getAuthHeaders,
   ]);
 
+  const handleGenerateBreakdown = useCallback(async (message) => {
+    if (!message?.jobId) return;
+    if (
+      message?.videoBreakdown?.status === 'queued' ||
+      message?.videoBreakdown?.status === 'processing'
+    ) {
+      return;
+    }
+
+    replaceMessage(message.id, (current) => ({
+      ...current,
+      videoBreakdown: {
+        ...(current.videoBreakdown || {}),
+        status: 'queued',
+        title: current.videoBreakdown?.title || 'Swing Breakdown',
+        summary: current.videoBreakdown?.summary || 'Muted by default. Captions stay on.',
+        muted_default: true,
+      },
+    }));
+
+    const previousBreakdown = message.videoBreakdown || null;
+
+    try {
+      const headers = await getAuthHeaders();
+      const requested = await videoService.requestVideoBreakdown(message.jobId, headers);
+
+      replaceMessage(message.id, (current) => ({
+        ...current,
+        videoBreakdown: requested.video_breakdown || current.videoBreakdown,
+      }));
+
+      if (requested.status === 'completed' && requested.video_breakdown?.video_url) {
+        return;
+      }
+
+      const completed = await videoService.waitForBreakdownComplete(
+        message.jobId,
+        null,
+        24,
+        1500,
+        headers,
+      );
+
+      replaceMessage(message.id, (current) => ({
+        ...current,
+        videoBreakdown: completed,
+      }));
+    } catch (error) {
+      if (error?.message === 'AUTHENTICATION_REQUIRED') {
+        replaceMessage(message.id, (current) => ({
+          ...current,
+          videoBreakdown: previousBreakdown,
+        }));
+        Alert.alert('Sign in required', 'Please sign in to generate your video breakdown.');
+        return;
+      }
+
+      console.error('Video breakdown generation failed:', error);
+      replaceMessage(message.id, (current) => ({
+        ...current,
+        videoBreakdown: {
+          ...(current.videoBreakdown || {}),
+          status: 'failed',
+          title: current.videoBreakdown?.title || 'Swing Breakdown',
+          summary: current.videoBreakdown?.summary || 'Muted by default. Captions stay on.',
+          muted_default: true,
+          error_message: 'The breakdown did not finish this time. Try again.',
+        },
+      }));
+    }
+  }, [getAuthHeaders, replaceMessage]);
+
   // ─── Unified Send Handler ──────────────────────────────────────────────
   const handleSend = useCallback(async () => {
     if (selectedVideo) {
@@ -534,13 +638,26 @@ const ChatScreen = ({ navigation }) => {
     setPlaybackTrimData(trimData || null);
   }, []);
 
+  const handleOpenBreakdown = useCallback((breakdown) => {
+    if (!breakdown?.video_url) return;
+    setPlaybackBreakdown(breakdown);
+  }, []);
+
   const renderMessage = useCallback(({ item }) => (
     <MessageBubble
       message={item}
       onVideoPress={handleVideoPress}
       onUnlock={entitlementActive ? null : handleUnlockRequest}
+      onGenerateBreakdown={handleGenerateBreakdown}
+      onOpenBreakdown={handleOpenBreakdown}
     />
-  ), [handleVideoPress, entitlementActive, handleUnlockRequest]);
+  ), [
+    handleVideoPress,
+    entitlementActive,
+    handleUnlockRequest,
+    handleGenerateBreakdown,
+    handleOpenBreakdown,
+  ]);
 
   const keyExtractor = useCallback((item, index) => item?.id || `message-${index}`, []);
 
@@ -618,6 +735,12 @@ const ChatScreen = ({ navigation }) => {
             setPlaybackVideoUri(null);
             setPlaybackTrimData(null);
           }}
+        />
+
+        <BreakdownVideoModal
+          visible={!!playbackBreakdown}
+          breakdown={playbackBreakdown}
+          onClose={() => setPlaybackBreakdown(null)}
         />
 
       </KeyboardAvoidingView>

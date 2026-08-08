@@ -56,6 +56,7 @@ const inferVideoMeta = (uri) => {
 
 const DYNAMO_ATTR_KEYS = new Set(['S', 'N', 'BOOL', 'NULL', 'M', 'L']);
 const FATAL_ANALYSIS_FAILURE = 'ANALYSIS_FAILED';
+const FATAL_BREAKDOWN_FAILURE = 'BREAKDOWN_FAILED';
 
 class VideoService {
   constructor() {
@@ -201,6 +202,7 @@ class VideoService {
       const aiAnalysis = this.parseMaybeJson(data.ai_analysis);
       const analysisResults = this.parseMaybeJson(data.analysis_results);
       const lockedAnalysis = this.parseMaybeJson(data.locked_analysis);
+      const videoBreakdown = this.normalizeBreakdownPreview(data.video_breakdown);
       const coachingResponse = this.extractCoachingResponse(aiAnalysis);
       const normalizedStatus = this.normalizeStatus(data.status, {
         aiAnalysisCompleted: Boolean(data.ai_analysis_completed),
@@ -221,6 +223,7 @@ class VideoService {
         locked_analysis: lockedAnalysis || null,
         lock_reason: data.lock_reason || null,
         partial_result_available: Boolean(data.partial_result_available),
+        video_breakdown: videoBreakdown,
       };
     }
 
@@ -237,6 +240,7 @@ class VideoService {
     const aiAnalysis = this.parseMaybeJson(normalizedItem.ai_analysis);
     const analysisResults = this.parseMaybeJson(normalizedItem.analysis_results);
     const lockedAnalysis = this.parseMaybeJson(normalizedItem.locked_analysis);
+    const videoBreakdown = this.normalizeBreakdownPreview(normalizedItem.video_breakdown);
     const coachingResponse = this.extractCoachingResponse(aiAnalysis);
     const status = this.normalizeStatus(normalizedItem.status, {
       aiAnalysisCompleted: Boolean(normalizedItem.ai_analysis_completed),
@@ -257,6 +261,7 @@ class VideoService {
         root_cause: aiAnalysis?.root_cause,
         confidence: aiAnalysis?.confidence_score,
         recommendations: aiAnalysis?.practice_recommendations,
+        video_breakdown: videoBreakdown,
       };
     }
 
@@ -269,6 +274,7 @@ class VideoService {
       locked_analysis: lockedAnalysis || null,
       lock_reason: normalizedItem.lock_reason || null,
       partial_result_available: Boolean(normalizedItem.partial_result_available),
+      video_breakdown: videoBreakdown,
     };
   }
 
@@ -320,6 +326,55 @@ class VideoService {
       return null;
     }
     return aiAnalysis.coaching_response || aiAnalysis.response || null;
+  }
+
+  normalizeBreakdownPreview(breakdown) {
+    const normalized = this.parseMaybeJson(breakdown);
+    if (!normalized || typeof normalized !== 'object') {
+      return null;
+    }
+
+    const scenes = Array.isArray(normalized.scenes)
+      ? normalized.scenes
+          .map((scene, index) => {
+            if (!scene || typeof scene !== 'object') return null;
+            const startSeconds = Number(scene.start_seconds);
+            const endSeconds = Number(scene.end_seconds);
+            return {
+              id: typeof scene.id === 'string' ? scene.id : `scene_${index + 1}`,
+              phase: typeof scene.phase === 'string' ? scene.phase : 'swing_general',
+              headline: typeof scene.headline === 'string' ? scene.headline : '',
+              caption: typeof scene.caption === 'string'
+                ? scene.caption
+                : (typeof scene.narration === 'string' ? scene.narration : ''),
+              narration: typeof scene.narration === 'string' ? scene.narration : '',
+              start_seconds: Number.isFinite(startSeconds) ? startSeconds : 0,
+              end_seconds: Number.isFinite(endSeconds) ? endSeconds : Number.isFinite(startSeconds) ? startSeconds : 0,
+              poster_url: typeof scene.poster_url === 'string' ? scene.poster_url : null,
+            };
+          })
+          .filter(Boolean)
+      : [];
+
+    return {
+      status: typeof normalized.status === 'string' ? normalized.status : 'idle',
+      title: typeof normalized.title === 'string' ? normalized.title : 'Swing Breakdown',
+      summary: typeof normalized.summary === 'string' ? normalized.summary : '',
+      duration_seconds: Number.isFinite(Number(normalized.duration_seconds))
+        ? Number(normalized.duration_seconds)
+        : null,
+      muted_default: normalized.muted_default !== false,
+      voice: typeof normalized.voice === 'string' ? normalized.voice : null,
+      video_url: typeof normalized.video_url === 'string' ? normalized.video_url : null,
+      poster_url: typeof normalized.poster_url === 'string'
+        ? normalized.poster_url
+        : (scenes[0]?.poster_url || null),
+      updated_at: typeof normalized.updated_at === 'string' ? normalized.updated_at : null,
+      requested_at: typeof normalized.requested_at === 'string' ? normalized.requested_at : null,
+      completed_at: typeof normalized.completed_at === 'string' ? normalized.completed_at : null,
+      error_message: typeof normalized.error_message === 'string' ? normalized.error_message : null,
+      scenes,
+    };
   }
 
   normalizeTrimData(trimData) {
@@ -420,6 +475,73 @@ class VideoService {
     const analysisResult = await this.triggerAnalysis(fileName, VIDEO_BUCKET, userId, authHeaders, trimData, userQuestion);
 
     return { jobId: analysisResult.jobId, fileName, status: 'uploaded' };
+  }
+
+  async requestVideoBreakdown(jobId, authHeaders = {}) {
+    const response = await fetch(`${API_BASE_URL}/api/video/breakdown`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders },
+      body: JSON.stringify({ jobId }),
+    });
+
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        throw new Error('AUTHENTICATION_REQUIRED');
+      }
+      const errorText = await response.text();
+      throw new Error(`Failed to request breakdown: ${response.status} - ${errorText}`);
+    }
+
+    const data = await response.json();
+    return {
+      jobId: data.jobId || jobId,
+      status: data.status || 'queued',
+      video_breakdown: this.normalizeBreakdownPreview(data.video_breakdown),
+    };
+  }
+
+  async waitForBreakdownComplete(jobId, onProgress, maxAttempts = 24, intervalMs = DEFAULT_POLL_INTERVAL_MS, authHeaders = {}) {
+    const startTime = Date.now();
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const results = await this.getAnalysisResults(jobId, authHeaders);
+        const breakdown = this.normalizeBreakdownPreview(results.video_breakdown);
+
+        if (breakdown?.status === 'completed' && breakdown.video_url) {
+          return breakdown;
+        }
+
+        if (breakdown?.status === 'failed') {
+          throw new Error(FATAL_BREAKDOWN_FAILURE);
+        }
+
+        onProgress?.({
+          progress: Math.min(0.25 + (attempt / maxAttempts) * 0.7, 0.96),
+          stage: 'RENDERING_BREAKDOWN',
+          message: breakdown?.status === 'processing'
+            ? 'Rendering your narrated breakdown...'
+            : 'Queueing your narrated breakdown...',
+        });
+
+        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      } catch (error) {
+        if (error?.message === 'AUTHENTICATION_REQUIRED') {
+          throw error;
+        }
+        if (error?.message === FATAL_BREAKDOWN_FAILURE) {
+          throw new Error('Video breakdown generation failed on the server');
+        }
+        if (attempt === maxAttempts) {
+          const elapsed = Math.floor((Date.now() - startTime) / 1000);
+          throw new Error(`Video breakdown timeout after ${elapsed}s: ${error.message}`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      }
+    }
+
+    const elapsed = Math.floor((Date.now() - startTime) / 1000);
+    throw new Error(`Video breakdown timed out after ${elapsed}s`);
   }
 
   // Step 6: Poll for analysis completion with golf-themed progress messages

@@ -3,6 +3,7 @@ const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient, GetCommand, UpdateCommand } = require('@aws-sdk/lib-dynamodb');
 const { LambdaClient, InvokeCommand } = require('@aws-sdk/client-lambda');
 const { buildLockedContent, evaluateAccessForLockedResult } = require('../access/entitlementGate');
+const { buildBreakdownPreview, normalizeBreakdownRecord } = require('../video-breakdown/shared');
 
 // Initialize clients
 let dynamodb = null;
@@ -174,6 +175,11 @@ async function handleGetResults(jobId) {
     if (result.Item.analysis_results) {
       response.analysis_results = result.Item.analysis_results;
     }
+
+    const breakdown = normalizeBreakdownRecord(result.Item.video_breakdown);
+    if (breakdown) {
+      response.video_breakdown = buildBreakdownPreview(breakdown);
+    }
     
     // Subscription gating: non-entitled users get a teaser instead of the
     // full analysis. Evaluated against the record owner's user_id.
@@ -211,6 +217,7 @@ async function handleGetResults(jobId) {
         response.lock_reason = 'subscription_required';
         response.partial_result_available = !!accessDecision.allowLockedResult;
         response.locked_analysis = lockedAnalysis;
+        delete response.video_breakdown;
       }
     }
 

@@ -86,6 +86,35 @@ export class ChatHistoryManager {
     }
   }
 
+  static async updateMessage(userId = 'default', messageId, updates) {
+    try {
+      if (!messageId) return null;
+
+      const conversation = await this.loadConversation(userId);
+      const index = conversation.messages.findIndex((message) => message?.id === messageId);
+      if (index === -1) {
+        return null;
+      }
+
+      const currentMessage = conversation.messages[index];
+      const nextMessage = typeof updates === 'function'
+        ? updates(currentMessage)
+        : { ...currentMessage, ...updates };
+
+      conversation.messages[index] = nextMessage;
+      conversation.lastUpdated = new Date().toISOString();
+      conversation.userProfile.lastInteraction = new Date().toISOString();
+
+      const storageKey = `${STORAGE_PREFIX}${userId}`;
+      await AsyncStorage.setItem(storageKey, JSON.stringify(conversation));
+
+      return nextMessage;
+    } catch (error) {
+      console.error('Failed to update message:', error);
+      return null;
+    }
+  }
+
   // Remove old messages to stay under limit
   static async clearOldMessages(userId = 'default', conversation = null) {
     try {
