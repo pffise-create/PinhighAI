@@ -55,12 +55,18 @@ Exit gate: clean `main`, green CI, and a known release-candidate commit.
 - [ ] **Patrick:** After D-U-N-S synchronization, request conversion of the Apple Developer membership from individual to organization.
 - [ ] **Patrick:** After Apple approves the conversion, update and re-verify App Store agreements, tax, and banking information for `Alki Golf LLC` if Apple requests it.
 - [x] **Patrick:** Confirm legal details: `Alki Golf LLC`; 522 W Riverside Ave, Ste N, Spokane, WA 99201; effective August 15, 2026; Washington law; Spokane County/Eastern District of Washington venue.
-- [ ] **Patrick:** Google Workspace -> start Business Starter for `divotlab.ai` with one user, `pat@divotlab.ai`.
-- [ ] **Patrick:** Namecheap -> Advanced DNS -> add Google's ownership-verification TXT record, then replace any email-provider MX records with Google's MX record. Preserve the GitHub Pages website records.
-- [ ] **Patrick:** Google Admin -> Directory -> Users -> Patrick -> Add Alternate Emails -> add `support@divotlab.ai`.
-- [ ] **Patrick:** Gmail -> Settings -> Accounts and Import -> Send mail as -> add `support@divotlab.ai`, then choose `Reply from the same address the message was sent to`.
-- [ ] **Patrick:** Enable two-step verification and finish SPF, DKIM, and DMARC setup using the values shown by Google Admin.
-- [ ] **Patrick:** Verify external send and receive for both `pat@divotlab.ai` and `support@divotlab.ai`.
+- [ ] **Patrick:** Open [Google Workspace](https://workspace.google.com/) -> Get started -> choose Business Starter -> select one user -> choose `Use a domain you already own` -> enter `divotlab.ai`.
+- [ ] **Patrick:** Create the first Workspace administrator as `pat@divotlab.ai`. Store its password in a password manager and add `pffise@gmail.com` as its recovery email.
+- [ ] **Patrick:** Copy the domain-verification TXT value supplied by Google. In Namecheap: Domain List -> `divotlab.ai` -> Manage -> Advanced DNS -> Host Records -> Add New Record -> TXT Record. Set Host to `@`, paste Google's value, set TTL to Automatic, and save.
+- [ ] **Patrick:** Return to Google's setup wizard and click Verify. Do not continue until Google confirms ownership.
+- [ ] **Patrick:** In Namecheap: Advanced DNS -> Mail Settings -> Custom MX. Remove existing Namecheap/private-email MX records, then add Host `@`, mail server `smtp.google.com`, priority `1`, TTL Automatic. Do not remove the GitHub Pages A records or the `www` CNAME.
+- [ ] **Patrick:** Return to Google Admin -> Account -> Domains -> Manage domains -> Activate Gmail, then wait until Gmail reports active.
+- [ ] **Patrick:** In [Google Admin](https://admin.google.com/): Directory -> Users -> Patrick -> Add Alternate Emails -> Alternate email -> enter `support` -> Save. This routes `support@divotlab.ai` into the `pat@divotlab.ai` inbox without a second paid user.
+- [ ] **Patrick:** Sign in to [Gmail](https://mail.google.com/) as `pat@divotlab.ai` -> Settings -> See all settings -> Accounts and Import -> Send mail as -> Add another email address -> add `support@divotlab.ai` -> complete verification.
+- [ ] **Patrick:** In the same Gmail section, select `Reply from the same address the message was sent to` so support replies use `support@divotlab.ai`.
+- [ ] **Patrick:** Google Admin -> Security -> Authentication -> 2-Step Verification -> allow/enforce it, then enroll `pat@divotlab.ai`.
+- [ ] **Patrick:** Google Admin -> Apps -> Google Workspace -> Gmail -> Authenticate email -> generate the DKIM record. Add Google's exact DKIM TXT record in Namecheap, start authentication in Google Admin, and add the SPF/DMARC records Google recommends. Do not create a second SPF record; update the existing one if present.
+- [ ] **Patrick:** From `pffise@gmail.com`, send separate tests to `pat@divotlab.ai` and `support@divotlab.ai`. Reply from each address in Workspace Gmail and confirm both replies reach `pffise@gmail.com` without a spam warning.
 - [ ] **Patrick:** Confirm whether the app is a regulated medical device. Expected answer is no, but this is an owner declaration.
 - [x] **Codex:** Finalize the privacy policy and terms using the confirmed business details.
 - [x] **Codex:** Build responsive `/privacy/` and `/terms/` website pages and link them from the marketing-site footer.
