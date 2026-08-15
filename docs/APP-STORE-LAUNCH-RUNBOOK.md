@@ -18,15 +18,17 @@ Verified 2026-08-15. This is the dependency-ordered plan from the current state 
 - [ ] Preview EAS contains account-wide duplicate RevenueCat values, but the correct project-scoped values override them for this project.
 - [ ] App Store support URL, privacy URL, age rating, content rights, review contact, review notes, and privacy answers are incomplete.
 - [x] Launch work is committed on draft PR `#13`; both GitHub CI jobs pass. The PR is not yet merged to `main`.
+- [x] `divotlab.ai` DNS is managed in Namecheap; the marketing site is configured for GitHub Pages hosting.
 - [ ] RevenueCat v1 server key is missing, the AWS session needs login, and subscription gating remains off.
 - [x] Account-deletion code now deletes the RevenueCat customer before app-owned data; focused and full backend tests pass. Deployment still requires the server key and AWS login.
 
 ## Phase 1: Lock release decisions
 
-- [ ] **Patrick:** Confirm device scope. Recommended: iPhone-only for `1.0`. The app currently declares iPad support; keeping it requires iPad testing and listing assets.
-- [ ] **Patrick:** Confirm storefront scope. Recommended: United States only for the first release, then expand after validation.
-- [ ] **Patrick:** Confirm release control. Recommended: manual release after approval rather than the current automatic-after-approval setting.
-- [ ] **Patrick:** Confirm the public seller/legal entity name and whether Apple should treat the account as a Digital Services Act trader.
+- [x] **Patrick:** Confirm device scope: iPhone-only for `1.0`.
+- [x] **Patrick:** Confirm storefront scope: United States only for the first release.
+- [x] **Patrick:** Confirm release control: manual release after approval.
+- [x] **Patrick:** Confirm seller/legal entity: `Alki Golf LLC`, using its verified principal address.
+- [x] **Patrick:** Confirm DSA status for `1.0`: not acting as a trader on the App Store while DivotLab is distributed only outside the EU. Reassess before enabling any EU storefront.
 
 Exit gate: device scope, storefronts, release method, and seller identity are written down.
 
@@ -47,9 +49,15 @@ Exit gate: clean `main`, green CI, and a known release-candidate commit.
 - [x] **Patrick:** App Store Connect -> Business -> Agreements. Open Paid Apps and make its status `Active`.
 - [x] **Patrick:** Business -> Agreements -> Tax Forms. Submit every requested form and resolve missing information.
 - [x] **Patrick:** Business -> Agreements -> Banking. Add and verify the payout account.
-- [ ] **Patrick:** Confirm the legal entity, mailing address, effective date, governing law, dispute terms, and `support@divotlab.ai` mailbox.
+- [x] **Patrick:** Submit the Washington formation filing for `Alki Golf LLC`.
+- [ ] **Patrick:** After state approval, obtain the LLC EIN, register the `DivotLab` trade name, and request a D-U-N-S number using the verified principal address.
+- [ ] **Patrick:** After D-U-N-S synchronization, request conversion of the Apple Developer membership from individual to organization.
+- [ ] **Patrick:** After Apple approves the conversion, update and re-verify App Store agreements, tax, and banking information for `Alki Golf LLC` if Apple requests it.
+- [x] **Patrick:** Confirm legal details: `Alki Golf LLC`; 522 W Riverside Ave, Ste N, Spokane, WA 99201; effective August 15, 2026; Washington law; Spokane County/Eastern District of Washington venue.
+- [ ] **Patrick:** Confirm that `support@divotlab.ai` can send and receive mail.
 - [ ] **Patrick:** Confirm whether the app is a regulated medical device. Expected answer is no, but this is an owner declaration.
-- [ ] **Codex:** Finalize the privacy policy and terms using the confirmed business details.
+- [x] **Codex:** Finalize the privacy policy and terms using the confirmed business details.
+- [x] **Codex:** Build responsive `/privacy/` and `/terms/` website pages and link them from the marketing-site footer.
 - [ ] **Codex:** Publish privacy, terms, and support pages on `divotlab.ai` over HTTPS.
 - [ ] **Codex:** Verify every public URL and the support mailbox from outside the developer account.
 
@@ -123,9 +131,9 @@ Exit gate: the final build passes with production gating enabled.
 - [ ] **Patrick:** App Information -> Age Ratings -> answer every question and save the calculated rating.
 - [ ] **Patrick:** App Privacy -> declare collected data and third-party practices, add the privacy URL, and publish the answers.
 - [ ] **Patrick:** App Information -> Content Rights -> confirm the app has rights to all supplied content.
-- [ ] **Patrick:** App Information -> Digital Services Act -> complete trader/non-trader verification for selected storefronts.
+- [ ] **Patrick:** App Information -> Digital Services Act -> select non-trader for DivotLab while it remains United States-only. Reassess and complete trader verification before adding EU storefronts.
 - [ ] **Patrick:** Complete the Health & Fitness regulated-medical-device declaration.
-- [ ] **Patrick:** Provide App Review contact name, email, and phone number.
+- [x] **Patrick:** Provide App Review contact: Patrick Fise, `pffise@gmail.com`, `410-493-0404`.
 - [ ] **Patrick:** Create a stable reviewer login (recommended username: `appreview@divotlab.ai`) using a sign-in method the production app supports. Put its password only in App Review Information, not Git or chat.
 - [ ] **Codex:** Set support URL, privacy URL, optional marketing URL, storefront availability, release method, copyright, and final metadata.
 - [ ] **Codex:** Set the marketing URL to `https://divotlab.ai` after DNS and HTTPS are live.
@@ -149,8 +157,8 @@ Final gate: Alki DivotLab is searchable/downloadable in the selected storefronts
 
 ## Immediate next actions
 
-1. Patrick confirms iPhone-only vs iPhone+iPad, initial storefronts, manual vs automatic release, legal entity/address, governing law, and DSA trader status.
-2. Patrick creates the RevenueCat v1 key and runs `aws login` on the Mac.
-3. Codex publishes legal pages once hosting access and owner details are available, then fills their EAS and App Store URLs.
-4. Codex packages the current launch work into one release PR, deploys account deletion, and builds the TestFlight candidate.
-5. Patrick performs the personal review, completes owner declarations, and approves the final submission.
+1. Patrick waits for Washington approval, then obtains the EIN, registers the `DivotLab` trade name, requests a D-U-N-S number, and asks Apple to convert the developer account to an organization.
+2. Patrick creates the RevenueCat v1 key, runs `aws login` on the Mac, verifies `support@divotlab.ai`, and confirms the regulated-medical-device declaration is `No`.
+3. Codex publishes the finalized legal pages through the Namecheap-managed `divotlab.ai` domain, then fills their EAS and App Store URLs.
+4. Codex applies iPhone-only support, packages the current launch work into one release PR, deploys account deletion, and builds the TestFlight candidate.
+5. Patrick performs the personal review, completes remaining owner declarations, and approves the final submission.
