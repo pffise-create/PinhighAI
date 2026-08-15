@@ -17,7 +17,7 @@ Verified 2026-08-15. This is the dependency-ordered plan from the current state 
 - [ ] Production EAS has RevenueCat, auth, API, and support values; privacy and terms URLs remain missing.
 - [ ] Preview EAS contains account-wide duplicate RevenueCat values, but the correct project-scoped values override them for this project.
 - [ ] App Store support URL, privacy URL, age rating, content rights, review contact, review notes, and privacy answers are incomplete.
-- [ ] The current branch has extensive uncommitted launch work and is not merged to `main`.
+- [x] Launch work is committed on draft PR `#13`; both GitHub CI jobs pass. The PR is not yet merged to `main`.
 - [ ] RevenueCat v1 server key is missing, the AWS session needs login, and subscription gating remains off.
 - [x] Account-deletion code now deletes the RevenueCat customer before app-owned data; focused and full backend tests pass. Deployment still requires the server key and AWS login.
 
@@ -32,12 +32,13 @@ Exit gate: device scope, storefronts, release method, and seller identity are wr
 
 ## Phase 2: Make one releasable source revision
 
-- [ ] **Codex:** Reconcile the dirty worktree, remove generated artifacts, and preserve all intended launch changes.
-- [ ] **Codex:** Review the three old open GitHub PRs and close or supersede them so there is one source of truth.
+- [x] **Codex:** Reconcile the launch work, exclude local/generated artifacts, and preserve all intended changes in commit `eb07753`.
+- [x] **Codex:** Close PRs `#1`-`#3` as superseded by consolidated launch PR `#13`.
 - [x] **Codex:** Fix account deletion so RevenueCat customer data is deleted or appropriately anonymized along with app-owned data.
 - [ ] **Codex:** Apply the Phase 1 device-support decision in `app.json`.
-- [ ] **Codex:** Run app tests, backend tests, Playwright, iOS export, lint/hygiene checks, and GitHub CI.
-- [ ] **Codex:** Commit, push, open one release PR, merge it to `main`, and tag the release candidate commit.
+- [x] **Codex:** Run app tests, backend tests, Playwright, iOS export, hygiene checks, and GitHub CI.
+- [x] **Codex:** Commit, push, and open consolidated draft release PR `#13`.
+- [ ] **Together:** Review and merge PR `#13`, then tag the release-candidate commit.
 
 Exit gate: clean `main`, green CI, and a known release-candidate commit.
 
@@ -126,6 +127,7 @@ Exit gate: the final build passes with production gating enabled.
 - [ ] **Patrick:** Complete the Health & Fitness regulated-medical-device declaration.
 - [ ] **Patrick:** Provide App Review contact name, email, and phone number.
 - [ ] **Codex:** Set support URL, privacy URL, optional marketing URL, storefront availability, release method, copyright, and final metadata.
+- [x] **Codex:** Verify subtitle `AI-powered golf swing coach` and primary category `Sports` in App Store Connect.
 - [ ] **Codex:** Write review notes explaining sign-in, the subscription path, sample swing testing, restore, and account deletion.
 - [ ] **Together:** Review app name, subtitle, description, keywords, screenshots, prices, trial, and legal text one final time.
 - [ ] **Codex:** Select the final build and add both subscriptions to the same review submission as version `1.0`.
