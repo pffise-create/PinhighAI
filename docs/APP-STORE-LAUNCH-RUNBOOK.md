@@ -126,7 +126,9 @@ Exit gate: the final build passes with production gating enabled.
 - [ ] **Patrick:** App Information -> Digital Services Act -> complete trader/non-trader verification for selected storefronts.
 - [ ] **Patrick:** Complete the Health & Fitness regulated-medical-device declaration.
 - [ ] **Patrick:** Provide App Review contact name, email, and phone number.
+- [ ] **Patrick:** Create a stable reviewer login (recommended username: `appreview@divotlab.ai`) using a sign-in method the production app supports. Put its password only in App Review Information, not Git or chat.
 - [ ] **Codex:** Set support URL, privacy URL, optional marketing URL, storefront availability, release method, copyright, and final metadata.
+- [ ] **Codex:** Set the marketing URL to `https://divotlab.ai` after DNS and HTTPS are live.
 - [x] **Codex:** Verify subtitle `AI-powered golf swing coach` and primary category `Sports` in App Store Connect.
 - [ ] **Codex:** Write review notes explaining sign-in, the subscription path, sample swing testing, restore, and account deletion.
 - [ ] **Together:** Review app name, subtitle, description, keywords, screenshots, prices, trial, and legal text one final time.
