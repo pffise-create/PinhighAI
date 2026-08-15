@@ -107,9 +107,7 @@ Uploaded videos, extracted frames, analysis results, and chat history may be ret
 
 Depending on where you live, you may have rights to access, correct, delete, export, or restrict certain personal information. You may also have the right to object to certain processing.
 
-To request access, correction, deletion, or export of your data, contact support@divotlab.ai.
-
-If the app supports account creation, App Store policy may require an in-app way to initiate account deletion. Until a fully automated deletion flow is available, you may initiate deletion by contacting support. We will explain the expected timeline and confirm completion when deletion is complete.
+You can delete your account and associated swing data from Settings in the app. To request access, correction, export, or additional privacy assistance, contact support@divotlab.ai.
 
 ## 9. Subscriptions and Apple Account Management
 

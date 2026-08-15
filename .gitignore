@@ -11,6 +11,9 @@ web-build/
 .env.local
 .env.*.local
 
+# Apple private keys
+*.p8
+
 # OS files
 .DS_Store
 Thumbs.db

@@ -15,6 +15,10 @@ const {
 // Initialize clients
 let dynamodb = null;
 let lambdaClient = null;
+const BREAKDOWN_RETRY_MIN_INTERVAL_MS = Math.max(
+  15_000,
+  parseInt(process.env.VIDEO_BREAKDOWN_RETRY_MIN_INTERVAL_MS || '45000', 10)
+);
 
 function getDynamoClient() {
   if (!dynamodb) {
@@ -487,6 +491,23 @@ function buildQueuedBreakdown(existing = {}) {
   };
 }
 
+function shouldRetryQueuedBreakdown(breakdown) {
+  if (!breakdown || (breakdown.status !== 'queued' && breakdown.status !== 'processing')) {
+    return false;
+  }
+
+  if (!breakdown.updated_at) {
+    return true;
+  }
+
+  const updatedAtMs = new Date(breakdown.updated_at).getTime();
+  if (!Number.isFinite(updatedAtMs)) {
+    return true;
+  }
+
+  return (Date.now() - updatedAtMs) >= BREAKDOWN_RETRY_MIN_INTERVAL_MS;
+}
+
 async function startVideoBreakdownWorkflow(analysisId, userContext) {
   if (!analysisId) {
     return {
@@ -569,6 +590,30 @@ async function startVideoBreakdownWorkflow(analysisId, userContext) {
   }
 
   if (currentBreakdown?.status === 'queued' || currentBreakdown?.status === 'processing') {
+    if (shouldRetryQueuedBreakdown(currentBreakdown)) {
+      const retriedBreakdown = buildQueuedBreakdown(currentBreakdown);
+      await dynamodb.send(new UpdateCommand({
+        TableName: process.env.DYNAMODB_TABLE,
+        Key: { analysis_id: analysisId },
+        UpdateExpression: 'SET video_breakdown = :breakdown, updated_at = :timestamp',
+        ExpressionAttributeValues: {
+          ':breakdown': retriedBreakdown,
+          ':timestamp': new Date().toISOString(),
+        },
+      }));
+
+      await triggerVideoBreakdownProcessor(analysisId, userContext.userId);
+
+      return {
+        statusCode: 202,
+        body: JSON.stringify({
+          jobId: analysisId,
+          status: 'queued',
+          video_breakdown: buildBreakdownPreview(retriedBreakdown),
+        }),
+      };
+    }
+
     return {
       statusCode: 200,
       body: JSON.stringify({
@@ -732,4 +777,5 @@ exports.__private = {
   buildQueuedBreakdown,
   extractAnalysisIdFromS3Key,
   startVideoBreakdownWorkflow,
+  shouldRetryQueuedBreakdown,
 };

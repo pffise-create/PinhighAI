@@ -150,6 +150,25 @@ describe('ChatScreen', () => {
     ChatHistoryManager.loadConversation.mockResolvedValue(emptyHistory());
     ChatHistoryManager.saveMessage.mockResolvedValue(undefined);
     chatApiService.sendMessage.mockResolvedValue({ response: 'Solid question — let us dig in.' });
+    videoService.requestVideoBreakdown.mockResolvedValue({
+      status: 'processing',
+      video_breakdown: {
+        status: 'processing',
+        title: 'Swing Breakdown',
+        summary: 'Muted by default. Captions stay on.',
+        muted_default: true,
+      },
+    });
+    videoService.waitForBreakdownComplete.mockResolvedValue({
+      status: 'completed',
+      title: 'Swing Breakdown',
+      summary: 'Muted by default. Captions stay on.',
+      video_url: 'https://example.com/breakdown.mp4',
+      poster_url: 'https://example.com/poster.jpg',
+      duration_seconds: 22.1,
+      muted_default: true,
+      scenes: [],
+    });
 
     alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
     scrollToOffsetSpy = jest
@@ -600,6 +619,46 @@ describe('ChatScreen', () => {
       expect(analysis.sender).toBe('coach');
       expect(analysis.type).toBe('analysis');
     });
+
+    it('automatically starts the breakdown flow and trims long analysis copy into a short summary', async () => {
+      videoService.uploadAndAnalyze.mockResolvedValue({ jobId: 'job-123' });
+      videoService.waitForAnalysisComplete.mockResolvedValue({
+        status: 'completed',
+        coaching_response: [
+          'Your chest rotation is the big win today.',
+          'It keeps the handle moving so the club does not stall into impact.',
+          'The follow-through still needs more width, but the main priority is clearly rotation.',
+        ].join(' '),
+      });
+
+      renderChatScreen();
+      await waitFor(() => expect(ChatHistoryManager.loadConversation).toHaveBeenCalled());
+      await selectVideo();
+
+      fireEvent.press(screen.getByLabelText('Send video'));
+
+      expect(
+        await screen.findByText(
+          'Your chest rotation is the big win today. It keeps the handle moving so the club does not stall into impact…'
+        )
+      ).toBeOnTheScreen();
+      await waitFor(() =>
+        expect(videoService.requestVideoBreakdown).toHaveBeenCalledWith(
+          'job-123',
+          { Authorization: 'Bearer token' }
+        )
+      );
+      await waitFor(() =>
+        expect(videoService.waitForBreakdownComplete).toHaveBeenCalledWith(
+          'job-123',
+          null,
+          24,
+          1500,
+          { Authorization: 'Bearer token' }
+        )
+      );
+      expect(await screen.findByText('Queued now. This should land in under 30 seconds.')).toBeOnTheScreen();
+    });
   });
 
   describe('video breakdown', () => {
@@ -688,7 +747,7 @@ describe('ChatScreen', () => {
         )
       );
       await waitFor(() =>
-        expect(screen.getByLabelText('Generate Breakdown')).toBeOnTheScreen()
+        expect(screen.getByLabelText('Try Again')).toBeOnTheScreen()
       );
       expect(videoService.waitForBreakdownComplete).not.toHaveBeenCalled();
     });

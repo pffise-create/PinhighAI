@@ -107,7 +107,7 @@ If you submit ideas, suggestions, bug reports, or feedback, you grant Alki Divot
 
 ## 16. Account Termination
 
-You may stop using the Service at any time. You may request account deletion by contacting support@divotlab.ai.
+You may stop using the Service at any time. You can delete your account from Settings in the app or contact support@divotlab.ai for assistance.
 
 We may suspend or terminate your access if you violate these Terms, create risk or legal exposure, fail to pay required fees, abuse the Service, or if we discontinue the Service.
 

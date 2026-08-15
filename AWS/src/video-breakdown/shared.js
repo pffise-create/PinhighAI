@@ -1,6 +1,6 @@
 'use strict';
 
-const BREAKDOWN_VERSION = '2026-08-08.v1';
+const BREAKDOWN_VERSION = '2026-08-08.v2';
 const BREAKDOWN_TARGET_SECONDS = 26;
 const BREAKDOWN_MAX_SCENES = 4;
 const BREAKDOWN_MUTED_DEFAULT = true;
@@ -17,6 +17,9 @@ function parseMaybeJson(value) {
 }
 
 function clampNumber(value, fallback = null) {
+  if (value === null || value === undefined || value === '') {
+    return fallback;
+  }
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
 }
@@ -34,6 +37,7 @@ function normalizeCue(cue, index) {
   return {
     id: typeof cue.id === 'string' ? cue.id : `cue_${index + 1}`,
     phase: typeof cue.phase === 'string' ? cue.phase : 'swing_general',
+    frame_phase: typeof cue.frame_phase === 'string' ? cue.frame_phase : null,
     headline: typeof cue.headline === 'string' ? cue.headline.trim() : '',
     caption: caption || narration,
     narration,
@@ -69,6 +73,10 @@ function normalizeBreakdownRecord(raw) {
     video_s3_key: typeof parsed.video_s3_key === 'string' ? parsed.video_s3_key : null,
     poster_url: typeof parsed.poster_url === 'string' ? parsed.poster_url : null,
     poster_s3_key: typeof parsed.poster_s3_key === 'string' ? parsed.poster_s3_key : null,
+    captions_url: typeof parsed.captions_url === 'string' ? parsed.captions_url : null,
+    captions_s3_key: typeof parsed.captions_s3_key === 'string' ? parsed.captions_s3_key : null,
+    captions_default: parsed.captions_default !== false,
+    embedded_captions: parsed.embedded_captions === true,
     requested_at: typeof parsed.requested_at === 'string' ? parsed.requested_at : null,
     completed_at: typeof parsed.completed_at === 'string' ? parsed.completed_at : null,
     updated_at: typeof parsed.updated_at === 'string' ? parsed.updated_at : null,
@@ -91,6 +99,9 @@ function buildBreakdownPreview(raw) {
     voice: breakdown.voice,
     video_url: breakdown.video_url,
     poster_url: breakdown.poster_url,
+    captions_url: breakdown.captions_url,
+    captions_default: breakdown.captions_default,
+    embedded_captions: breakdown.embedded_captions,
     requested_at: breakdown.requested_at,
     completed_at: breakdown.completed_at,
     updated_at: breakdown.updated_at,
@@ -99,20 +110,53 @@ function buildBreakdownPreview(raw) {
   };
 }
 
+function buildMarkedFrameMap(analysisResults) {
+  const markingFrames = Array.isArray(analysisResults?.marking?.frames)
+    ? analysisResults.marking.frames
+    : [];
+
+  if (markingFrames.length === 0) {
+    return new Map();
+  }
+
+  return markingFrames.reduce((map, frame) => {
+    const phase = typeof frame?.phase === 'string' ? frame.phase : null;
+    const markedUrl = typeof frame?.url === 'string'
+      ? frame.url
+      : (typeof frame?.marked_frame_url === 'string' ? frame.marked_frame_url : null);
+    if (phase && markedUrl) {
+      map.set(phase, markedUrl);
+    }
+    return map;
+  }, new Map());
+}
+
 function normalizeFrames(analysisResults) {
   const frames = Array.isArray(analysisResults?.frames) ? analysisResults.frames : [];
+  const markedFrameMap = buildMarkedFrameMap(analysisResults);
   return frames
     .map((frame, index) => ({
       phase: typeof frame?.phase === 'string' ? frame.phase : `frame_${String(index).padStart(3, '0')}`,
       url: typeof frame?.url === 'string' ? frame.url : null,
       marked_url: typeof frame?.marked_url === 'string'
         ? frame.marked_url
-        : (typeof frame?.markedUrl === 'string' ? frame.markedUrl : null),
+        : (
+          typeof frame?.markedUrl === 'string'
+            ? frame.markedUrl
+            : (markedFrameMap.get(frame?.phase) || null)
+        ),
       timestamp: clampNumber(frame?.timestamp, index),
       frame_number: clampNumber(frame?.frame_number, index),
     }))
     .filter((frame) => frame.url)
     .sort((a, b) => a.timestamp - b.timestamp);
+}
+
+function pickFrameByRatio(frames, ratio) {
+  if (!Array.isArray(frames) || frames.length === 0) return null;
+  const clampedRatio = Math.max(0, Math.min(1, ratio));
+  const index = Math.round((frames.length - 1) * clampedRatio);
+  return frames[Math.max(0, Math.min(frames.length - 1, index))] || frames[0];
 }
 
 function pickFrameForPhase(frames, phase, anchorTime = null) {
@@ -134,27 +178,36 @@ function pickFrameForPhase(frames, phase, anchorTime = null) {
 
   switch (phase) {
     case 'setup':
+    case 'address':
       return first;
+    case 'takeaway':
+      return anchor === null
+        ? pickFrameByRatio(frames, 0.2)
+        : chooseClosest(Math.max(first.timestamp, anchor - 0.55));
     case 'backswing':
+    case 'top':
       return anchor === null
-        ? frames[Math.min(frames.length - 1, Math.floor(frames.length * 0.3))]
-        : chooseClosest(Math.max(first.timestamp, anchor - 0.45));
+        ? pickFrameByRatio(frames, 0.5)
+        : chooseClosest(Math.max(first.timestamp, anchor - 0.32));
     case 'transition':
+    case 'delivery':
       return anchor === null
-        ? frames[Math.min(frames.length - 1, Math.floor(frames.length * 0.5))]
-        : chooseClosest(Math.max(first.timestamp, anchor - 0.18));
+        ? pickFrameByRatio(frames, 0.67)
+        : chooseClosest(Math.max(first.timestamp, anchor - 0.12));
     case 'downswing':
+    case 'strike':
       return anchor === null
-        ? frames[Math.min(frames.length - 1, Math.floor(frames.length * 0.65))]
-        : chooseClosest(Math.max(first.timestamp, anchor - 0.06));
+        ? pickFrameByRatio(frames, 0.78)
+        : chooseClosest(Math.max(first.timestamp, anchor - 0.04));
     case 'impact':
-      return anchor === null ? frames[Math.min(frames.length - 1, Math.floor(frames.length * 0.75))] : chooseClosest(anchor);
+      return anchor === null ? pickFrameByRatio(frames, 0.83) : chooseClosest(anchor);
     case 'follow_through':
+    case 'finish':
       return anchor === null
         ? last
         : chooseClosest(Math.min(last.timestamp, anchor + 0.35));
     default:
-      return frames[Math.min(frames.length - 1, Math.floor(frames.length / 2))];
+      return pickFrameByRatio(frames, 0.5);
   }
 }
 

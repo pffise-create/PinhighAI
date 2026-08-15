@@ -28,6 +28,14 @@ function getLambdaClient() {
   return lambdaClient;
 }
 
+function getRequesterUserId(event) {
+  return (
+    event?.requestContext?.authorizer?.jwt?.claims?.sub ||
+    event?.requestContext?.authorizer?.claims?.sub ||
+    null
+  );
+}
+
 function shouldRetryAiAnalysis(item) {
   if (!item || item.ai_analysis_completed) return false;
   if (!item.analysis_results || !item.user_id) return false;
@@ -92,7 +100,7 @@ async function attemptAiRecovery(jobId, item) {
 }
 
 // Main function to handle GET results requests
-async function handleGetResults(jobId) {
+async function handleGetResults(jobId, { requesterUserId = null } = {}) {
   try {
     console.log(`Fetching results for jobId: ${jobId}`);
     
@@ -118,6 +126,21 @@ async function handleGetResults(jobId) {
           error: 'Analysis not found',
           jobId: jobId
         })
+      };
+    }
+
+    if (requesterUserId && result.Item.user_id && requesterUserId !== result.Item.user_id) {
+      console.warn(`Results access denied for ${jobId}: requester ${requesterUserId} does not own ${result.Item.user_id}`);
+      return {
+        statusCode: 403,
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+        },
+        body: JSON.stringify({
+          error: 'Forbidden',
+          jobId,
+        }),
       };
     }
 
@@ -302,7 +325,9 @@ exports.handler = async (event) => {
     }
     
     // Handle the results request
-    return await handleGetResults(jobId);
+    return await handleGetResults(jobId, {
+      requesterUserId: getRequesterUserId(event),
+    });
     
   } catch (error) {
     console.error('Error in results API handler:', error);
@@ -317,4 +342,9 @@ exports.handler = async (event) => {
       }) 
     };
   }
+};
+
+exports.__private = {
+  getRequesterUserId,
+  handleGetResults,
 };

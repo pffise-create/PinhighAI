@@ -217,3 +217,39 @@ test('breakdown workflow returns an existing completed asset for entitled users'
     restoreEnv();
   }
 });
+
+test('breakdown workflow relaunches stale queued renders for entitled users', async () => {
+  const staleUpdatedAt = new Date(Date.now() - 5 * 60_000).toISOString();
+  const { startVideoBreakdownWorkflow, calls, classes, restoreEnv } = loadHandlerWithMocks({
+    item: completedItem({
+      video_breakdown: {
+        status: 'queued',
+        title: 'Swing Breakdown',
+        summary: 'Muted by default. Captions stay on.',
+        muted_default: true,
+        updated_at: staleUpdatedAt,
+      },
+      updated_at: staleUpdatedAt,
+    }),
+    accessItem: {
+      analysis_id: 'access#user-1',
+      entitlement_active: true,
+      entitlement_expires_at: new Date(Date.now() + 60 * 60_000).toISOString(),
+    },
+    env: { SUBSCRIPTION_GATING_ENABLED: 'true' },
+  });
+
+  try {
+    const response = await startVideoBreakdownWorkflow('analysis-1', { userId: 'user-1' });
+    assert.equal(response.statusCode, 202);
+    const body = JSON.parse(response.body);
+    assert.equal(body.status, 'queued');
+    assert.equal(body.video_breakdown.status, 'queued');
+    assert.equal(calls.lambda.length, 1);
+
+    const updateCalls = calls.dynamo.filter((command) => command instanceof classes.UpdateCommand);
+    assert.equal(updateCalls.length, 1);
+  } finally {
+    restoreEnv();
+  }
+});

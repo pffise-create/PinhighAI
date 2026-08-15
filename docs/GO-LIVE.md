@@ -1,80 +1,69 @@
-# Go-Live: the shortest path to a live app
+# Alki DivotLab App Store Launch Checklist
 
-**Written 2026-08-07.** Everything code-side is done and deployed. What remains is
-almost entirely account setup only you can do. Ordered by dependency — later steps
-are blocked by earlier ones.
+Updated 2026-08-08. This is the current launch checklist.
 
-## Status: code is ready
+The canonical dependency-ordered release plan is [`APP-STORE-LAUNCH-RUNBOOK.md`](./APP-STORE-LAUNCH-RUNBOOK.md).
 
-| Area | State |
-|---|---|
-| Backend (4 lambdas) | Deployed from main, smoke-tested |
-| Coaching model | gpt-5.6-terra, analysis + chat (1.9x faster than before, better voice) |
-| Coaching memory | swingMemory live — beat the old context 170-125 |
-| Paywall gating | Built + deployed, **inert** until `SUBSCRIPTION_GATING_ENABLED=true` |
-| Frame extraction | Event-anchored (won a blind bake-off 22-0) |
-| Swing markings | Built, evaluated, **flags off** — NOT required for launch |
-| App identity | `com.alkigolf.divotlab`, Alki DivotLab branding, iOS scheme + permissions fixed |
-| Tests | 121 JS + 11 Python green |
+## Patrick: next actions
 
-## The critical path — 9 human steps
+- [x] **Add the RevenueCat v2 agent API key to Mac Keychain.** Stored as `codex-revenuecat-v2`.
 
-### 1. Apple Developer portal  ~30 min
-- Create a **Services ID** for Sign in with Apple.
-- Create a **private key (.p8)**; record the key ID and your team ID.
-- (Apple sign-in is required by App Review for any app offering third-party sign-in.)
+- [x] **Choose subscription prices and trial.** Monthly is `$5.99`; annual is `$59.99`; both include a 7-day free trial.
+- [ ] **Finish Apple business setup.** App Store Connect -> Business -> Agreements. Accept pending agreements, then complete Tax Forms and Banking until each status is Active.
+- [ ] **Create a sandbox purchaser.** App Store Connect -> Users and Access -> Sandbox -> Testers -> +. Use a new email address that has never been an Apple Account.
+- [ ] **Review the legal-page decisions.** Confirm the exact legal entity, business mailing address, effective date, governing law/dispute terms, and that `support@divotlab.ai` is the support address. The drafts are in `docs/legal/` and are not safe to publish while those fields remain `TBD`.
+- [ ] **Answer owner declarations.** In the app's Distribution pages complete App Privacy, Age Ratings, Content Rights, and Digital Services Act trader status. These are legal/business declarations and should not be guessed by the agent.
+- [ ] **Review the App Store listing copy.** Subtitle is `AI-powered golf swing coach`; primary category is Sports; secondary is Health & Fitness. Description, promotional text, and keywords are populated in App Store Connect. Change only if you dislike the positioning.
+- [ ] **Review the App Store screenshots.** App Store Connect -> DivotLab -> Distribution -> iOS App. Three 6.9-inch screenshots captured from the running iOS app are uploaded. Confirm the content and order; no action is needed if you approve them.
+- [ ] **Point `divotlab.ai` to hosting after legal approval.** The domain is currently parked at Namecheap, so support/privacy URLs cannot be submitted yet.
 
-### 2. Cognito — Apple OIDC  ~20 min  *(blocked by 1)*
-- Add Apple as an OIDC identity provider on the **prod** user pool (`us-east-1_s9LDheoFF`), using the team ID / Services ID / key ID / .p8 from step 1.
-- Confirm Hosted UI callback URLs are exactly `golfcoach://` and `golfcoach://logout`.
-- Repeat on staging (`us-east-1_gquwrWOYG`) if you want beta parity.
+## Codex: next work
 
-### 3. RevenueCat dashboard  ~30 min
-- Entitlement named `DivotLab Unlimited` (or change `EXPO_PUBLIC_REVENUECAT_ENTITLEMENT_ID` to match).
-- Offering containing the monthly + yearly packages.
-- 7-day free trial on both products.
-- Copy the **secret** key (`sk_...`).
+- [x] Use the RevenueCat key to connect and audit the DivotLab project.
+- [x] Import the two App Store products and attach them to `DivotLab Unlimited` and the current monthly/yearly packages.
+- [x] Add the RevenueCat public SDK key and identifiers to EAS preview and production without committing keys.
+- [ ] Add a separate RevenueCat v1 secret API key to AWS for server-side entitlement lookup.
+- [x] Deploy the in-app account deletion backend at authenticated `DELETE /api/account` with a least-privilege Lambda role.
+- [ ] Device-test account deletion with a disposable user before submission.
+- [x] Populate safe App Store metadata: subtitle, categories, description, promotional text, and keywords.
+- [ ] Publish the approved legal/support pages, set App Store URLs, and add their EAS environment variables.
+- [x] Configure subscription pricing and introductory offers in every App Store territory.
+- [x] Capture and upload three running-app screenshots and both subscription review screenshots.
+- [ ] Build and submit the first TestFlight build, then run the real-device launch journey.
+- [ ] Enable backend subscription gating only after a sandbox purchase and restore pass.
 
-### 4. App Store Connect  ~1-2 h
-- App record using bundle ID **`com.alkigolf.divotlab`** (this is permanent after first upload).
-- Two auto-renewable subscriptions matching `EXPO_PUBLIC_REVENUECAT_MONTHLY_PRODUCT_ID` / `..._YEARLY_...` (defaults `monthly` / `yearly`).
-- Attach the 7-day introductory offer to each.
-- Create **sandbox testers** for purchase validation.
-- Business entity, banking, tax — this is the long pole; start it first if it isn't done.
+## Completed and verified
 
-### 5. Host the legal docs  ~20 min
-- `docs/legal/privacy-policy.md` and `docs/legal/terms-of-service.md` are written and branded. Host them anywhere stable (GitHub Pages is fine).
-- Confirm `support@divotlab.ai` receives mail, or pick an Alki address.
+- [x] Apple App ID `com.alkigolf.divotlab` has Sign in with Apple enabled.
+- [x] Apple Services ID and web authentication were configured for Cognito.
+- [x] Sign in with Apple private key was created and added to Cognito.
+- [x] Cognito Apple attribute mapping uses Apple `email` -> user pool `email`.
+- [x] App Store Connect app exists: `Alki DivotLab`, Apple ID `6799256144`, SKU `ALKIDIVOTLAB_IOS`.
+- [x] Bundle ID is consistently `com.alkigolf.divotlab` in Apple and the app.
+- [x] RevenueCat custom URL scheme `rc-b91814f453` is registered in Expo config.
+- [x] App Store server-to-server notifications use the RevenueCat URL for Production and Sandbox, version V2.
+- [x] Subscription group `DivotLab Unlimited` exists with an English localization.
+- [x] Monthly product exists: `com.alkigolf.divotlab.monthly`.
+- [x] Annual product exists: `com.alkigolf.divotlab.yearly`.
+- [x] Both products have English name and description metadata.
+- [x] Monthly pricing is `$5.99` in the US with Apple-equalized pricing in all 175 territories.
+- [x] Annual pricing is `$59.99` in the US effective 2026-08-10, with Apple-equalized pricing in all 175 territories.
+- [x] Both products have a 7-day free trial in all 175 territories and opt into future territories.
+- [x] RevenueCat products are attached to the current offering, packages, and `DivotLab Unlimited` entitlement.
+- [x] RevenueCat public SDK configuration is installed in EAS preview and production.
+- [x] Internal TestFlight group `Internal Testers` exists and is ready for a build and members.
+- [x] EAS submit config targets the new App Store Connect app ID.
+- [x] Export compliance is declared in the app config with `ITSAppUsesNonExemptEncryption=false`.
+- [x] App Store subtitle is `AI-powered golf swing coach`.
+- [x] App Store categories are Sports (primary) and Health & Fitness (secondary).
+- [x] App Store description, promotional text, and search keywords are populated.
+- [x] Three 1320 x 2868 screenshots captured from the running iPhone simulator are uploaded and Apple reports processing `COMPLETE`.
+- [x] Monthly and annual subscription review screenshots are uploaded; both products report `READY_TO_SUBMIT`.
+- [x] Account deletion backend is deployed; unauthenticated requests are rejected by a Cognito API Gateway authorizer.
+- [x] Apple private keys are excluded from Git; the Sign in with Apple key was moved to the private iCloud folder.
 
-### 6. Set environment variables  ~20 min  *(blocked by 1-5)*
-**EAS `production` environment** — see `docs/launch-env-vars.md`:
-- 6 Cognito vars, `EXPO_PUBLIC_API_BASE_URL`, `EXPO_PUBLIC_REVENUECAT_API_KEY`
-- `EXPO_PUBLIC_AUTH_PROVIDERS="Google,Apple"`
-- `EXPO_PUBLIC_PRIVACY_POLICY_URL`, `EXPO_PUBLIC_TERMS_URL`
+## Still blocked until later
 
-**Lambdas** (`golf-chat-api-handler` + `golf-results-api-handler`):
-- `REVENUECAT_SECRET_API_KEY=sk_...`  ← this is what unlocks purchases server-side
-- Leave `SUBSCRIPTION_GATING_ENABLED` OFF until step 8.
-
-### 7. Build + device validation  ~1 h  *(blocked by 6)*
-- `eas build --profile production --platform ios`
-- On a real device: Google sign-in round-trip, Apple sign-in round-trip, upload a swing, get an analysis, ask a follow-up.
-- **This is the first real test of several things** — no signed-in user has exercised the new chat memory or the terra chat model end to end.
-
-### 8. Turn the paywall on  ~5 min  *(blocked by 7)*
-- Validate a **sandbox purchase** first.
-- Then set `SUBSCRIPTION_GATING_ENABLED=true` on both lambdas. Until this moment every user gets full access.
-
-### 9. TestFlight -> soft launch
-- Ship the validated build to TestFlight, invite testers, watch crash reports.
-- Promote when the first-run and billing paths are reliable.
-
-## Deliberately NOT required for launch
-- Swing markings (both modes) — flags off, no user impact.
-- Retroactive marking backfill.
-- RevenueCat webhook — server-side lookup already unlocks purchases.
-
-## Known risks to watch on first real traffic
-- Chat memory + terra chat model have never run with a real signed-in user (no JWT available in dev). Watch CloudWatch for `SWING_MEMORY` and `CHAT_COMPLETION_TRUNCATED`.
-- Ungated uploads cost a gpt-5.6-terra analysis each (~$0.047). Cap uploads if beta shows abuse.
-- Cost/user/month at 3 videos + 15 chats: ~$0.18-0.44 depending on model mix. Margin at $10/mo is 95%+.
+- [ ] App Store listing still needs live support/privacy URLs, review contact, and review notes.
+- [ ] No build is uploaded yet, so adding testers and device validation remain pending.
+- [ ] Purchase, restore, Apple sign-in, Google sign-in, analysis, and account deletion need real-device validation.

@@ -317,3 +317,31 @@ test('results handler re-locks when the entitlement expiry has passed', async ()
     restoreEnv();
   }
 });
+
+test('results handler denies access when the verified requester does not own the analysis', async () => {
+  const { handler, calls, restoreEnv } = loadHandlerWithMocks({
+    item: completedItem({
+      user_id: 'owner-user',
+    }),
+  });
+
+  try {
+    const response = await handler({
+      httpMethod: 'GET',
+      pathParameters: { jobId: 'analysis-2' },
+      requestContext: {
+        authorizer: {
+          jwt: {
+            claims: { sub: 'different-user' },
+          },
+        },
+      },
+    });
+
+    assert.equal(response.statusCode, 403);
+    assert.equal(JSON.parse(response.body).error, 'Forbidden');
+    assert.equal(calls.lambda.length, 0);
+  } finally {
+    restoreEnv();
+  }
+});

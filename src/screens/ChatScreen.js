@@ -46,6 +46,46 @@ import { colors, spacing } from '../utils/theme';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 const SCROLL_THRESHOLD = 96;
+const BREAKDOWN_TARGET_POLL_SECONDS = 24;
+const BREAKDOWN_FALLBACK_SUMMARY = 'Muted by default. Captions stay on.';
+const CHAT_SUMMARY_MAX_CHARS = 220;
+
+const stripMarkdownForSummary = (text) => (
+  typeof text === 'string'
+    ? text
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1')
+      .replace(/[*_`>#]/g, '')
+      .replace(/^\s*[-+]\s+/gm, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+    : ''
+);
+
+const summarizeAnalysisForChat = (text) => {
+  const clean = stripMarkdownForSummary(text);
+  if (!clean) return 'Your swing is ready. The quick coach summary is below.';
+
+  const sentences = clean.split(/(?<=[.!?])\s+/).filter(Boolean);
+  const joined = (sentences.slice(0, 2).join(' ') || clean).trim();
+  const shouldTruncate = joined.length > CHAT_SUMMARY_MAX_CHARS;
+  const truncated = shouldTruncate
+    ? `${joined.slice(0, CHAT_SUMMARY_MAX_CHARS - 1).trimEnd()}…`
+    : joined;
+  if (!shouldTruncate && truncated.length < clean.length) {
+    return `${truncated.replace(/[.!?]\s*$/, '').trimEnd()}…`;
+  }
+
+  return truncated;
+};
+
+const seedBreakdownState = (current, status = 'queued', extra = {}) => ({
+  ...(current || {}),
+  status,
+  title: current?.title || 'Swing Breakdown',
+  summary: current?.summary || BREAKDOWN_FALLBACK_SUMMARY,
+  muted_default: current?.muted_default !== false,
+  ...extra,
+});
 
 // ─── Message Factory ────────────────────────────────────────────────────────
 const createMessage = ({
@@ -274,6 +314,95 @@ const ChatScreen = ({ navigation }) => {
       (err) => console.warn('Failed to update persisted message', err)
     );
   }, [userId]);
+
+  const runBreakdownFlow = useCallback(async (
+    messageId,
+    jobId,
+    currentBreakdown = null,
+    {
+      shouldRequest = true,
+      shouldAlertOnAuth = true,
+    } = {},
+  ) => {
+    if (!messageId || !jobId) return;
+
+    const previousBreakdown = currentBreakdown || null;
+    const seededStatus = currentBreakdown?.status === 'processing' ? 'processing' : 'queued';
+
+    replaceMessage(messageId, (current) => ({
+      ...current,
+      videoBreakdown: seedBreakdownState(
+        current.videoBreakdown || previousBreakdown,
+        seededStatus
+      ),
+    }));
+
+    try {
+      const headers = await getAuthHeaders();
+      const existingReady = currentBreakdown?.status === 'completed' && currentBreakdown?.video_url;
+      if (existingReady) {
+        return;
+      }
+
+      let requestedBreakdown = currentBreakdown || null;
+
+      if (shouldRequest) {
+        const requested = await videoService.requestVideoBreakdown(jobId, headers);
+        requestedBreakdown = requested.video_breakdown || requestedBreakdown;
+
+        replaceMessage(messageId, (current) => ({
+          ...current,
+          videoBreakdown: requestedBreakdown || current.videoBreakdown,
+        }));
+
+        if (requested.status === 'completed' && requested.video_breakdown?.video_url) {
+          return;
+        }
+      }
+
+      const completed = await videoService.waitForBreakdownComplete(
+        jobId,
+        null,
+        BREAKDOWN_TARGET_POLL_SECONDS,
+        1500,
+        headers,
+      );
+
+      replaceMessage(messageId, (current) => ({
+        ...current,
+        videoBreakdown: completed,
+      }));
+    } catch (error) {
+      if (error?.message === 'AUTHENTICATION_REQUIRED') {
+        if (previousBreakdown) {
+          replaceMessage(messageId, (current) => ({
+            ...current,
+            videoBreakdown: previousBreakdown,
+          }));
+        } else {
+          replaceMessage(messageId, (current) => ({
+            ...current,
+            videoBreakdown: seedBreakdownState(current.videoBreakdown, 'failed', {
+              error_message: 'Sign in again to finish your narrated breakdown.',
+            }),
+          }));
+        }
+
+        if (shouldAlertOnAuth) {
+          Alert.alert('Sign in required', 'Please sign in to generate your video breakdown.');
+        }
+        return;
+      }
+
+      console.error('Video breakdown generation failed:', error);
+      replaceMessage(messageId, (current) => ({
+        ...current,
+        videoBreakdown: seedBreakdownState(current.videoBreakdown, 'failed', {
+          error_message: 'The breakdown did not finish this time. Try again.',
+        }),
+      }));
+    }
+  }, [getAuthHeaders, replaceMessage]);
 
   // ─── Paywall Unlock Flow ───────────────────────────────────────────────
   // CTA on a locked teaser: present the RevenueCat paywall; on purchase or
@@ -508,16 +637,39 @@ const ChatScreen = ({ navigation }) => {
 
       const aiResponse = analysisResult?.coaching_response || analysisResult?.analysis?.coaching_response;
       const isLocked = Boolean(analysisResult?.locked);
-      appendMessage(
-        createMessage({
-          sender: 'coach',
-          text: aiResponse || 'Your swing has been processed, but I was unable to retrieve the analysis. Please try again.',
-          type: aiResponse ? (isLocked ? 'locked_analysis' : 'analysis') : 'error',
-          lockedAnalysis: isLocked ? analysisResult.locked_analysis : null,
-          jobId: uploadResult.jobId,
-          videoBreakdown: analysisResult?.video_breakdown || null,
-        })
-      );
+      const seededBreakdown = !isLocked && aiResponse
+        ? seedBreakdownState(
+          analysisResult?.video_breakdown,
+          analysisResult?.video_breakdown?.status === 'processing' ? 'processing' : 'queued'
+        )
+        : (analysisResult?.video_breakdown || null);
+      const coachMessage = createMessage({
+        sender: 'coach',
+        text: aiResponse
+          ? (isLocked ? aiResponse : summarizeAnalysisForChat(aiResponse))
+          : 'Your swing has been processed, but I was unable to retrieve the analysis. Please try again.',
+        type: aiResponse ? (isLocked ? 'locked_analysis' : 'analysis') : 'error',
+        lockedAnalysis: isLocked ? analysisResult.locked_analysis : null,
+        jobId: uploadResult.jobId,
+        videoBreakdown: seededBreakdown,
+      });
+
+      appendMessage(coachMessage);
+
+      if (!isLocked && aiResponse) {
+        const breakdownStatus = analysisResult?.video_breakdown?.status || null;
+        const shouldRequestBreakdown = !['queued', 'processing', 'completed'].includes(breakdownStatus);
+
+        void runBreakdownFlow(
+          coachMessage.id,
+          uploadResult.jobId,
+          analysisResult?.video_breakdown || null,
+          {
+            shouldRequest: shouldRequestBreakdown,
+            shouldAlertOnAuth: false,
+          },
+        );
+      }
     } catch (error) {
       console.error('Video processing failed:', error);
       setIsProcessingVideo(false);
@@ -555,69 +707,11 @@ const ChatScreen = ({ navigation }) => {
     ) {
       return;
     }
-
-    replaceMessage(message.id, (current) => ({
-      ...current,
-      videoBreakdown: {
-        ...(current.videoBreakdown || {}),
-        status: 'queued',
-        title: current.videoBreakdown?.title || 'Swing Breakdown',
-        summary: current.videoBreakdown?.summary || 'Muted by default. Captions stay on.',
-        muted_default: true,
-      },
-    }));
-
-    const previousBreakdown = message.videoBreakdown || null;
-
-    try {
-      const headers = await getAuthHeaders();
-      const requested = await videoService.requestVideoBreakdown(message.jobId, headers);
-
-      replaceMessage(message.id, (current) => ({
-        ...current,
-        videoBreakdown: requested.video_breakdown || current.videoBreakdown,
-      }));
-
-      if (requested.status === 'completed' && requested.video_breakdown?.video_url) {
-        return;
-      }
-
-      const completed = await videoService.waitForBreakdownComplete(
-        message.jobId,
-        null,
-        24,
-        1500,
-        headers,
-      );
-
-      replaceMessage(message.id, (current) => ({
-        ...current,
-        videoBreakdown: completed,
-      }));
-    } catch (error) {
-      if (error?.message === 'AUTHENTICATION_REQUIRED') {
-        replaceMessage(message.id, (current) => ({
-          ...current,
-          videoBreakdown: previousBreakdown,
-        }));
-        Alert.alert('Sign in required', 'Please sign in to generate your video breakdown.');
-        return;
-      }
-
-      console.error('Video breakdown generation failed:', error);
-      replaceMessage(message.id, (current) => ({
-        ...current,
-        videoBreakdown: {
-          ...(current.videoBreakdown || {}),
-          status: 'failed',
-          title: current.videoBreakdown?.title || 'Swing Breakdown',
-          summary: current.videoBreakdown?.summary || 'Muted by default. Captions stay on.',
-          muted_default: true,
-          error_message: 'The breakdown did not finish this time. Try again.',
-        },
-      }));
-    }
-  }, [getAuthHeaders, replaceMessage]);
+    await runBreakdownFlow(message.id, message.jobId, message.videoBreakdown, {
+      shouldRequest: true,
+      shouldAlertOnAuth: true,
+    });
+  }, [runBreakdownFlow]);
 
   // ─── Unified Send Handler ──────────────────────────────────────────────
   const handleSend = useCallback(async () => {
