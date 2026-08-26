@@ -182,6 +182,51 @@ const ChatScreen = ({ navigation }) => {
     messagesRef.current = messages;
   }, [messages]);
 
+  // Define persistence callbacks before effects that reference them. Production
+  // web bundles preserve const temporal-dead-zone semantics more strictly than
+  // the Jest transform, so dependency arrays cannot reference later callbacks.
+  const appendMessage = useCallback((message, persist = true) => {
+    setMessages((prev) => {
+      const nextMessages = [...prev, message];
+      messagesRef.current = nextMessages;
+      return nextMessages;
+    });
+    if (persist) {
+      ChatHistoryManager.saveMessage(userId, {
+        id: message.id,
+        text: message.text,
+        sender: message.sender,
+        timestamp: message.createdAt?.toISOString?.() || new Date().toISOString(),
+        messageType: message.type,
+        videoUri: message.videoUri,
+        videoThumbnail: message.videoThumbnail,
+        videoDuration: message.videoDuration,
+        videoTrimData: message.videoTrimData || null,
+        lockedAnalysis: message.lockedAnalysis || null,
+        jobId: message.jobId || null,
+        videoBreakdown: message.videoBreakdown || null,
+      }).catch((err) => console.warn('Failed to persist message', err));
+    }
+  }, [userId]);
+
+  const replaceMessage = useCallback((messageId, updater) => {
+    const currentMessages = messagesRef.current;
+    let nextMessage = null;
+    const nextMessages = currentMessages.map((msg) => {
+      if (msg.id !== messageId) return msg;
+      nextMessage = updater(msg);
+      return nextMessage;
+    });
+
+    if (!nextMessage) return;
+
+    messagesRef.current = nextMessages;
+    setMessages(nextMessages);
+    Promise.resolve(ChatHistoryManager.updateMessage(userId, messageId, nextMessage)).catch(
+      (err) => console.warn('Failed to update persisted message', err)
+    );
+  }, [userId]);
+
   // ─── Load Chat History ──────────────────────────────────────────────────
   useEffect(() => {
     if (!userId) return; // No authenticated user yet — skip hydration
@@ -270,50 +315,6 @@ const ChatScreen = ({ navigation }) => {
       setShowScrollToBottom(shouldShow);
     }
   }, []);
-
-  // ─── Message Persistence ───────────────────────────────────────────────
-  const appendMessage = useCallback((message, persist = true) => {
-    setMessages((prev) => {
-      const nextMessages = [...prev, message];
-      messagesRef.current = nextMessages;
-      return nextMessages;
-    });
-    if (persist) {
-      ChatHistoryManager.saveMessage(userId, {
-        id: message.id,
-        text: message.text,
-        sender: message.sender,
-        timestamp: message.createdAt?.toISOString?.() || new Date().toISOString(),
-        messageType: message.type,
-        videoUri: message.videoUri,
-        videoThumbnail: message.videoThumbnail,
-        videoDuration: message.videoDuration,
-        videoTrimData: message.videoTrimData || null,
-        lockedAnalysis: message.lockedAnalysis || null,
-        jobId: message.jobId || null,
-        videoBreakdown: message.videoBreakdown || null,
-      }).catch((err) => console.warn('Failed to persist message', err));
-    }
-  }, [userId]);
-
-  // Replace a message in place (state + persisted copy)
-  const replaceMessage = useCallback((messageId, updater) => {
-    const currentMessages = messagesRef.current;
-    let nextMessage = null;
-    const nextMessages = currentMessages.map((msg) => {
-      if (msg.id !== messageId) return msg;
-      nextMessage = updater(msg);
-      return nextMessage;
-    });
-
-    if (!nextMessage) return;
-
-    messagesRef.current = nextMessages;
-    setMessages(nextMessages);
-    Promise.resolve(ChatHistoryManager.updateMessage(userId, messageId, nextMessage)).catch(
-      (err) => console.warn('Failed to update persisted message', err)
-    );
-  }, [userId]);
 
   const runBreakdownFlow = useCallback(async (
     messageId,
