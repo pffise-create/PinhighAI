@@ -29,7 +29,7 @@ const TERMS_OF_SERVICE_URL = readEnv(process.env.EXPO_PUBLIC_TERMS_URL);
 const showQaTools = __DEV__ || appEnv !== 'prod';
 
 const SettingsModal = ({ navigation }) => {
-  const { user, signOut } = useAuth();
+  const { user, signOut, deleteAccount } = useAuth();
   const {
     restorePurchases,
     presentPaywall,
@@ -44,6 +44,7 @@ const SettingsModal = ({ navigation }) => {
     lastError: subscriptionLastError,
   } = useSubscriptions();
   const [showSignOutConfirm, setShowSignOutConfirm] = useState(false);
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
 
   useLayoutEffect(() => {
     navigation.setOptions({
@@ -183,6 +184,40 @@ const SettingsModal = ({ navigation }) => {
             } catch (error) {
               console.error('QA reset failed:', error);
               Alert.alert('QA Reset Failed', error.message || 'Unable to reset local QA state.');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleDeleteAccount = () => {
+    Alert.alert(
+      'Delete Account?',
+      'This permanently deletes your swing videos, analyses, chat history, and sign-in account. It does not cancel an Apple subscription.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete Account',
+          style: 'destructive',
+          onPress: async () => {
+            setIsDeletingAccount(true);
+            try {
+              await deleteAccount();
+              try {
+                await resetSubscriptionIdentityForQa?.();
+              } catch (revenueCatError) {
+                console.warn('RevenueCat identity reset after deletion failed:', revenueCatError);
+              }
+              navigation.goBack();
+            } catch (error) {
+              console.error('Account deletion failed:', error);
+              Alert.alert(
+                'Account Not Deleted',
+                error.message || 'We could not delete your account. Please try again or contact support.'
+              );
+            } finally {
+              setIsDeletingAccount(false);
             }
           },
         },
@@ -353,6 +388,25 @@ const SettingsModal = ({ navigation }) => {
               </View>
             </View>
           )}
+
+          <View style={styles.accountDeletionSection}>
+            <TouchableOpacity
+              style={[styles.deleteAccountRow, isDeletingAccount && styles.disabledRow]}
+              onPress={handleDeleteAccount}
+              activeOpacity={0.85}
+              disabled={isDeletingAccount}
+              accessibilityRole="button"
+              accessibilityLabel="Delete account"
+            >
+              <Ionicons name="trash-outline" size={18} color={colors.statusError} />
+              <View style={styles.deleteAccountCopy}>
+                <Text style={styles.deleteAccountLabel}>
+                  {isDeletingAccount ? 'Deleting account...' : 'Delete account'}
+                </Text>
+                <Text style={styles.deleteAccountSubtitle}>Permanently remove your data</Text>
+              </View>
+            </TouchableOpacity>
+          </View>
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -590,6 +644,34 @@ const styles = StyleSheet.create({
     fontWeight: typography.fontWeights.medium,
     color: colors.textInverse,
     fontFamily: typography.fontFamily,
+  },
+  accountDeletionSection: {
+    marginTop: spacing.base,
+  },
+  deleteAccountRow: {
+    minHeight: 52,
+    borderRadius: borderRadius.md,
+    paddingHorizontal: spacing.base,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  deleteAccountCopy: {
+    marginLeft: spacing.sm,
+  },
+  deleteAccountLabel: {
+    color: colors.statusError,
+    fontFamily: typography.fontFamily,
+    fontSize: typography.fontSizes.sm,
+    fontWeight: typography.fontWeights.medium,
+  },
+  deleteAccountSubtitle: {
+    marginTop: spacing.xs,
+    color: colors.textSecondary,
+    fontFamily: typography.fontFamily,
+    fontSize: typography.fontSizes.xs,
+  },
+  disabledRow: {
+    opacity: 0.55,
   },
 });
 

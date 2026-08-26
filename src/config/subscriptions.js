@@ -24,7 +24,9 @@ export const REVENUECAT_OFFERING_ID = readString(process.env.EXPO_PUBLIC_REVENUE
 
 export const REVENUECAT_PRODUCT_IDS = {
   monthly:
-    readString(process.env.EXPO_PUBLIC_REVENUECAT_MONTHLY_PRODUCT_ID) || 'monthly',
+    readString(process.env.EXPO_PUBLIC_REVENUECAT_MONTHLY_PRODUCT_ID) ||
+    'com.alkigolf.divotlab.monthly',
   yearly:
-    readString(process.env.EXPO_PUBLIC_REVENUECAT_YEARLY_PRODUCT_ID) || 'yearly',
+    readString(process.env.EXPO_PUBLIC_REVENUECAT_YEARLY_PRODUCT_ID) ||
+    'com.alkigolf.divotlab.yearly',
 };

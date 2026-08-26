@@ -199,7 +199,26 @@ test('results handler does not retry when AI analysis is already completed', asy
 });
 
 test('results handler returns full analysis when gating is disabled', async () => {
-  const { handler, restoreEnv } = loadHandlerWithMocks({ item: completedItem() });
+  const { handler, restoreEnv } = loadHandlerWithMocks({
+    item: completedItem({
+      video_breakdown: {
+        status: 'completed',
+        title: 'Swing Breakdown',
+        summary: 'Muted by default. Captions stay on.',
+        video_url: 'https://example.com/breakdown.mp4',
+        poster_url: 'https://example.com/poster.jpg',
+        muted_default: true,
+        scenes: [
+          {
+            id: 'scene_1',
+            caption: 'Chest keeps moving through impact.',
+            start_seconds: 0,
+            end_seconds: 4.1,
+          },
+        ],
+      },
+    }),
+  });
 
   try {
     const response = await handler({
@@ -211,6 +230,9 @@ test('results handler returns full analysis when gating is disabled', async () =
     assert.equal(body.locked, undefined);
     assert.ok(body.ai_analysis);
     assert.equal(body.ai_analysis.coaching_response.includes('Great transition'), true);
+    assert.equal(body.video_breakdown.status, 'completed');
+    assert.equal(body.video_breakdown.video_url, 'https://example.com/breakdown.mp4');
+    assert.equal(body.video_breakdown.scenes.length, 1);
   } finally {
     restoreEnv();
   }
@@ -291,6 +313,34 @@ test('results handler re-locks when the entitlement expiry has passed', async ()
     const body = JSON.parse(response.body);
     assert.equal(body.locked, true);
     assert.equal(body.ai_analysis, undefined);
+  } finally {
+    restoreEnv();
+  }
+});
+
+test('results handler denies access when the verified requester does not own the analysis', async () => {
+  const { handler, calls, restoreEnv } = loadHandlerWithMocks({
+    item: completedItem({
+      user_id: 'owner-user',
+    }),
+  });
+
+  try {
+    const response = await handler({
+      httpMethod: 'GET',
+      pathParameters: { jobId: 'analysis-2' },
+      requestContext: {
+        authorizer: {
+          jwt: {
+            claims: { sub: 'different-user' },
+          },
+        },
+      },
+    });
+
+    assert.equal(response.statusCode, 403);
+    assert.equal(JSON.parse(response.body).error, 'Forbidden');
+    assert.equal(calls.lambda.length, 0);
   } finally {
     restoreEnv();
   }

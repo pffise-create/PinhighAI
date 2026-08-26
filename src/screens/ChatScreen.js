@@ -38,6 +38,7 @@ import {
 import ChatHeader from '../components/chat/ChatHeader';
 import MessageBubble from '../components/chat/MessageBubble';
 import VideoModal from '../components/chat/VideoModal';
+import BreakdownVideoModal from '../components/chat/BreakdownVideoModal';
 import TypingIndicator from '../components/chat/TypingIndicator';
 import ComposerBar from '../components/chat/ComposerBar';
 
@@ -45,6 +46,46 @@ import { colors, spacing } from '../utils/theme';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 const SCROLL_THRESHOLD = 96;
+const BREAKDOWN_TARGET_POLL_SECONDS = 24;
+const BREAKDOWN_FALLBACK_SUMMARY = 'Muted by default. Captions stay on.';
+const CHAT_SUMMARY_MAX_CHARS = 220;
+
+const stripMarkdownForSummary = (text) => (
+  typeof text === 'string'
+    ? text
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1')
+      .replace(/[*_`>#]/g, '')
+      .replace(/^\s*[-+]\s+/gm, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+    : ''
+);
+
+const summarizeAnalysisForChat = (text) => {
+  const clean = stripMarkdownForSummary(text);
+  if (!clean) return 'Your swing is ready. The quick coach summary is below.';
+
+  const sentences = clean.split(/(?<=[.!?])\s+/).filter(Boolean);
+  const joined = (sentences.slice(0, 2).join(' ') || clean).trim();
+  const shouldTruncate = joined.length > CHAT_SUMMARY_MAX_CHARS;
+  const truncated = shouldTruncate
+    ? `${joined.slice(0, CHAT_SUMMARY_MAX_CHARS - 1).trimEnd()}…`
+    : joined;
+  if (!shouldTruncate && truncated.length < clean.length) {
+    return `${truncated.replace(/[.!?]\s*$/, '').trimEnd()}…`;
+  }
+
+  return truncated;
+};
+
+const seedBreakdownState = (current, status = 'queued', extra = {}) => ({
+  ...(current || {}),
+  status,
+  title: current?.title || 'Swing Breakdown',
+  summary: current?.summary || BREAKDOWN_FALLBACK_SUMMARY,
+  muted_default: current?.muted_default !== false,
+  ...extra,
+});
 
 // ─── Message Factory ────────────────────────────────────────────────────────
 const createMessage = ({
@@ -59,6 +100,7 @@ const createMessage = ({
   videoTrimData,
   lockedAnalysis,
   jobId,
+  videoBreakdown,
 }) => ({
   id: id || `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
   sender,
@@ -71,6 +113,7 @@ const createMessage = ({
   videoTrimData: videoTrimData || null,
   lockedAnalysis: lockedAnalysis || null,
   jobId: jobId || null,
+  videoBreakdown: videoBreakdown || null,
 });
 
 // ─── Storage Helpers ────────────────────────────────────────────────────────
@@ -91,6 +134,7 @@ const normalizeStoredMessages = (stored = []) =>
         videoTrimData: msg.videoTrimData || null,
         lockedAnalysis: msg.lockedAnalysis || null,
         jobId: msg.jobId || null,
+        videoBreakdown: msg.videoBreakdown || msg.video_breakdown || null,
       })
     )
     .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
@@ -126,11 +170,62 @@ const ChatScreen = ({ navigation }) => {
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [playbackVideoUri, setPlaybackVideoUri] = useState(null);
   const [playbackTrimData, setPlaybackTrimData] = useState(null);
+  const [playbackBreakdown, setPlaybackBreakdown] = useState(null);
 
   // Refs
   const flatListRef = useRef(null);
+  const messagesRef = useRef([]);
   const prevMessageCountRef = useRef(0);
   const isNearBottomRef = useRef(true);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  // Define persistence callbacks before effects that reference them. Production
+  // web bundles preserve const temporal-dead-zone semantics more strictly than
+  // the Jest transform, so dependency arrays cannot reference later callbacks.
+  const appendMessage = useCallback((message, persist = true) => {
+    setMessages((prev) => {
+      const nextMessages = [...prev, message];
+      messagesRef.current = nextMessages;
+      return nextMessages;
+    });
+    if (persist) {
+      ChatHistoryManager.saveMessage(userId, {
+        id: message.id,
+        text: message.text,
+        sender: message.sender,
+        timestamp: message.createdAt?.toISOString?.() || new Date().toISOString(),
+        messageType: message.type,
+        videoUri: message.videoUri,
+        videoThumbnail: message.videoThumbnail,
+        videoDuration: message.videoDuration,
+        videoTrimData: message.videoTrimData || null,
+        lockedAnalysis: message.lockedAnalysis || null,
+        jobId: message.jobId || null,
+        videoBreakdown: message.videoBreakdown || null,
+      }).catch((err) => console.warn('Failed to persist message', err));
+    }
+  }, [userId]);
+
+  const replaceMessage = useCallback((messageId, updater) => {
+    const currentMessages = messagesRef.current;
+    let nextMessage = null;
+    const nextMessages = currentMessages.map((msg) => {
+      if (msg.id !== messageId) return msg;
+      nextMessage = updater(msg);
+      return nextMessage;
+    });
+
+    if (!nextMessage) return;
+
+    messagesRef.current = nextMessages;
+    setMessages(nextMessages);
+    Promise.resolve(ChatHistoryManager.updateMessage(userId, messageId, nextMessage)).catch(
+      (err) => console.warn('Failed to update persisted message', err)
+    );
+  }, [userId]);
 
   // ─── Load Chat History ──────────────────────────────────────────────────
   useEffect(() => {
@@ -143,7 +238,11 @@ const ChatScreen = ({ navigation }) => {
         const history = await ChatHistoryManager.loadConversation(userId);
         if (!mounted) return;
         const normalized = normalizeStoredMessages(history?.messages || []);
-        setMessages((prev) => mergeMessageLists(prev, normalized));
+        setMessages((prev) => {
+          const merged = mergeMessageLists(prev, normalized);
+          messagesRef.current = merged;
+          return merged;
+        });
 
         // Welcome message: if first-time user, auto-send init to get AI greeting
         if (history?.userProfile?.isFirstTime && normalized.length === 0) {
@@ -217,32 +316,94 @@ const ChatScreen = ({ navigation }) => {
     }
   }, []);
 
-  // ─── Message Persistence ───────────────────────────────────────────────
-  const appendMessage = useCallback((message, persist = true) => {
-    setMessages((prev) => [...prev, message]);
-    if (persist) {
-      ChatHistoryManager.saveMessage(userId, {
-        id: message.id,
-        text: message.text,
-        sender: message.sender,
-        timestamp: message.createdAt?.toISOString?.() || new Date().toISOString(),
-        messageType: message.type,
-        videoUri: message.videoUri,
-        videoThumbnail: message.videoThumbnail,
-        videoDuration: message.videoDuration,
-        videoTrimData: message.videoTrimData || null,
-        lockedAnalysis: message.lockedAnalysis || null,
-        jobId: message.jobId || null,
-      }).catch((err) => console.warn('Failed to persist message', err));
-    }
-  }, [userId]);
+  const runBreakdownFlow = useCallback(async (
+    messageId,
+    jobId,
+    currentBreakdown = null,
+    {
+      shouldRequest = true,
+      shouldAlertOnAuth = true,
+    } = {},
+  ) => {
+    if (!messageId || !jobId) return;
 
-  // Replace a message in place (state + persisted copy)
-  const replaceMessage = useCallback((messageId, updater) => {
-    setMessages((prev) =>
-      prev.map((msg) => (msg.id === messageId ? updater(msg) : msg))
-    );
-  }, []);
+    const previousBreakdown = currentBreakdown || null;
+    const seededStatus = currentBreakdown?.status === 'processing' ? 'processing' : 'queued';
+
+    replaceMessage(messageId, (current) => ({
+      ...current,
+      videoBreakdown: seedBreakdownState(
+        current.videoBreakdown || previousBreakdown,
+        seededStatus
+      ),
+    }));
+
+    try {
+      const headers = await getAuthHeaders();
+      const existingReady = currentBreakdown?.status === 'completed' && currentBreakdown?.video_url;
+      if (existingReady) {
+        return;
+      }
+
+      let requestedBreakdown = currentBreakdown || null;
+
+      if (shouldRequest) {
+        const requested = await videoService.requestVideoBreakdown(jobId, headers);
+        requestedBreakdown = requested.video_breakdown || requestedBreakdown;
+
+        replaceMessage(messageId, (current) => ({
+          ...current,
+          videoBreakdown: requestedBreakdown || current.videoBreakdown,
+        }));
+
+        if (requested.status === 'completed' && requested.video_breakdown?.video_url) {
+          return;
+        }
+      }
+
+      const completed = await videoService.waitForBreakdownComplete(
+        jobId,
+        null,
+        BREAKDOWN_TARGET_POLL_SECONDS,
+        1500,
+        headers,
+      );
+
+      replaceMessage(messageId, (current) => ({
+        ...current,
+        videoBreakdown: completed,
+      }));
+    } catch (error) {
+      if (error?.message === 'AUTHENTICATION_REQUIRED') {
+        if (previousBreakdown) {
+          replaceMessage(messageId, (current) => ({
+            ...current,
+            videoBreakdown: previousBreakdown,
+          }));
+        } else {
+          replaceMessage(messageId, (current) => ({
+            ...current,
+            videoBreakdown: seedBreakdownState(current.videoBreakdown, 'failed', {
+              error_message: 'Sign in again to finish your narrated breakdown.',
+            }),
+          }));
+        }
+
+        if (shouldAlertOnAuth) {
+          Alert.alert('Sign in required', 'Please sign in to generate your video breakdown.');
+        }
+        return;
+      }
+
+      console.error('Video breakdown generation failed:', error);
+      replaceMessage(messageId, (current) => ({
+        ...current,
+        videoBreakdown: seedBreakdownState(current.videoBreakdown, 'failed', {
+          error_message: 'The breakdown did not finish this time. Try again.',
+        }),
+      }));
+    }
+  }, [getAuthHeaders, replaceMessage]);
 
   // ─── Paywall Unlock Flow ───────────────────────────────────────────────
   // CTA on a locked teaser: present the RevenueCat paywall; on purchase or
@@ -477,15 +638,39 @@ const ChatScreen = ({ navigation }) => {
 
       const aiResponse = analysisResult?.coaching_response || analysisResult?.analysis?.coaching_response;
       const isLocked = Boolean(analysisResult?.locked);
-      appendMessage(
-        createMessage({
-          sender: 'coach',
-          text: aiResponse || 'Your swing has been processed, but I was unable to retrieve the analysis. Please try again.',
-          type: aiResponse ? (isLocked ? 'locked_analysis' : 'analysis') : 'error',
-          lockedAnalysis: isLocked ? analysisResult.locked_analysis : null,
-          jobId: isLocked ? uploadResult.jobId : null,
-        })
-      );
+      const seededBreakdown = !isLocked && aiResponse
+        ? seedBreakdownState(
+          analysisResult?.video_breakdown,
+          analysisResult?.video_breakdown?.status === 'processing' ? 'processing' : 'queued'
+        )
+        : (analysisResult?.video_breakdown || null);
+      const coachMessage = createMessage({
+        sender: 'coach',
+        text: aiResponse
+          ? (isLocked ? aiResponse : summarizeAnalysisForChat(aiResponse))
+          : 'Your swing has been processed, but I was unable to retrieve the analysis. Please try again.',
+        type: aiResponse ? (isLocked ? 'locked_analysis' : 'analysis') : 'error',
+        lockedAnalysis: isLocked ? analysisResult.locked_analysis : null,
+        jobId: uploadResult.jobId,
+        videoBreakdown: seededBreakdown,
+      });
+
+      appendMessage(coachMessage);
+
+      if (!isLocked && aiResponse) {
+        const breakdownStatus = analysisResult?.video_breakdown?.status || null;
+        const shouldRequestBreakdown = !['queued', 'processing', 'completed'].includes(breakdownStatus);
+
+        void runBreakdownFlow(
+          coachMessage.id,
+          uploadResult.jobId,
+          analysisResult?.video_breakdown || null,
+          {
+            shouldRequest: shouldRequestBreakdown,
+            shouldAlertOnAuth: false,
+          },
+        );
+      }
     } catch (error) {
       console.error('Video processing failed:', error);
       setIsProcessingVideo(false);
@@ -515,6 +700,20 @@ const ChatScreen = ({ navigation }) => {
     getAuthHeaders,
   ]);
 
+  const handleGenerateBreakdown = useCallback(async (message) => {
+    if (!message?.jobId) return;
+    if (
+      message?.videoBreakdown?.status === 'queued' ||
+      message?.videoBreakdown?.status === 'processing'
+    ) {
+      return;
+    }
+    await runBreakdownFlow(message.id, message.jobId, message.videoBreakdown, {
+      shouldRequest: true,
+      shouldAlertOnAuth: true,
+    });
+  }, [runBreakdownFlow]);
+
   // ─── Unified Send Handler ──────────────────────────────────────────────
   const handleSend = useCallback(async () => {
     if (selectedVideo) {
@@ -534,13 +733,26 @@ const ChatScreen = ({ navigation }) => {
     setPlaybackTrimData(trimData || null);
   }, []);
 
+  const handleOpenBreakdown = useCallback((breakdown) => {
+    if (!breakdown?.video_url) return;
+    setPlaybackBreakdown(breakdown);
+  }, []);
+
   const renderMessage = useCallback(({ item }) => (
     <MessageBubble
       message={item}
       onVideoPress={handleVideoPress}
       onUnlock={entitlementActive ? null : handleUnlockRequest}
+      onGenerateBreakdown={handleGenerateBreakdown}
+      onOpenBreakdown={handleOpenBreakdown}
     />
-  ), [handleVideoPress, entitlementActive, handleUnlockRequest]);
+  ), [
+    handleVideoPress,
+    entitlementActive,
+    handleUnlockRequest,
+    handleGenerateBreakdown,
+    handleOpenBreakdown,
+  ]);
 
   const keyExtractor = useCallback((item, index) => item?.id || `message-${index}`, []);
 
@@ -618,6 +830,12 @@ const ChatScreen = ({ navigation }) => {
             setPlaybackVideoUri(null);
             setPlaybackTrimData(null);
           }}
+        />
+
+        <BreakdownVideoModal
+          visible={!!playbackBreakdown}
+          breakdown={playbackBreakdown}
+          onClose={() => setPlaybackBreakdown(null)}
         />
 
       </KeyboardAvoidingView>

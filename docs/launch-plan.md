@@ -1,5 +1,8 @@
 # Feature Implementation Plan
 
+> Historical implementation plan. Use [`GO-LIVE.md`](./GO-LIVE.md) for the
+> current owner/agent launch checklist and verified App Store Connect status.
+
 **Overall Progress:** `70%`
 
 > **2026-08-01 update:** Backend fully deployed from main (see

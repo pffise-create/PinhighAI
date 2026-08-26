@@ -39,6 +39,7 @@ jest.mock('../../src/services/chatHistoryManager', () => ({
   default: {
     loadConversation: jest.fn(),
     saveMessage: jest.fn(),
+    updateMessage: jest.fn(),
   },
 }));
 
@@ -55,11 +56,14 @@ jest.mock('../../src/services/videoService', () => ({
     uploadAndAnalyze: jest.fn(),
     waitForAnalysisComplete: jest.fn(),
     getAnalysisResults: jest.fn(),
+    requestVideoBreakdown: jest.fn(),
+    waitForBreakdownComplete: jest.fn(),
   },
 }));
 
 // VideoModal depends on expo-video native hooks — stub it out at the screen level
 jest.mock('../../src/components/chat/VideoModal', () => () => null);
+jest.mock('../../src/components/chat/BreakdownVideoModal', () => () => null);
 
 // TypingIndicator runs Animated loops + phrase rotation timers. Stub with a
 // deterministic marker so the screen tests assert what ChatScreen passes it.
@@ -146,6 +150,25 @@ describe('ChatScreen', () => {
     ChatHistoryManager.loadConversation.mockResolvedValue(emptyHistory());
     ChatHistoryManager.saveMessage.mockResolvedValue(undefined);
     chatApiService.sendMessage.mockResolvedValue({ response: 'Solid question — let us dig in.' });
+    videoService.requestVideoBreakdown.mockResolvedValue({
+      status: 'processing',
+      video_breakdown: {
+        status: 'processing',
+        title: 'Swing Breakdown',
+        summary: 'Muted by default. Captions stay on.',
+        muted_default: true,
+      },
+    });
+    videoService.waitForBreakdownComplete.mockResolvedValue({
+      status: 'completed',
+      title: 'Swing Breakdown',
+      summary: 'Muted by default. Captions stay on.',
+      video_url: 'https://example.com/breakdown.mp4',
+      poster_url: 'https://example.com/poster.jpg',
+      duration_seconds: 22.1,
+      muted_default: true,
+      scenes: [],
+    });
 
     alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
     scrollToOffsetSpy = jest
@@ -595,6 +618,138 @@ describe('ChatScreen', () => {
       const analysis = data.find((m) => m.text.includes('Great hip turn!'));
       expect(analysis.sender).toBe('coach');
       expect(analysis.type).toBe('analysis');
+    });
+
+    it('automatically starts the breakdown flow and trims long analysis copy into a short summary', async () => {
+      videoService.uploadAndAnalyze.mockResolvedValue({ jobId: 'job-123' });
+      videoService.waitForAnalysisComplete.mockResolvedValue({
+        status: 'completed',
+        coaching_response: [
+          'Your chest rotation is the big win today.',
+          'It keeps the handle moving so the club does not stall into impact.',
+          'The follow-through still needs more width, but the main priority is clearly rotation.',
+        ].join(' '),
+      });
+
+      renderChatScreen();
+      await waitFor(() => expect(ChatHistoryManager.loadConversation).toHaveBeenCalled());
+      await selectVideo();
+
+      fireEvent.press(screen.getByLabelText('Send video'));
+
+      expect(
+        await screen.findByText(
+          'Your chest rotation is the big win today. It keeps the handle moving so the club does not stall into impact…'
+        )
+      ).toBeOnTheScreen();
+      await waitFor(() =>
+        expect(videoService.requestVideoBreakdown).toHaveBeenCalledWith(
+          'job-123',
+          { Authorization: 'Bearer token' }
+        )
+      );
+      await waitFor(() =>
+        expect(videoService.waitForBreakdownComplete).toHaveBeenCalledWith(
+          'job-123',
+          null,
+          24,
+          1500,
+          { Authorization: 'Bearer token' }
+        )
+      );
+      expect(await screen.findByText('Queued now. This should land in under 30 seconds.')).toBeOnTheScreen();
+    });
+  });
+
+  describe('video breakdown', () => {
+    const storedAnalysisMessage = () =>
+      storedMessage({
+        id: 'analysis-msg-1',
+        text: 'Keep your chest moving through impact.',
+        messageType: 'analysis',
+        jobId: 'job-123',
+      });
+
+    it('requests, polls, and persists a completed narrated breakdown', async () => {
+      ChatHistoryManager.loadConversation.mockResolvedValue({
+        messages: [storedAnalysisMessage()],
+        userProfile: { isFirstTime: false },
+      });
+      videoService.requestVideoBreakdown.mockResolvedValue({
+        status: 'processing',
+        video_breakdown: {
+          status: 'processing',
+          title: 'Swing Breakdown',
+          summary: 'Muted by default. Captions stay on.',
+          muted_default: true,
+        },
+      });
+      videoService.waitForBreakdownComplete.mockResolvedValue({
+        status: 'completed',
+        title: 'Swing Breakdown',
+        summary: 'Muted by default. Captions stay on.',
+        video_url: 'https://example.com/breakdown.mp4',
+        poster_url: 'https://example.com/poster.jpg',
+        duration_seconds: 22.1,
+        muted_default: true,
+        scenes: [],
+      });
+
+      renderChatScreen();
+
+      fireEvent.press(await screen.findByLabelText('Generate Breakdown'));
+
+      await waitFor(() =>
+        expect(videoService.requestVideoBreakdown).toHaveBeenCalledWith(
+          'job-123',
+          { Authorization: 'Bearer token' }
+        )
+      );
+      await waitFor(() =>
+        expect(videoService.waitForBreakdownComplete).toHaveBeenCalledWith(
+          'job-123',
+          null,
+          24,
+          1500,
+          { Authorization: 'Bearer token' }
+        )
+      );
+      expect(await screen.findByText('Muted by default')).toBeOnTheScreen();
+      await waitFor(() =>
+        expect(ChatHistoryManager.updateMessage).toHaveBeenLastCalledWith(
+          'user-1',
+          'analysis-msg-1',
+          expect.objectContaining({
+            videoBreakdown: expect.objectContaining({
+              status: 'completed',
+              video_url: 'https://example.com/breakdown.mp4',
+            }),
+          })
+        )
+      );
+    });
+
+    it('restores the idle breakdown card when auth fails during generation', async () => {
+      ChatHistoryManager.loadConversation.mockResolvedValue({
+        messages: [storedAnalysisMessage()],
+        userProfile: { isFirstTime: false },
+      });
+      videoService.requestVideoBreakdown.mockRejectedValue(new Error('AUTHENTICATION_REQUIRED'));
+
+      renderChatScreen();
+
+      fireEvent.press(await screen.findByLabelText('Generate Breakdown'));
+
+      await waitFor(() =>
+        expect(alertSpy).toHaveBeenCalledWith(
+          'Sign in required',
+          'Please sign in to generate your video breakdown.'
+        )
+      );
+      await waitFor(() =>
+        expect(screen.getByLabelText('Try Again')).toBeOnTheScreen()
+      );
+      expect(videoService.waitForBreakdownComplete).not.toHaveBeenCalled();
     });
   });
 

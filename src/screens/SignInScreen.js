@@ -270,9 +270,14 @@ const SignInScreen = () => {
         >
           <View style={styles.branding}>
             <View style={styles.logoBadge}>
-              <Text style={styles.logoEmoji}>✨</Text>
+              <Image
+                source={require('../../assets/logo/alki-wordmark.png')}
+                style={styles.logoWordmark}
+                resizeMode="contain"
+                accessibilityLabel="Alki"
+              />
             </View>
-            <Text style={styles.appTitle}>Alki DivotLab</Text>
+            <Text style={styles.appTitle}>DivotLab</Text>
           </View>
 
           <View style={styles.headlineContainer}>
@@ -392,18 +397,19 @@ const styles = StyleSheet.create({
     marginBottom: 24,
   },
   logoBadge: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: 'rgba(201, 166, 84, 0.3)',
+    width: 118,
+    height: 54,
+    borderRadius: 14,
+    backgroundColor: 'rgba(244, 243, 235, 0.9)',
     borderWidth: 1,
-    borderColor: 'rgba(201, 166, 84, 0.4)',
+    borderColor: 'rgba(244, 243, 235, 0.65)',
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 12,
   },
-  logoEmoji: {
-    fontSize: 24,
+  logoWordmark: {
+    width: 94,
+    height: 43,
   },
   appTitle: {
     color: colors.textInverse,
@@ -508,6 +514,5 @@ const styles = StyleSheet.create({
 });
 
 export default SignInScreen;
-
 
 

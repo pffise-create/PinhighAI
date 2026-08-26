@@ -123,6 +123,54 @@ describe('MessageBubble', () => {
       expect(screen.queryByLabelText('Locked analysis')).toBeNull();
       expect(screen.queryByText('Unlock your full breakdown')).toBeNull();
     });
+
+    it('renders a breakdown generation card for completed analysis messages', () => {
+      const onGenerateBreakdown = jest.fn();
+      render(
+        <MessageBubble
+          message={coachMessage({
+            type: 'analysis',
+            jobId: 'analysis-1',
+          })}
+          onGenerateBreakdown={onGenerateBreakdown}
+        />
+      );
+
+      expect(screen.getByText('Video Breakdown')).toBeOnTheScreen();
+      fireEvent.press(screen.getByLabelText('Generate Breakdown'));
+      expect(onGenerateBreakdown).toHaveBeenCalledWith(
+        expect.objectContaining({ jobId: 'analysis-1' })
+      );
+    });
+
+    it('renders a playable breakdown card when a completed breakdown exists', () => {
+      const onOpenBreakdown = jest.fn();
+      render(
+        <MessageBubble
+          message={coachMessage({
+            type: 'analysis',
+            jobId: 'analysis-1',
+            videoBreakdown: {
+              status: 'completed',
+              title: 'Swing Breakdown',
+              summary: 'One move to watch through impact.',
+              video_url: 'https://example.com/breakdown.mp4',
+              poster_url: 'https://example.com/poster.jpg',
+              duration_seconds: 21.4,
+              muted_default: true,
+              scenes: [],
+            },
+          })}
+          onOpenBreakdown={onOpenBreakdown}
+        />
+      );
+
+      expect(screen.getByText('Muted by default')).toBeOnTheScreen();
+      fireEvent.press(screen.getByLabelText('Play narrated swing breakdown'));
+      expect(onOpenBreakdown).toHaveBeenCalledWith(
+        expect.objectContaining({ video_url: 'https://example.com/breakdown.mp4' })
+      );
+    });
   });
 
   describe('user messages', () => {

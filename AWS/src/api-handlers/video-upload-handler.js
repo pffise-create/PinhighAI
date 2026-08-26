@@ -4,10 +4,21 @@ const { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand } = requir
 const { LambdaClient, InvokeCommand } = require('@aws-sdk/client-lambda');
 const crypto = require('crypto');
 const https = require('https');
+const { evaluateAccessForLockedResult } = require('../access/entitlementGate');
+const {
+  BREAKDOWN_MUTED_DEFAULT,
+  BREAKDOWN_VERSION,
+  buildBreakdownPreview,
+  normalizeBreakdownRecord,
+} = require('../video-breakdown/shared');
 
 // Initialize clients
 let dynamodb = null;
 let lambdaClient = null;
+const BREAKDOWN_RETRY_MIN_INTERVAL_MS = Math.max(
+  15_000,
+  parseInt(process.env.VIDEO_BREAKDOWN_RETRY_MIN_INTERVAL_MS || '45000', 10)
+);
 
 function getDynamoClient() {
   if (!dynamodb) {
@@ -410,6 +421,26 @@ async function triggerAIAnalysisProcessor(analysisId, userId) {
   }
 }
 
+async function triggerVideoBreakdownProcessor(analysisId, userId) {
+  const functionName = process.env.VIDEO_BREAKDOWN_PROCESSOR_FUNCTION_NAME;
+  if (!functionName) {
+    throw new Error('VIDEO_BREAKDOWN_PROCESSOR_FUNCTION_NAME is not configured');
+  }
+
+  const lambda = getLambdaClient();
+  const invokeCommand = new InvokeCommand({
+    FunctionName: functionName,
+    InvocationType: 'Event',
+    Payload: JSON.stringify({
+      analysis_id: analysisId,
+      user_id: userId,
+      source: 'video-breakdown-handler',
+    }),
+  });
+
+  await lambda.send(invokeCommand);
+}
+
 // Update analysis status in DynamoDB
 async function updateAnalysisStatus(analysisId, status, progressMessage = null) {
   try {
@@ -446,6 +477,176 @@ async function updateAnalysisStatus(analysisId, status, progressMessage = null) 
   }
 }
 
+function buildQueuedBreakdown(existing = {}) {
+  return {
+    version: BREAKDOWN_VERSION,
+    status: 'queued',
+    title: existing.title || 'Swing Breakdown',
+    summary: existing.summary || 'Muted by default. Captions stay on.',
+    muted_default: BREAKDOWN_MUTED_DEFAULT,
+    voice: existing.voice || null,
+    requested_at: existing.requested_at || new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    scenes: Array.isArray(existing.scenes) ? existing.scenes : [],
+  };
+}
+
+function shouldRetryQueuedBreakdown(breakdown) {
+  if (!breakdown || (breakdown.status !== 'queued' && breakdown.status !== 'processing')) {
+    return false;
+  }
+
+  if (!breakdown.updated_at) {
+    return true;
+  }
+
+  const updatedAtMs = new Date(breakdown.updated_at).getTime();
+  if (!Number.isFinite(updatedAtMs)) {
+    return true;
+  }
+
+  return (Date.now() - updatedAtMs) >= BREAKDOWN_RETRY_MIN_INTERVAL_MS;
+}
+
+async function startVideoBreakdownWorkflow(analysisId, userContext) {
+  if (!analysisId) {
+    return {
+      statusCode: 400,
+      body: JSON.stringify({ error: 'Missing required field: jobId' }),
+    };
+  }
+
+  const dynamodb = getDynamoClient();
+  const existingRecord = await dynamodb.send(new GetCommand({
+    TableName: process.env.DYNAMODB_TABLE,
+    Key: { analysis_id: analysisId },
+  }));
+
+  const item = existingRecord.Item;
+  if (!item) {
+    return {
+      statusCode: 404,
+      body: JSON.stringify({ error: 'Analysis not found', jobId: analysisId }),
+    };
+  }
+
+  if (item.user_id !== userContext.userId) {
+    return {
+      statusCode: 403,
+      body: JSON.stringify({ error: 'Forbidden', code: 'ANALYSIS_ACCESS_DENIED' }),
+    };
+  }
+
+  if (!item.ai_analysis_completed) {
+    return {
+      statusCode: 409,
+      body: JSON.stringify({
+        error: 'Analysis is not complete yet',
+        jobId: analysisId,
+        status: item.status || 'processing',
+      }),
+    };
+  }
+
+  let accessDecision;
+  try {
+    accessDecision = await evaluateAccessForLockedResult({
+      userId: item.user_id,
+      client: dynamodb,
+      previewType: 'video_breakdown',
+      resultRef: analysisId,
+    });
+  } catch (error) {
+    console.error(`BREAKDOWN_GATING_CHECK_ERROR for ${analysisId}:`, error);
+    return {
+      statusCode: 503,
+      body: JSON.stringify({
+        error: 'Unable to verify subscription access',
+        code: 'ACCESS_CHECK_FAILED',
+      }),
+    };
+  }
+
+  if (!accessDecision?.allowFullResult) {
+    return {
+      statusCode: 403,
+      body: JSON.stringify({
+        error: 'Subscription required',
+        code: 'SUBSCRIPTION_REQUIRED',
+      }),
+    };
+  }
+
+  const currentBreakdown = normalizeBreakdownRecord(item.video_breakdown);
+  if (currentBreakdown?.status === 'completed') {
+    return {
+      statusCode: 200,
+      body: JSON.stringify({
+        jobId: analysisId,
+        status: 'completed',
+        video_breakdown: buildBreakdownPreview(currentBreakdown),
+      }),
+    };
+  }
+
+  if (currentBreakdown?.status === 'queued' || currentBreakdown?.status === 'processing') {
+    if (shouldRetryQueuedBreakdown(currentBreakdown)) {
+      const retriedBreakdown = buildQueuedBreakdown(currentBreakdown);
+      await dynamodb.send(new UpdateCommand({
+        TableName: process.env.DYNAMODB_TABLE,
+        Key: { analysis_id: analysisId },
+        UpdateExpression: 'SET video_breakdown = :breakdown, updated_at = :timestamp',
+        ExpressionAttributeValues: {
+          ':breakdown': retriedBreakdown,
+          ':timestamp': new Date().toISOString(),
+        },
+      }));
+
+      await triggerVideoBreakdownProcessor(analysisId, userContext.userId);
+
+      return {
+        statusCode: 202,
+        body: JSON.stringify({
+          jobId: analysisId,
+          status: 'queued',
+          video_breakdown: buildBreakdownPreview(retriedBreakdown),
+        }),
+      };
+    }
+
+    return {
+      statusCode: 200,
+      body: JSON.stringify({
+        jobId: analysisId,
+        status: currentBreakdown.status,
+        video_breakdown: buildBreakdownPreview(currentBreakdown),
+      }),
+    };
+  }
+
+  const queuedBreakdown = buildQueuedBreakdown(currentBreakdown || {});
+  await dynamodb.send(new UpdateCommand({
+    TableName: process.env.DYNAMODB_TABLE,
+    Key: { analysis_id: analysisId },
+    UpdateExpression: 'SET video_breakdown = :breakdown, updated_at = :timestamp',
+    ExpressionAttributeValues: {
+      ':breakdown': queuedBreakdown,
+      ':timestamp': new Date().toISOString(),
+    },
+  }));
+
+  await triggerVideoBreakdownProcessor(analysisId, userContext.userId);
+
+  return {
+    statusCode: 202,
+    body: JSON.stringify({
+      jobId: analysisId,
+      status: 'queued',
+      video_breakdown: buildBreakdownPreview(queuedBreakdown),
+    }),
+  };
+}
+
 // Main Lambda handler
 exports.handler = async (event) => {
   console.log('VIDEO UPLOAD HANDLER - Event summary:', {
@@ -457,7 +658,8 @@ exports.handler = async (event) => {
   console.log('VIDEO UPLOAD HANDLER - Environment Check:', {
     dynamoTable: process.env.DYNAMODB_TABLE,
     frameExtractorFunction: process.env.FRAME_EXTRACTOR_FUNCTION_NAME,
-    aiAnalysisProcessorFunction: process.env.AI_ANALYSIS_PROCESSOR_FUNCTION_NAME
+    aiAnalysisProcessorFunction: process.env.AI_ANALYSIS_PROCESSOR_FUNCTION_NAME,
+    videoBreakdownProcessorFunction: process.env.VIDEO_BREAKDOWN_PROCESSOR_FUNCTION_NAME,
   });
   
   try {
@@ -481,7 +683,7 @@ exports.handler = async (event) => {
       };
     }
     
-    // Validate this is a POST request for video analysis
+    // Validate this is a POST request for video analysis or breakdown generation
     if (event.httpMethod !== 'POST' || !event.body) {
       return {
         statusCode: 400,
@@ -492,8 +694,23 @@ exports.handler = async (event) => {
         body: JSON.stringify({ error: 'Invalid request - POST with body required' })
       };
     }
-    
+
     const body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
+    const requestPath = String(event.path || event.resource || '');
+
+    if (requestPath.includes('/breakdown')) {
+      const { jobId, analysisId } = body || {};
+      const response = await startVideoBreakdownWorkflow(jobId || analysisId, userContext);
+      return {
+        statusCode: response.statusCode,
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+        },
+        body: response.body,
+      };
+    }
+
     const { s3Key, bucketName, trimStartMs, trimEndMs, userQuestion, question } = body;
 
     if (!s3Key || !bucketName) {
@@ -554,4 +771,11 @@ exports.handler = async (event) => {
       body: JSON.stringify({ error: error.message }) 
     };
   }
+};
+
+exports.__private = {
+  buildQueuedBreakdown,
+  extractAnalysisIdFromS3Key,
+  startVideoBreakdownWorkflow,
+  shouldRetryQueuedBreakdown,
 };

@@ -1,9 +1,10 @@
 // Authentication Context for Golf Coach App
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { fetchAuthSession, getCurrentUser, signOut } from 'aws-amplify/auth';
+import { deleteUser, fetchAuthSession, getCurrentUser, signOut } from 'aws-amplify/auth';
 import { Hub } from 'aws-amplify/utils';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Linking from 'expo-linking';
+import { deleteAccountData } from '../services/accountService';
 
 const AuthContext = createContext({});
 const AUTH_REQUIRED_ERROR = 'AUTHENTICATION_REQUIRED';
@@ -234,11 +235,29 @@ export const AuthProvider = ({ children }) => {
     }
   }, [isAuthenticated, resolveValidSession, setUnauthenticated]);
 
+  const deleteAccount = useCallback(async () => {
+    if (!isAuthenticated) {
+      throw new Error(AUTH_REQUIRED_ERROR);
+    }
+
+    setIsLoading(true);
+    try {
+      // Delete app-owned data first so a failed cleanup never strands data
+      // behind credentials the user can no longer access.
+      await deleteAccountData({ getAuthHeaders });
+      await deleteUser();
+      await setUnauthenticated();
+    } finally {
+      setIsLoading(false);
+    }
+  }, [getAuthHeaders, isAuthenticated, setUnauthenticated]);
+
   const value = {
     user,
     isLoading,
     isAuthenticated,
     signOut: signOutUser,
+    deleteAccount,
     refreshUserData,
     getAuthHeaders,
     getUserId,

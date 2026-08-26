@@ -3,6 +3,7 @@ const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient, GetCommand, UpdateCommand } = require('@aws-sdk/lib-dynamodb');
 const { LambdaClient, InvokeCommand } = require('@aws-sdk/client-lambda');
 const { buildLockedContent, evaluateAccessForLockedResult } = require('../access/entitlementGate');
+const { buildBreakdownPreview, normalizeBreakdownRecord } = require('../video-breakdown/shared');
 
 // Initialize clients
 let dynamodb = null;
@@ -25,6 +26,14 @@ function getLambdaClient() {
     lambdaClient = new LambdaClient({});
   }
   return lambdaClient;
+}
+
+function getRequesterUserId(event) {
+  return (
+    event?.requestContext?.authorizer?.jwt?.claims?.sub ||
+    event?.requestContext?.authorizer?.claims?.sub ||
+    null
+  );
 }
 
 function shouldRetryAiAnalysis(item) {
@@ -91,7 +100,7 @@ async function attemptAiRecovery(jobId, item) {
 }
 
 // Main function to handle GET results requests
-async function handleGetResults(jobId) {
+async function handleGetResults(jobId, { requesterUserId = null } = {}) {
   try {
     console.log(`Fetching results for jobId: ${jobId}`);
     
@@ -117,6 +126,21 @@ async function handleGetResults(jobId) {
           error: 'Analysis not found',
           jobId: jobId
         })
+      };
+    }
+
+    if (requesterUserId && result.Item.user_id && requesterUserId !== result.Item.user_id) {
+      console.warn(`Results access denied for ${jobId}: requester ${requesterUserId} does not own ${result.Item.user_id}`);
+      return {
+        statusCode: 403,
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+        },
+        body: JSON.stringify({
+          error: 'Forbidden',
+          jobId,
+        }),
       };
     }
 
@@ -174,6 +198,11 @@ async function handleGetResults(jobId) {
     if (result.Item.analysis_results) {
       response.analysis_results = result.Item.analysis_results;
     }
+
+    const breakdown = normalizeBreakdownRecord(result.Item.video_breakdown);
+    if (breakdown) {
+      response.video_breakdown = buildBreakdownPreview(breakdown);
+    }
     
     // Subscription gating: non-entitled users get a teaser instead of the
     // full analysis. Evaluated against the record owner's user_id.
@@ -211,6 +240,7 @@ async function handleGetResults(jobId) {
         response.lock_reason = 'subscription_required';
         response.partial_result_available = !!accessDecision.allowLockedResult;
         response.locked_analysis = lockedAnalysis;
+        delete response.video_breakdown;
       }
     }
 
@@ -295,7 +325,9 @@ exports.handler = async (event) => {
     }
     
     // Handle the results request
-    return await handleGetResults(jobId);
+    return await handleGetResults(jobId, {
+      requesterUserId: getRequesterUserId(event),
+    });
     
   } catch (error) {
     console.error('Error in results API handler:', error);
@@ -310,4 +342,9 @@ exports.handler = async (event) => {
       }) 
     };
   }
+};
+
+exports.__private = {
+  getRequesterUserId,
+  handleGetResults,
 };

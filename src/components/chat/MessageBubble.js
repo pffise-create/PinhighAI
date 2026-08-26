@@ -9,6 +9,7 @@ import Markdown from 'react-native-markdown-display';
 import { colors, typography, spacing, borderRadius } from '../../utils/theme';
 import VideoPlayer from './VideoPlayer';
 import LockedAnalysisCard from './LockedAnalysisCard';
+import VideoBreakdownCard from './VideoBreakdownCard';
 
 // Markdown rendering styles for coach messages
 const markdownStyles = {
@@ -53,11 +54,23 @@ const formatMessageTime = (createdAt) => {
   return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 };
 
-const MessageBubble = ({ message, onVideoPress, onUnlock }) => {
+const MessageBubble = ({
+  message,
+  onVideoPress,
+  onUnlock,
+  onGenerateBreakdown,
+  onOpenBreakdown,
+}) => {
   const isUser = message.sender === 'user';
   const hasVideo = message.type === 'video' && message.videoUri;
   const timeLabel = formatMessageTime(message.createdAt);
   const showLockedCard = Boolean(!isUser && message.lockedAnalysis && onUnlock);
+  const showBreakdownCard = Boolean(
+    !isUser &&
+    message.jobId &&
+    !showLockedCard &&
+    (message.videoBreakdown || onGenerateBreakdown || onOpenBreakdown)
+  );
 
   if (isUser) {
     return (
@@ -97,6 +110,13 @@ const MessageBubble = ({ message, onVideoPress, onUnlock }) => {
           <LockedAnalysisCard
             lockedAnalysis={message.lockedAnalysis}
             onUnlock={() => onUnlock(message)}
+          />
+        ) : null}
+        {showBreakdownCard ? (
+          <VideoBreakdownCard
+            breakdown={message.videoBreakdown}
+            onGenerate={() => onGenerateBreakdown?.(message)}
+            onPress={() => onOpenBreakdown?.(message.videoBreakdown)}
           />
         ) : null}
         {timeLabel ? <Text style={styles.coachMeta}>{timeLabel}</Text> : null}

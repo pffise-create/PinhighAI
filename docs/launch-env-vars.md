@@ -51,8 +51,8 @@ Missing `EXPO_PUBLIC_REVENUECAT_API_KEY` causes `SubscriptionContext` to warn + 
 | `EXPO_PUBLIC_REVENUECAT_API_KEY` | yes (for billing) | | Public iOS key (`test_*` for sandbox, real key for prod). |
 | `EXPO_PUBLIC_REVENUECAT_ENTITLEMENT_ID` | no | `"DivotLab Unlimited"` | Must match the entitlement configured in the RevenueCat dashboard. |
 | `EXPO_PUBLIC_REVENUECAT_OFFERING_ID` | no | unset | When set, `SubscriptionContext` picks that specific offering instead of the RevenueCat `current` offering. |
-| `EXPO_PUBLIC_REVENUECAT_MONTHLY_PRODUCT_ID` | no (defaults to `"monthly"`) | `"monthly"` | Must match App Store Connect product ID. |
-| `EXPO_PUBLIC_REVENUECAT_YEARLY_PRODUCT_ID` | no (defaults to `"yearly"`) | `"yearly"` | Same. |
+| `EXPO_PUBLIC_REVENUECAT_MONTHLY_PRODUCT_ID` | no | `"com.alkigolf.divotlab.monthly"` | Matches the verified App Store Connect product ID. |
+| `EXPO_PUBLIC_REVENUECAT_YEARLY_PRODUCT_ID` | no | `"com.alkigolf.divotlab.yearly"` | Matches the verified App Store Connect product ID. |
 
 ### Legal / support (`src/screens/SettingsModal.js`)
 Privacy and Terms are optional during beta. When unset, the corresponding Settings row shows the neutral "coming before public launch" alert. Support opens an in-app message composer and defaults to `support@divotlab.ai`; set `EXPO_PUBLIC_SUPPORT_EMAIL` only if the destination should change.
@@ -77,6 +77,22 @@ endpoints). The RevenueCat **secret** key must never appear in the app bundle.
 | `SUBSCRIPTION_ENTITLEMENT_KEY` | no | `"DivotLab Unlimited"` | Must match the RevenueCat entitlement ID and the app's `EXPO_PUBLIC_REVENUECAT_ENTITLEMENT_ID`. |
 | `USER_ACCESS_TABLE` | no | defaults to `DYNAMODB_TABLE` | Table holding `access#<userId>` entitlement records. |
 
+## Backend (Lambda) environment variables — account deletion
+
+`AWS/src/api-handlers/account-deletion-handler.js` is deployed behind the
+authenticated API Gateway `DELETE /api/account` route. API Gateway uses both
+DivotLab Cognito user pools, and the handler reads the user ID only from verified
+authorizer claims.
+
+| Var | Required? | Production value |
+|---|---|---|
+| `DYNAMODB_TABLE` | yes | `golf-coach-analyses` |
+| `USER_RECORD_TABLES` | yes | `golf-user-threads,golf-coach-swing-profiles,golf-coach-swing-profiles-dev,golf-coach-swing-profiles-staging,golf-coach-users` |
+| `VIDEO_BUCKET` | yes | `golf-coach-videos-1753203601` |
+
+The Lambda role needs DynamoDB `Scan`, `BatchWriteItem`, and `DeleteItem` for
+those tables plus S3 `ListBucket` and `DeleteObject` for the video bucket.
+
 ## Backend (Lambda) environment variables — swing markings
 
 Lambda env vars for the swing marking tool (`docs/marking-tool.md`). **Both
@@ -100,16 +116,23 @@ Before the first `eas build --profile preview` for staging QA, set these on the 
 - [ ] `EXPO_PUBLIC_AUTH_REDIRECT_SIGN_OUT`
 - [ ] `EXPO_PUBLIC_AUTH_PROVIDERS`
 - [ ] `EXPO_PUBLIC_API_BASE_URL`
-- [ ] `EXPO_PUBLIC_REVENUECAT_API_KEY`
+- [x] `EXPO_PUBLIC_REVENUECAT_API_KEY` (RevenueCat production public key; set for preview and production 2026-08-08)
 
 Before the first `eas build --profile production`, repeat on the **production** environment with prod values, and additionally:
 
-- [ ] `EXPO_PUBLIC_REVENUECAT_ENTITLEMENT_ID` (if not using the default)
-- [ ] `EXPO_PUBLIC_REVENUECAT_MONTHLY_PRODUCT_ID`
-- [ ] `EXPO_PUBLIC_REVENUECAT_YEARLY_PRODUCT_ID`
+- [x] `EXPO_PUBLIC_COGNITO_USER_POOL_ID`
+- [x] `EXPO_PUBLIC_COGNITO_USER_POOL_CLIENT_ID`
+- [x] `EXPO_PUBLIC_COGNITO_DOMAIN`
+- [x] `EXPO_PUBLIC_AUTH_REDIRECT_SIGN_IN`
+- [x] `EXPO_PUBLIC_AUTH_REDIRECT_SIGN_OUT`
+- [x] `EXPO_PUBLIC_AUTH_PROVIDERS`
+- [x] `EXPO_PUBLIC_API_BASE_URL`
+- [x] `EXPO_PUBLIC_REVENUECAT_ENTITLEMENT_ID`
+- [x] `EXPO_PUBLIC_REVENUECAT_MONTHLY_PRODUCT_ID`
+- [x] `EXPO_PUBLIC_REVENUECAT_YEARLY_PRODUCT_ID`
 - [ ] `EXPO_PUBLIC_PRIVACY_POLICY_URL`
 - [ ] `EXPO_PUBLIC_TERMS_URL`
-- [ ] `EXPO_PUBLIC_SUPPORT_EMAIL` only if overriding `support@divotlab.ai`
+- [x] `EXPO_PUBLIC_SUPPORT_EMAIL` (`support@divotlab.ai`)
 
 ## Quick smoke test
 

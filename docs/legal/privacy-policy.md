@@ -1,12 +1,12 @@
-# Alki DivotLab Privacy Policy
+# DivotLab Privacy Policy
 
-Effective date: TBD
+Effective date: August 15, 2026
 
-This Privacy Policy explains how Alki DivotLab ("Alki," "we," "us," or "our") collects, uses, discloses, and protects information when you use the Alki DivotLab mobile application and related services (the "Service").
+This Privacy Policy explains how Alki Golf LLC, doing business as DivotLab ("DivotLab," "we," "us," or "our"), collects, uses, discloses, and protects information when you use the DivotLab mobile application and related services (the "Service").
 
 ## 1. Who We Are
 
-Alki DivotLab is a product of Alki Golf Co. Alki DivotLab provides AI-powered golf swing coaching. Users can sign in, upload golf swing videos, receive AI-generated swing analysis, and ask follow-up coaching questions.
+DivotLab is a product of Alki Golf LLC. DivotLab provides AI-powered golf swing coaching. Users can sign in, upload golf swing videos, receive AI-generated swing analysis, and ask follow-up coaching questions.
 
 Contact: support@divotlab.ai
 
@@ -73,9 +73,9 @@ We use information to:
 
 ## 4. AI Processing
 
-Alki DivotLab uses AI service providers, including OpenAI, to generate swing analysis and conversational coaching. To provide these features, we may send uploaded video frames, extracted observations, user questions, and related swing context to AI systems for processing.
+DivotLab uses AI service providers, including OpenAI, to generate swing analysis and conversational coaching. To provide these features, we may send uploaded video frames, extracted observations, user questions, and related swing context to AI systems for processing.
 
-AI-generated feedback may be incomplete, inaccurate, or not suitable for every person. Do not rely on Alki DivotLab as a substitute for professional coaching, medical advice, physical therapy, or injury prevention advice.
+AI-generated feedback may be incomplete, inaccurate, or not suitable for every person. Do not rely on DivotLab as a substitute for professional coaching, medical advice, physical therapy, or injury prevention advice.
 
 ## 5. How We Share Information
 
@@ -107,15 +107,13 @@ Uploaded videos, extracted frames, analysis results, and chat history may be ret
 
 Depending on where you live, you may have rights to access, correct, delete, export, or restrict certain personal information. You may also have the right to object to certain processing.
 
-To request access, correction, deletion, or export of your data, contact support@divotlab.ai.
-
-If the app supports account creation, App Store policy may require an in-app way to initiate account deletion. Until a fully automated deletion flow is available, you may initiate deletion by contacting support. We will explain the expected timeline and confirm completion when deletion is complete.
+You can delete your account and associated swing data from Settings in the app. To request access, correction, export, or additional privacy assistance, contact support@divotlab.ai.
 
 ## 9. Subscriptions and Apple Account Management
 
 You can manage or cancel App Store subscriptions through your Apple account settings. Restoring purchases in the app may require contacting Apple, RevenueCat, or our support team depending on the issue.
 
-Deleting your Alki DivotLab account does not automatically cancel an App Store subscription. You must cancel subscriptions through Apple.
+Deleting your DivotLab account does not automatically cancel an App Store subscription. You must cancel subscriptions through Apple.
 
 ## 10. Children
 
@@ -136,3 +134,8 @@ We may update this Privacy Policy from time to time. If we make material changes
 Questions, privacy requests, and support requests can be sent to:
 
 support@divotlab.ai
+
+Alki Golf LLC<br>
+522 W Riverside Ave, Ste N<br>
+Spokane, WA 99201<br>
+United States
