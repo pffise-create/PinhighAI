@@ -1,6 +1,6 @@
 # Alki DivotLab App Store Launch Runbook
 
-Verified 2026-08-15. This is the dependency-ordered plan from the current state to a publicly downloadable App Store release.
+Verified 2026-08-26. This is the dependency-ordered plan from the current state to a publicly downloadable App Store release.
 
 ## Current verified state
 
@@ -14,13 +14,16 @@ Verified 2026-08-15. This is the dependency-ordered plan from the current state 
 - [x] Automated baseline passes: 112 app tests, 145 backend tests, one Playwright smoke test, and an iOS bundle export.
 - [ ] No build has been uploaded to App Store Connect.
 - [ ] The TestFlight internal group has zero testers.
-- [ ] Production EAS has RevenueCat, auth, API, and support values; privacy and terms URLs remain missing.
-- [ ] Preview EAS contains account-wide duplicate RevenueCat values, but the correct project-scoped values override them for this project.
-- [ ] App Store support URL, privacy URL, age rating, content rights, review notes, and privacy answers are incomplete. App Review contact information is complete.
+- [x] Production and preview EAS have the verified auth, API, RevenueCat, support, privacy, and terms values with no duplicate RevenueCat overrides.
+- [x] App Store support URL, privacy URL, marketing URL, copyright, manual release mode, App Review contact, and review notes are complete.
+- [ ] App Store age rating, content rights, app privacy, medical-device declaration, DSA declaration, reviewer credentials, and United States-only availability remain incomplete.
 - [x] Launch work is committed on draft PR `#13`; both GitHub CI jobs pass. The PR is not yet merged to `main`.
-- [x] `divotlab.ai` DNS is managed in Namecheap; the marketing site is configured for GitHub Pages hosting.
+- [x] `divotlab.ai`, `/privacy/`, and `/terms/` are deployed from GitHub Pages and contain the approved business/support details.
+- [ ] GitHub is still provisioning the `divotlab.ai` TLS certificate, so HTTPS enforcement and final external URL verification remain pending.
 - [ ] RevenueCat v1 server key is missing, the AWS session needs login, and subscription gating remains off.
 - [x] Account-deletion code now deletes the RevenueCat customer before app-owned data; focused and full backend tests pass. Deployment still requires the server key and AWS login.
+- [x] Release commit `c5483ab` sets iPhone-only support and iOS build number `2`; 112 app tests, 145 backend tests, hygiene, Playwright, and the production iOS export pass from a clean checkout.
+- [ ] The production EAS build is blocked only by one-time Apple distribution-credential validation using Patrick's Apple ID and 2FA.
 
 ## Phase 1: Lock release decisions
 
@@ -38,7 +41,7 @@ Exit gate: device scope, storefronts, release method, and seller identity are wr
 - [x] **Codex:** Reconcile the launch work, exclude local/generated artifacts, and preserve all intended changes in commit `eb07753`.
 - [x] **Codex:** Close PRs `#1`-`#3` as superseded by consolidated launch PR `#13`.
 - [x] **Codex:** Fix account deletion so RevenueCat customer data is deleted or appropriately anonymized along with app-owned data.
-- [ ] **Codex:** Apply the Phase 1 device-support decision in `app.json`.
+- [x] **Codex:** Apply the Phase 1 device-support decision in `app.json` and increment iOS build number to `2`.
 - [x] **Codex:** Run app tests, backend tests, Playwright, iOS export, hygiene checks, and GitHub CI.
 - [x] **Codex:** Commit, push, and open consolidated draft release PR `#13`.
 - [ ] **Together:** Review and merge PR `#13`, then tag the release-candidate commit.
@@ -70,16 +73,17 @@ Exit gate: clean `main`, green CI, and a known release-candidate commit.
 - [ ] **Patrick:** Confirm whether the app is a regulated medical device. Expected answer is no, but this is an owner declaration.
 - [x] **Codex:** Finalize the privacy policy and terms using the confirmed business details.
 - [x] **Codex:** Build responsive `/privacy/` and `/terms/` website pages and link them from the marketing-site footer.
-- [ ] **Codex:** Publish privacy, terms, and support pages on `divotlab.ai` over HTTPS.
-- [ ] **Codex:** Verify every public URL and the support mailbox from outside the developer account.
+- [x] **Codex:** Publish the marketing, privacy, and terms pages on `divotlab.ai`; verified page content is being served from commit `ca36369`.
+- [ ] **Codex:** Enable HTTPS after GitHub finishes issuing the custom-domain certificate, then verify every public URL without bypassing TLS validation.
+- [ ] **Patrick:** Finish the Workspace mailbox setup above; **Codex:** then verify the support mailbox from outside the developer account.
 
 Exit gate: Paid Apps is active and all legal/support URLs are live.
 
 ## Phase 4: Complete configuration and billing enforcement
 
-- [ ] **Codex:** Remove duplicate preview EAS variables and retain the production RevenueCat key and full product IDs.
+- [x] **Codex:** Remove duplicate preview EAS variables and retain the production RevenueCat key and full product IDs.
 - [x] **Codex:** Add verified production EAS values for Cognito, redirects, auth providers, API base URL, RevenueCat, and support email.
-- [ ] **Codex:** Add production privacy and terms URLs after the legal pages are published.
+- [x] **Codex:** Add production and preview privacy, terms, and support values after publishing the legal pages.
 - [ ] **Patrick:** RevenueCat -> Project Settings -> API Keys -> create a secret v1 key with read access to customers/subscribers. Store it in Mac Keychain; never paste it into chat or Git.
 - [ ] **Patrick:** Run `aws login` on the Mac when prompted so Codex can update Lambda configuration.
 - [ ] **Codex:** Add `REVENUECAT_SECRET_API_KEY` to the chat and results Lambdas while leaving `SUBSCRIPTION_GATING_ENABLED=false`.
@@ -91,7 +95,9 @@ Exit gate: production configuration is complete, backend entitlement lookup work
 
 ## Phase 5: Build and start TestFlight
 
-- [ ] **Codex:** Increment the iOS build number and run the production EAS build from the release-candidate commit.
+- [x] **Codex:** Increment the iOS build number and pass every production build gate from release commit `c5483ab`.
+- [ ] **Patrick:** On the Mac, open Terminal, go to the project, run `eas build --platform ios --profile production`, answer `Yes` to Apple login, sign in as `pffise@gmail.com`, and approve Apple 2FA. Let the command finish; this validates/creates the distribution certificate and provisioning profile.
+- [ ] **Codex:** Immediately rerun the production EAS build from release commit `c5483ab` after Apple credentials are validated.
 - [ ] **Codex:** Submit the build to App Store Connect and wait for Apple processing to reach `Complete`.
 - [ ] **Codex:** Resolve build warnings, export-compliance prompts, or privacy-manifest issues.
 - [ ] **Codex:** Add the processed build to `Internal Testers` and add Patrick's App Store Connect user.
@@ -147,10 +153,10 @@ Exit gate: the final build passes with production gating enabled.
 - [ ] **Patrick:** Complete the Health & Fitness regulated-medical-device declaration.
 - [x] **Patrick:** Provide App Review contact: Patrick Fise, `pffise@gmail.com`, `410-493-0404`.
 - [ ] **Patrick:** Create a stable reviewer login (recommended username: `appreview@divotlab.ai`) using a sign-in method the production app supports. Put its password only in App Review Information, not Git or chat.
-- [ ] **Codex:** Set support URL, privacy URL, optional marketing URL, storefront availability, release method, copyright, and final metadata.
-- [ ] **Codex:** Set the marketing URL to `https://divotlab.ai` after DNS and HTTPS are live.
+- [x] **Codex:** Set support URL, privacy URL, marketing URL, manual release mode, copyright, and final editable metadata.
+- [ ] **Patrick:** App Store Connect -> DivotLab -> Distribution -> Pricing and Availability -> App Availability -> choose `United States` only -> Save.
 - [x] **Codex:** Verify subtitle `AI-powered golf swing coach` and primary category `Sports` in App Store Connect.
-- [ ] **Codex:** Write review notes explaining sign-in, the subscription path, sample swing testing, restore, and account deletion.
+- [x] **Codex:** Create App Review details and notes explaining sign-in, subscriptions/trial, swing testing, restore, and account deletion.
 - [ ] **Together:** Review app name, subtitle, description, keywords, screenshots, prices, trial, and legal text one final time.
 - [ ] **Codex:** Select the final build and add both subscriptions to the same review submission as version `1.0`.
 - [ ] **Patrick:** App Review -> Draft Submission -> verify every item -> `Submit for Review`.
@@ -169,8 +175,11 @@ Final gate: Alki DivotLab is searchable/downloadable in the selected storefronts
 
 ## Immediate next actions
 
-1. Patrick creates Google Workspace user `pat@divotlab.ai`, adds `support@divotlab.ai` as its alias/send-as address, and verifies both externally.
-2. Patrick waits for Washington approval, then obtains the EIN, registers the `DivotLab` trade name, requests a D-U-N-S number, and asks Apple to convert the developer account to an organization.
-3. Patrick creates the RevenueCat v1 key, runs `aws login` on the Mac, and confirms the regulated-medical-device declaration is `No`.
-4. Codex publishes and verifies the legal pages, fills the EAS and App Store URLs, applies iPhone-only support, deploys account deletion, and builds the TestFlight candidate.
-5. Patrick performs the TestFlight personal review, completes remaining App Store declarations, and approves submission.
+1. **Patrick:** Validate Apple build credentials: in Terminal run `cd /Users/patrickfise/Documents/ReactNativeProjects/GolfCoachExpoFixed`, then `eas build --platform ios --profile production`. Choose Apple login, use `pffise@gmail.com`, and approve 2FA. Tell Codex when the build starts or finishes.
+2. **Patrick:** Create the RevenueCat v1 secret key: RevenueCat -> DivotLab -> Project settings -> API keys -> Secret API keys -> New. Give it read/write customer access. In macOS Keychain Access choose File -> New Password Item, name it `REVENUECAT_SECRET_API_KEY`, use account `patrickfise`, and paste the key as the password. Do not send the key in chat. Then run `aws login` in Terminal and finish the browser sign-in.
+3. **Patrick:** Complete Google Workspace using the Phase 3 steps, including `pat@divotlab.ai`, the `support@divotlab.ai` alias/send-as address, 2FA, DKIM, and external mail tests.
+4. **Patrick:** Complete the App Store owner declarations: age rating, app privacy, content rights, DSA non-trader, and regulated-medical-device `No`; set availability to United States only; create the reviewer account and enter its credentials only in App Review Information.
+5. **Codex:** After steps 1-2, upload build `2`, configure TestFlight, deploy and test RevenueCat enforcement/account deletion, enable gating after purchase/restore pass, attach the build and subscriptions, and prepare the draft submission.
+6. **Patrick:** Install the TestFlight candidate, perform Phase 6, review the final listing, submit for review, and manually release after approval.
+
+The LLC EIN, trade-name registration, D-U-N-S request, and Apple organization-account conversion can continue in parallel; they do not need to delay this individual-account `1.0` submission.
